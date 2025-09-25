@@ -1,23 +1,22 @@
-# -------- Stage 1: build with Haskell + Stack (no GHCR) ----------
+# -------- Stage 1: build with Stack (no GHCR) ----------
 FROM haskell:9.6-bullseye AS builder
 WORKDIR /app
 
-# System deps to build persistent-postgresql (libpq)
+# System deps to build persistent-postgresql (libpq) + basic tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev pkg-config git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Stack (from official script)
-RUN curl -sSL https://get.haskellstack.org/ | sh
+# Stack is already present in this image; print version and continue
+RUN stack --version || true
 
-# Copy project definition files first for better layer caching
+# Copy project definition first for better layer caching
 COPY stack.yaml tdf-hq.cabal ./
-# If you have package.yaml, copy it too:
+# If you also have package.yaml, uncomment the next line
 # COPY package.yaml ./
 
-# Pre-fetch resolver and deps (caches if unchanged)
-RUN /root/.local/bin/stack setup && \
-    /root/.local/bin/stack build --only-dependencies
+# Pre-fetch resolver & deps (cached until these files change)
+RUN stack setup && stack build --only-dependencies
 
 # Copy sources
 COPY app app
@@ -25,7 +24,7 @@ COPY src src
 COPY config config
 
 # Build and place binary at /out
-RUN /root/.local/bin/stack build --copy-bins --local-bin-path /out
+RUN stack build --copy-bins --local-bin-path /out
 
 # -------- Stage 2: slim runtime ----------
 FROM debian:bookworm-slim
@@ -38,6 +37,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 
-# Render provides PORT; map it to APP_PORT expected by the app
+# Render sets PORT; map it to APP_PORT expected by the app
 ENV APP_PORT=8080
 CMD ["/bin/sh","-c","APP_PORT=${PORT:-8080} /app/tdf-hq-exe"]
