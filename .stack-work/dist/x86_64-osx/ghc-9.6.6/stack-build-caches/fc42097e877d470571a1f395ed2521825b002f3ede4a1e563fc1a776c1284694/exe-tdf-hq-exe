@@ -1,0 +1,234 @@
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSarray-0.5.6.0-ghc9.6.6.dylib:
+  hash: 703e0cb91403af7f2c48f4391f15842a53e8221078f8709ddff60613f70f44d1
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbase-4.18.2.1-ghc9.6.6.dylib:
+  hash: bec70334bbf6103a835f105be79b8b4d44a82784e0a59b5779e9e5f392f59223
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbinary-0.8.9.1-ghc9.6.6.dylib:
+  hash: 5ef68a0980b2333936d9c7a96b8db5650415a074c4b5e138ad0c859c822d7258
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbytestring-0.11.5.3-ghc9.6.6.dylib
+: hash: f0e143c7c48ded08d48eb8b601fefe0cc22548c653c9498a4a2b5c184161000d
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHScontainers-0.6.7-ghc9.6.6.dylib:
+  hash: da4b12128cc46b6aa984509391a0d7f7688828cee4e4090e320471f0869a7fc0
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdeepseq-1.4.8.1-ghc9.6.6.dylib:
+  hash: 118377b26c0371e20c1c719ca6f0e522704890777916136c2ec83ac501a8a31c
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdirectory-1.3.8.5-ghc9.6.6.dylib
+: hash: bc4b347b5acb3f3201b73f5be5333d8147c38f5987ecc5a4f3c1252c650260f7
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSexceptions-0.10.7-ghc9.6.6.dylib
+: hash: fdaed84aea47b5c4176a72ffb293770687f65bf76de6489fcd9b378e41eb8f3d
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSfilepath-1.4.300.1-ghc9.6.6.dylib
+: hash: 193e28583d76376489e57aca5f11dfc33a565ae77f371299c9cb45160195ca54
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSghc-bignum-1.3-ghc9.6.6.dylib:
+  hash: e453d6c7e4fd6ebb33daa16033ee1fdf3f8fdc82b9c4edf00f8d2dd4413d82d8
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSghc-boot-th-9.6.6-ghc9.6.6.dylib
+: hash: 6b253bfd20315a102105e35d0f0ab6130c8033b5a7c06bb0fc993b2c17044a28
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSghc-prim-0.10.0-ghc9.6.6.dylib:
+  hash: 8ac9e9fd35fbd8b441cd4eae7b1c76695ed42b17be99a11ff6c97a488d53fa60
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSmtl-2.3.1-ghc9.6.6.dylib:
+  hash: 1ceb4c628cb132f5a3eb07435d16f14b99f2ad2ba0dd1d24791997a6d717d140
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSpretty-1.1.3.6-ghc9.6.6.dylib:
+  hash: 7bc0cc97791750c711d3b4a9a3bddf377df47e7abf8eac1225c13938fa298957
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSprocess-1.6.19.0-ghc9.6.6.dylib:
+  hash: 3980d5c1ffbbe8ab08bcfceaaf241f95362465c87a880b5b9cb45de300d434ba
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSstm-2.5.1.0-ghc9.6.6.dylib:
+  hash: 30c4e146fd1c6f1696d982da9c57058d5be244c09a6566db4010e24c835951ad
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStemplate-haskell-2.20.0.0-ghc9.6.6.dylib
+: hash: 05c1816f510f056e0f4b06a39ad0cae49cff9f130ec4700c4bf5937680e1bb77
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStext-2.0.2-ghc9.6.6.dylib:
+  hash: eb11857a136dd0ad6f76e9a9d62c6ab6452d96dd03d5aec3cef4f064868cc0a6
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStime-1.12.2-ghc9.6.6.dylib:
+  hash: 95b51374ef95f969aacd6644e8a8574d30d935a7dc9d1f864fbc4ba039064f45
+? /Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStransformers-0.6.1.0-ghc9.6.6.dylib
+: hash: c02b2688b0de220b28e9f2bd4df211088c6bc7b9b8b5608377f579880a2ccdb6
+/Users/diegosaa/.stack/programs/x86_64-osx/ghc-9.6.6/lib/ghc-9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunix-2.8.4.0-ghc9.6.6.dylib:
+  hash: c89f48bc9f32283af2ebc94a97f807174d954f0a061e79980966bec47c3375ab
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSOneTuple-0.4.2-7od06fXUUXRBNk1V3VY0g5-ghc9.6.6.dylib
+: hash: dedc667e143bc03249be6cc044b451c59bb552eb403c1339f00f4536b8eab946
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSQuickCheck-2.14.3-7WdOShjYsRTQ5DwHd4Gtb-ghc9.6.6.dylib
+: hash: 3b928d7f91a649ed625424df2b605eb56df99e013076046539a7999138c26a79
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSStateVar-1.2.2-A6sCENWC9xLH02ziP9IDyb-ghc9.6.6.dylib
+: hash: 3cbae395114258704c8087207c21870ea33db6b044c2f818c582adb77bf83b33
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSaeson-2.1.2.1-GhaIaFksjbP4QQGldM9NwG-ghc9.6.6.dylib
+: hash: a8ba88572bca204baddad6f5e64b662a69704686b127cc4ef46fed0ce6632863
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSassoc-1.1.1-pRyoYwA2ut8wRI3kAERXo-ghc9.6.6.dylib
+: hash: 047f5c93fa01feedc08f877dcb8129aa0f0344b2200da6ccbd35c3dd1ee12a08
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSasync-2.2.5-Jnlg8x3TS3aLheevOnFFr7-ghc9.6.6.dylib
+: hash: 1408d027c3a12ff95c7b8c7ab410574a93c37f409ca1ed6130b39c25e64ed0cc
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSattoparsec-0.14.4-8Z65lFE7ngAL1LPByCm0Jd-attoparsec-internal-ghc9.6.6.dylib
+: hash: 312ca95c0205a8b307b17bf5f6c969dae69b22df43e9523896c20e5942f31fc2
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSattoparsec-0.14.4-Jtt09WeE83cJSoCxdHYrks-ghc9.6.6.dylib
+: hash: 7da31d17812e1196c6fe2691e07ad3f25b68f08cd2cb4e3dc86015c3cf0011df
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSattoparsec-iso8601-1.1.1.0-IPAGLMO2gjjG34sOlvDh61-ghc9.6.6.dylib
+: hash: ee867f6d4ffec0a2455f46cf91338dfa24efbc530c39a1fc54cd8ace68282076
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSauto-update-0.1.6-3HaZjvXgKL8yFp1D1e2CJ-ghc9.6.6.dylib
+: hash: 86573b58836ccf0253e94d323ac02f1362196e888fbb459c1e7d4d337d3e172f
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbase-compat-0.13.1-Dtt5em6saazHWsbVLVBeTy-ghc9.6.6.dylib
+: hash: 8940236e617fb640c236902f889946b4f50cb4a2952d097d5a24a9636676f260
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbase-compat-batteries-0.13.1-1sXynlsMHCkAOvPSfkavfZ-ghc9.6.6.dylib
+: hash: 659cb59703884faccba6318c35388abf9409e690945aa17d91cda5ce03d070ee
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbase-orphans-0.9.2-5KrayDGKJf32IfEBx9TBiS-ghc9.6.6.dylib
+: hash: aa33b2e5d1d3fa348e46d78c6a8a17ca215be781366a74f1879b1cbd49197fe5
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbase64-bytestring-1.2.1.0-2n37CC8Eq7mGHxpF66Eiye-ghc9.6.6.dylib
+: hash: 8026a21f62f86a20a8fbfe8edbcb3fc37cacc832d20d7ccf2785719e8cd21933
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbifunctors-5.6.2-Ho4n3cL0ZEo7Q87Yxmi6S9-ghc9.6.6.dylib
+: hash: 677e30cdf31760c77287ceb1d1e6cdf1a15b21479102ff6de29acba7d63f11be
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSbitvec-1.1.5.0-FeYjI9fYzTYHldeafWMV7y-ghc9.6.6.dylib
+: hash: 6c967b6e7027bd7b6cbec0bcbdeeea4083de48c3e321c3a7d2a9b29bfefaa327
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSblaze-builder-0.4.2.3-DQBnLFBE1VT45U7k73NJUF-ghc9.6.6.dylib
+: hash: 72c43d48ba50e3dc04f9255c8b53b4579063b18cba150cbc666bbb6dffc2fefb
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSblaze-html-0.9.2.0-H5JeAnltwfu3ypML7UisfJ-ghc9.6.6.dylib
+: hash: 9020e1e87570963492d968cf86146f3eeff8831e1c1390a72ae33bd9c2df06cb
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSblaze-markup-0.8.3.0-I8OF0uqwCtdISFR9RJBWwP-ghc9.6.6.dylib
+: hash: 64b5d46d78525d3a1f9db8d6999d8f3f45a2db6ff1650e89f787a3d5c706a3cf
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHScase-insensitive-1.2.1.0-78ckgM4B3c7GI8dWLE7IvN-ghc9.6.6.dylib
+: hash: d87e5af9561935d55c15487e6743fde5cbb7c7d229f1ed7dcb5baa43ccc2f733
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHScomonad-5.0.8-3xIudzCL45jB4z06tBhrns-ghc9.6.6.dylib
+: hash: 7cf176439a54dc04327634d6d9b4cd016b2ccbaad03dc413b344a5e5ab9203ad
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSconduit-1.3.5-LveRYYzNGTq2GnUcH7dMVD-ghc9.6.6.dylib
+: hash: 7adf863123569194365deb228af7304cd3102f8a67cb6bc9d605d342ddde2025
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSconduit-extra-1.3.6-94f9frjbKTIG9s22wcXem-ghc9.6.6.dylib
+: hash: f7cd917094eea1b56df77997dc25cd6be6e81ec9d06ce9b9d67627c6ff048990
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHScontravariant-1.5.5-L3dzMMfQxh01G5kB8tri44-ghc9.6.6.dylib
+: hash: 71b0530cffe29fc810f62f070bee5f4a8a6a3e3c811e3947c23e726169cce40f
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHScookie-0.4.6-5ixJbRkPrVtCXUGZAF4lSN-ghc9.6.6.dylib
+: hash: ff3aaf4039850439a59fc4ca0d43a6db1f56912b7b543f356b5d81ca7bfd6530
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdata-default-class-0.1.2.0-BWLo43avd8G7UXQOJgP1zg-ghc9.6.6.dylib
+: hash: 58130213ceb7354f8ac211e12e61342fe60163c2712a610fbe2de2b936d8f6c9
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdata-fix-0.3.3-6P7sUaZ9XZ69HAT7mEQRb0-ghc9.6.6.dylib
+: hash: 47788438d9ecefff069518b40767db5c0b320c26c62e83876435cdeeac54d9fa
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdistributive-0.6.2.1-CBS6ukteVasLIgsujywTMv-ghc9.6.6.dylib
+: hash: 64b56cfd1e28dd412850d71b442d7163497765d1baaea8b221ed6f82121e2803
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSdlist-1.0-4gU1uwZtlC12QPDWmtCZHA-ghc9.6.6.dylib
+: hash: 13a625afb1f083b776051251c61879836df5570f275fd9cfaa5c6903ae73ade7
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSeasy-file-0.2.5-8rUy1jdCLHMCdmAHoWcPly-ghc9.6.6.dylib
+: hash: e70b13f16aa9552410a7387252eec840abf52fe62a3485c21f27a411e8f61cb4
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSfast-logger-3.2.3-1YULG4DqDyU690D1ZD0nUF-ghc9.6.6.dylib
+: hash: 5b3798dc4a7827cf1018b76eaea119d9191467e904eef389dea9051750e0c3bc
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSgenerically-0.1.1-I9byc5Nil798plofO827gA-ghc9.6.6.dylib
+: hash: deee88382427392269237febddd5849fc29ff54337b160bd84ef0bdacdb2a29b
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHShashable-1.4.4.0-1jOpKawyX4k1n9a6vQlXXi-ghc9.6.6.dylib
+: hash: b6c728e056cfa0f5e94ed5edd7abd5fb296e96a28203ff0ce2e62ef11ad5c086
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHShttp-api-data-0.5.1-CLWnQM4yBtvFrXmV6SfD5w-ghc9.6.6.dylib
+: hash: 02416db73c9f1bfeb7b16d15e0dbde6e808ec5b6226d8a08dabce1471cd7a3a3
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHShttp-types-0.12.4-2RWyQgC77LV4cEzuFRCNtl-ghc9.6.6.dylib
+: hash: b53b4916e8983b9b92a9ede10df227acf2e78f5abbd2cde5b68ef59d63e800f8
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSindexed-traversable-0.1.4-8j5HZpShpE5BqFup9Ojenr-ghc9.6.6.dylib
+: hash: 741150580c8530e75c41efaf6055b23c63723bab7e6f85d7ddf231661c28fd7b
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSindexed-traversable-instances-0.1.2-74WfsHPIzoOBdwvbPIw5d0-ghc9.6.6.dylib
+: hash: 10aec73a4b6728f3ccfa0d526ef4754f59992f9ebef43b919381ff165a566dad
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSinteger-conversion-0.1.0.1-82r5mOVaCc0K3b4PZHz150-ghc9.6.6.dylib
+: hash: b5dbd2d23332a9602f6c970f65cdf53660ef8e93017e673555bcbc213943e083
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSinteger-logarithms-1.0.3.1-7Av54u0aaY3468YAGPu9Rv-ghc9.6.6.dylib
+: hash: 14ce6c9f7e875f1e15a7fe381c88eb4d390458cb985ea6dc63838bf4965a8f32
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSlift-type-0.1.1.1-DudoGFMXFBj1pSe5LZu6W6-ghc9.6.6.dylib
+: hash: 7b0bb39f132a367658c655cf9aa01c40df2a023ebcd53565ceaf66b974ba88d5
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSlifted-base-0.2.3.12-z0hCYi0RtJ2bqsZl8fl3J-ghc9.6.6.dylib
+: hash: 68e6b8f2eb1d0adc86ef6394fb709da419d5141dc4ad2b2291a8f3ac1eeee820
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSmonad-control-1.0.3.1-BMbKTVsXXzV52ozawtAksN-ghc9.6.6.dylib
+: hash: a529151cbd5e182cc3bf2ed23c3591844846c6a5721a4a82230262e5c3b3e489
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSmonad-logger-0.3.40-E45mco1YlObJw7lKgJtKp3-ghc9.6.6.dylib
+: hash: 4a67efd801b04fbb2db3a55536416084d232bba7fc24d0fe4f2205b2f3f9169f
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSmonad-loops-0.4.3-LG7facWXNYz9W52syv7lz8-ghc9.6.6.dylib
+: hash: b235f01204ebe531b22fa5345d955579c34f74041393012fd8ff9819443a000d
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSmono-traversable-1.0.17.0-EwY7qMMerhnHt7JNWe2u3w-ghc9.6.6.dylib
+: hash: 636deb5817367d08d0e1394ca1b731f3355b0d832a0c598aad343097f8605f7b
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSnetwork-3.1.4.0-ymMrP3jwfbBNmM5wet86R-ghc9.6.6.dylib
+: hash: b715c5eca90d83158bc1336cdf71541e31481b05b2d3e0317b772d7ddad85657
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSold-locale-1.0.0.7-Gunit3UBy5P9OGDVFY5MhC-ghc9.6.6.dylib
+: hash: 705d189e197a70707c14e3ebd8541ce0f77d5ef907ecbd125ef914b32f26c781
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSold-time-1.1.0.4-DMJyKjba6fKdDZ0hvjhGS-ghc9.6.6.dylib
+: hash: ade791cc94a559681a81c374b2d7f7283e8539bfc85ad4c5a919f55cc9caea52
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSos-string-2.0.6-IlBa2UQjH7mL18YjMu1jzE-ghc9.6.6.dylib
+: hash: 502e2cdb6a310b9ad9c2a3e560e058b4442e34c8860e067dfba5a2cd75b2dec9
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSpath-pieces-0.2.1-ILPSumWqTsA51OyVDS7ISl-ghc9.6.6.dylib
+: hash: 33b30cc951e928bc1a21107a957b3ddb80e93feb20f5113c0983e76fab656b04
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSpersistent-2.14.6.1-Jd5K4Hjv3t5D2GM8JPKeVi-ghc9.6.6.dylib
+: hash: 402f298e4bc60f5e9b72505ba552574e35069f8e6f28ec734fb663a9918b7006
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSprimitive-0.8.0.0-G7z1XrhwN0bFkYsIqIr1QU-ghc9.6.6.dylib
+: hash: 0090b05db8293326f7c4a78eddfe55c45babc85677c1b13842dd67d59a4831a6
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSrandom-1.2.1.2-Daj3TjgzPQ8Lx6Uup6vF1b-ghc9.6.6.dylib
+: hash: 694f7bfe3410adb21a684cad8988e26bfb4f03ad8a3e58efd3e71883dfbd8d5e
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSresource-pool-0.4.0.0-1lnLn4zQukyG8Wf4ZnS5w7-ghc9.6.6.dylib
+: hash: 8d30ae03eb7963de81da8332993da1bee1eb25d6195fcecabfba92c79b797f9f
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSresourcet-1.3.0-IkL4ziisDYdA5vbySY4nvi-ghc9.6.6.dylib
+: hash: 74d04c7ac8fe65c082fbef6ff6dfc23258e583ea94382a25b115e326e0bdc03a
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsafe-exceptions-0.1.7.4-G1fs5SY5i1W7EEbU0Su8pW-ghc9.6.6.dylib
+: hash: 3c00e7d5f15aef598cd410580f1fd85e13e568518cffafcf805aef148b221f1c
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSscientific-0.3.7.0-1z36uCB5GQa8OPMNpXUGjq-ghc9.6.6.dylib
+: hash: 3e07c2b4a0bc2d1a9580b6649387377f4f166539cd56d832b123ef2d33d721e6
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsemialign-1.3.1-IVgZeJkyVjqCqpBAuxCLsJ-ghc9.6.6.dylib
+: hash: 885b0e8aec6c06d438d936bd95251e3325d30e52db3ac29aa57e1c28837349de
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsemigroupoids-6.0.1-6x0lYk2kpXqBH9PRlqEstt-ghc9.6.6.dylib
+: hash: 0e9ea36c54cb498ce0613417b434313af1eaa4a1e4aee234f0231cbc204222b7
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsilently-1.2.5.3-L6W4jk4rJ6HAekRm924hkH-ghc9.6.6.dylib
+: hash: 01ca699be8782bd6a66e3e09f84e2b9f520c27c409791a5aa56dc7e0bc499918
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsplit-0.2.5-5qpEwx7qUv6FlaHbX7jgA2-ghc9.6.6.dylib
+: hash: 957be9135b3a903c490e23eaafedfa45fc0486aea00245a4692445fad72f5d1c
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSsplitmix-0.1.0.5-BFex6Gx3IBaGtdqU1pJPtq-ghc9.6.6.dylib
+: hash: d4c4ad6241a536419a4c3c1758eeef63571567a0a7d69bbaead8f7f1a62d7040
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSstm-chans-3.0.0.9-FlU5K8NwXr3CuyuM0prvJs-ghc9.6.6.dylib
+: hash: 6b6ce6c069d715d689344dc3efc67701467e64b267921a550673db2ccead2af7
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSstreaming-commons-0.2.2.6-Atnt2fleRTIDlUu7mPHW8R-ghc9.6.6.dylib
+: hash: 5c1d990c16c2bd8001a445382eadafbcaa3d94277c845f9d5eda2b039c8dbacc
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSstrict-0.5-4LDLD2sgLJHFLvelBXYjJT-ghc9.6.6.dylib
+: hash: e7f61533db7c60e1d819722ff0f140d1c999d3895ea0716b6be46610f4cd0b66
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStagged-0.8.8-IppbQKcSSpZFDIm3kyFLi5-ghc9.6.6.dylib
+: hash: 3f7b24eeb7300f512081a1268c13eaf03e2569cd9c90fa9dbf579d9d03f08dee
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStext-short-0.1.6-5OxejGNC5XnBovJP6JMKc4-ghc9.6.6.dylib
+: hash: 6238df62c5f446a28ca03eace5a1aa57110a581e8807b8d3653dea0ee960444a
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSth-abstraction-0.5.0.0-HAFjiAO2nGN58SdxVZCnLH-ghc9.6.6.dylib
+: hash: 7f6a0663e0c04fb0ac804a14e9007c62ce7054a5e6c2e73f4fdd6d241b1ced4e
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSth-lift-0.8.4-1nDn5GaGtOI9q63njtRfou-ghc9.6.6.dylib
+: hash: 5c70f6f07371cbc0f7a4a29298ffb906d96af54b3fb82baf470955dcefaa3006
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSth-lift-instances-0.1.20-AHNIMs4d5vL7vhQSg4RlZf-ghc9.6.6.dylib
+: hash: 3ddb7f03bff9b16dff7f89af8331c0c6048d06ef2058bae3b07555f80e789054
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSthese-1.2.1-FKZtufkfQqP4UNZBUiwtXS-ghc9.6.6.dylib
+: hash: f5d172a87cc0de3f3dbdd66bfd6e98617ae8d7f4072f7ede6df9c7876486e5c7
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStime-compat-1.9.6.1-AaxVvCc9wJUGrBqt5imCuS-ghc9.6.6.dylib
+: hash: cb92df59437dc87cfa7200d27ff4ab352468662b243ecdccd4562c62e5baf1b3
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStransformers-base-0.4.6-2SzFbPqKXeHDnN7jc6QVzv-ghc9.6.6.dylib
+: hash: 930aeb373469ef376583b9a6f32207c98a3e7a05f557e77a98053d7e62b1ab14
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStransformers-compat-0.7.2-5nFo8llgs2JItrIXIph57L-ghc9.6.6.dylib
+: hash: a7934ddc486580a53e1a0b63362be1298e4baa570132a590d0efdc6c2726753d
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHStyped-process-0.2.11.1-Kd7XNjmhGpN236UBh1DMvW-ghc9.6.6.dylib
+: hash: 8958d5a438d216a541fd27aa7a2a8d834465cf3c580b5c5a6a532c7b4859b390
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunix-compat-0.7.2-1NxbmsUJVnDDNnvOywKtoI-ghc9.6.6.dylib
+: hash: 446476534c764d74b5f72829dc2c6450d2a602ea73c8c22ce5a300e1bd9e50cb
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunix-time-0.4.15-4oVCQxxtOW0BlVuCikeRHh-ghc9.6.6.dylib
+: hash: df22a99057b7e81e571613ef6191a9e2c12da0bef098f7050dbca08a71b9b007
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunliftio-0.2.25.0-mK4aO6DFp55pE4EQVNURo-ghc9.6.6.dylib
+: hash: afca98beb6dda826d6ba33a5f8523320ca1472239325422d9bad36bbc7944c47
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunliftio-core-0.2.1.0-6sOpIonHj8t5wIbPhWbPHY-ghc9.6.6.dylib
+: hash: 10f8b440447f5fba3589a6be6d3482da9c9d736eb0f6b0b1294b3cb1d7bd936f
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSunordered-containers-0.2.20-Czm2GZJ10BFAZxOUeiTt-ghc9.6.6.dylib
+: hash: 81187f412a1e0e5ac89246770736927e6e093b9f48a91322fe3d2c80d2206649
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSuuid-types-1.0.5.1-LJ1TeHlbt0s9aKEsbH0xki-ghc9.6.6.dylib
+: hash: c8bb02fe569e1015bfaa7b4d3e88e8590f49acd81467d8e299e30874dd280098
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSvault-0.3.1.5-KRZFIG3P1UG39mSDzrWEHb-ghc9.6.6.dylib
+: hash: c79b8eabed435ff29a965f5e9f9b21652e5fd19e7232c952043af92b1c89e312
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSvector-0.13.1.0-Aqc2YUE1Egs5WmXVMbcJ5T-ghc9.6.6.dylib
+: hash: e0eb7808532aa2888bf5b6e2f69c46c3b748d0356cff6d12c4e73be3b19e9aca
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSvector-algorithms-0.9.0.2-IGdhSwH8DWg4eCE0CiNgfI-ghc9.6.6.dylib
+: hash: 71365367bb4b9e8560d055d82a4b80c10e6bb977a8580ca6f25a2ef95db32c0a
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSvector-stream-0.1.0.1-B3eeou3yuYd7g2aD4u5s22-ghc9.6.6.dylib
+: hash: b7107c0682a85a21199cd87d3c444cff8518abb6bd21973a19df1c69523a2f53
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSwitherable-0.4.2-IIy9S1e5yYfCD7Y0AjG59g-ghc9.6.6.dylib
+: hash: 934f687739e33bf5089bafe9a50e36b056f14705e236be7c24c03d824d7d1d68
+? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSzlib-0.6.3.0-JUxGbqjsKXnBaLmHE8VeIG-ghc9.6.6.dylib
+: hash: 426972e67d2fb02c249a04b3793e14bf2adccd06d976b8e5ea0d380e6cfa7b77
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/app/Main.hs:
+  hash: 652775de92e72d6f156e23b00cf951e1e848da1361eb563b8fb8ceb41c96f6db
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
+  hash: ad27da01a804b9e4f1e3d32af268db254532fb920a8a9a84cfe7e3015abef867
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Config.hs:
+  hash: 76a4f386e6e2777ba4eaae5b90bac57a1d2eeb772188dafc11d9b31fa88b0dff
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/DB.hs:
+  hash: 60b089a5b613d3f41e5276602e440c7f2eda908827d53b9a60c54d4e79d40ce9
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/DTO.hs:
+  hash: 8e9129eab8cdc07e5d6f94feeecd786b56ae47986801d3f8c1eb0ba95efe7de7
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Models.hs:
+  hash: 224b881cfa37ef23961ab5c812fa7f3b120ef3fdb547e9957bb1d03d3d0f47d2
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Seed.hs:
+  hash: c4dfb43d37e695946f08106fc6ff0fae93c358d162a72c98fcca4603dc587770
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Server.hs:
+  hash: f509adb5d5c48be87421a50f70ebbaadd6376dcb912b35e37e7b2b4addc72645
+/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/tdf-hq.cabal:
+  hash: eee077decc90c0f53fa58cb070a5f342ed8f2f618c1e17726364393c731d6340
