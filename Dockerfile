@@ -2,41 +2,43 @@
 FROM haskell:9.6-bullseye AS builder
 WORKDIR /app
 
-# System deps to build persistent-postgresql (libpq) + basic tools
+# OS deps for building persistent-postgresql + basic tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev pkg-config git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Stack is already present in this image; print version and continue
+# Show toolchain versions (handy in Render logs)
+RUN ghc --version || true
 RUN stack --version || true
 
 # Copy project definition first for better layer caching
 COPY stack.yaml tdf-hq.cabal ./
-# If you also have package.yaml, uncomment the next line
-# COPY package.yaml ./
+# COPY package.yaml ./   # uncomment if you have it
 
-# Pre-fetch resolver & deps (cached until these files change)
-RUN stack setup && stack build --only-dependencies
+# Make sure Stack installs the correct compiler for the resolver
+# Also, be explicit and avoid any global "system-ghc" config
+RUN stack --no-terminal --install-ghc setup && \
+    stack --no-terminal --install-ghc build --only-dependencies
 
 # Copy sources
 COPY app app
 COPY src src
 COPY config config
 
-# Build and place binary at /out
-RUN stack build --copy-bins --local-bin-path /out
+# Build and export the binary
+RUN stack --no-terminal --install-ghc build --copy-bins --local-bin-path /out
 
 # -------- Stage 2: slim runtime ----------
 FROM debian:bookworm-slim
 WORKDIR /app
 
-# Runtime libs: libpq for Postgres + CA certs for Neon TLS
+# Runtime libs for Postgres + CA certs for Neon TLS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 
-# Render sets PORT; map it to APP_PORT expected by the app
+# Render provides PORT; map it to the app's APP_PORT
 ENV APP_PORT=8080
 CMD ["/bin/sh","-c","APP_PORT=${PORT:-8080} /app/tdf-hq-exe"]
