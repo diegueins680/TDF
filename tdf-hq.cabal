@@ -39,6 +39,7 @@ executable tdf-hq-exe
     , http-types
     , warp                 >=3.3
     , wai
+    , wai-cors
     , filepath
     , directory
     , transformers

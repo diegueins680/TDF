@@ -47,7 +47,7 @@ getBinDir, getLibDir, getDynLibDir, getDataDir, getLibexecDir, getSysconfDir :: 
 
 bindir, libdir, dynlibdir, datadir, libexecdir, sysconfdir :: FilePath
 bindir     = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/bin"
-libdir     = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/tdf-hq-0.1.0.0-KlwWsmDpDHy8udSo9eoUJK-tdf-hq-exe"
+libdir     = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/tdf-hq-0.1.0.0-8ODKnb9tw1U42UaiXsupn9-tdf-hq-exe"
 dynlibdir  = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6"
 datadir    = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/share/x86_64-osx-ghc-9.6.6/tdf-hq-0.1.0.0"
 libexecdir = "/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/.stack-work/install/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/libexec/x86_64-osx-ghc-9.6.6/tdf-hq-0.1.0.0"

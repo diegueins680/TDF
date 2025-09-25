@@ -270,6 +270,16 @@
   (major1) == 3 && (major2) <  2 || \
   (major1) == 3 && (major2) == 2 && (minor) <= 4)
 #endif /* MIN_VERSION_wai */
+/* package wai-cors-0.2.7 */
+#ifndef VERSION_wai_cors
+#define VERSION_wai_cors "0.2.7"
+#endif /* VERSION_wai_cors */
+#ifndef MIN_VERSION_wai_cors
+#define MIN_VERSION_wai_cors(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  2 || \
+  (major1) == 0 && (major2) == 2 && (minor) <= 7)
+#endif /* MIN_VERSION_wai_cors */
 /* package warp-3.3.31 */
 #ifndef VERSION_warp
 #define VERSION_warp "3.3.31"
@@ -363,7 +373,7 @@
 #endif /* MIN_TOOL_VERSION_runghc */
 
 #ifndef CURRENT_COMPONENT_ID
-#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-KlwWsmDpDHy8udSo9eoUJK-tdf-hq-exe"
+#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-8ODKnb9tw1U42UaiXsupn9-tdf-hq-exe"
 #endif /* CURRENT_COMPONENT_ID */
 #ifndef CURRENT_PACKAGE_VERSION
 #define CURRENT_PACKAGE_VERSION "0.1.0.0"

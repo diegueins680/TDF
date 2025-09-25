@@ -215,7 +215,7 @@
 ? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSzlib-0.6.3.0-JUxGbqjsKXnBaLmHE8VeIG-ghc9.6.6.dylib
 : hash: 426972e67d2fb02c249a04b3793e14bf2adccd06d976b8e5ea0d380e6cfa7b77
 /Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/app/Main.hs:
-  hash: 652775de92e72d6f156e23b00cf951e1e848da1361eb563b8fb8ceb41c96f6db
+  hash: 908eb1050c7bbd19e692ab55a7acba07e87fd291d8e2b7c278121365af8e5d10
 /Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
   hash: ad27da01a804b9e4f1e3d32af268db254532fb920a8a9a84cfe7e3015abef867
 /Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Config.hs:
@@ -231,4 +231,4 @@
 /Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Server.hs:
   hash: f509adb5d5c48be87421a50f70ebbaadd6376dcb912b35e37e7b2b4addc72645
 /Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/tdf-hq.cabal:
-  hash: eee077decc90c0f53fa58cb070a5f342ed8f2f618c1e17726364393c731d6340
+  hash: 96271dd769ea658d32fd6a6883551883948bac66561768bfa7fb4bde64883c9d
