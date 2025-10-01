@@ -7,16 +7,22 @@
 
 module TDF.Server where
 
+import           Control.Monad (unless)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
+import qualified Data.ByteString.Lazy.Char8 as LBS
 import           Data.Int (Int64)
+import           Data.Proxy (Proxy(..))
 import           Data.Time (getCurrentTime, UTCTime, Day, utctDay)
 import           Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import           Text.Read (readMaybe)
 
 import           Servant
-import           Network.Wai (Application)
+import           Servant.API.Experimental.Auth (AuthProtect)
+import           Servant.Server.Experimental.Auth (AuthHandler, AuthServerData, mkAuthHandler)
+import           Network.Wai (Application, Request, requestHeaders)
 
 import           Database.Persist
 import           Database.Persist.Sql
@@ -30,11 +36,36 @@ import           TDF.Seed (seedAll)
 
 type AppM = ReaderT Env Handler
 
+data AuthenticatedUser = AuthenticatedUser
+  { auRole :: RoleEnum
+  }
+
+type instance AuthServerData (AuthProtect "role-auth") = AuthenticatedUser
+
 mkApp :: Env -> Application
-mkApp env = serve (Proxy :: Proxy API) (hoistServer (Proxy :: Proxy API) (nt env) server)
+mkApp env =
+  let ctx = authContext env
+      proxy = Proxy :: Proxy API
+      ctxProxy = Proxy :: Proxy '[AuthHandler Request AuthenticatedUser]
+  in serveWithContext proxy ctx (hoistServerWithContext proxy ctxProxy (nt env) server)
 
 nt :: Env -> AppM a -> Handler a
 nt env x = runReaderT x env
+
+authContext :: Env -> Context '[AuthHandler Request AuthenticatedUser]
+authContext env = authHandler env :. EmptyContext
+
+authHandler :: Env -> AuthHandler Request AuthenticatedUser
+authHandler _ = mkAuthHandler $ \req -> do
+  roleHeader <- maybe (throwError err401 { errBody = "Missing X-Role header" }) pure (lookup "X-Role" (requestHeaders req))
+  roleText <- either (const (throwError err401 { errBody = "Invalid role encoding" })) pure (TE.decodeUtf8' roleHeader)
+  roleEnum <- maybe (throwError err401 { errBody = "Unknown role" }) pure (readMaybe (T.unpack roleText))
+  pure AuthenticatedUser { auRole = roleEnum }
+
+authorize :: [RoleEnum] -> AuthenticatedUser -> AppM ()
+authorize allowed user =
+  unless (auRole user `elem` allowed) $
+    throwError err403 { errBody = LBS.pack "Forbidden: insufficient role" }
 
 server :: ServerT API AppM
 server =
@@ -49,20 +80,35 @@ server =
 health :: AppM TDF.API.HealthStatus
 health = pure (HealthStatus "ok" "ok")
 
--- Parties
 partyServer :: ServerT PartyAPI AppM
-partyServer = listParties :<|> createParty :<|> partyById
+partyServer user =
+       listParties user
+  :<|> createParty user
+  :<|> partyById user
   where
-    partyById pid = getParty pid :<|> updateParty pid :<|> addRole pid
+    partyById u pid =
+           getParty u pid
+      :<|> updateParty u pid
+      :<|> addRole u pid
 
-listParties :: AppM [PartyDTO]
-listParties = do
+listParties :: AuthenticatedUser -> AppM [PartyDTO]
+listParties user = do
+  authorize [Admin, Manager, Reception, ReadOnly] user
+  listPartiesAction
+
+listPartiesAction :: AppM [PartyDTO]
+listPartiesAction = do
   Env pool _ <- ask
   entities <- liftIO $ flip runSqlPool pool $ selectList [] [Asc PartyId]
   pure (map toPartyDTO entities)
 
-createParty :: PartyCreate -> AppM PartyDTO
-createParty req = do
+createParty :: AuthenticatedUser -> PartyCreate -> AppM PartyDTO
+createParty user req = do
+  authorize [Admin, Manager, Reception] user
+  createPartyAction req
+
+createPartyAction :: PartyCreate -> AppM PartyDTO
+createPartyAction req = do
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let p = Party
@@ -81,8 +127,13 @@ createParty req = do
   pid <- liftIO $ flip runSqlPool pool $ insert p
   pure $ toPartyDTO (Entity pid p)
 
-getParty :: Int64 -> AppM PartyDTO
-getParty pidI = do
+getParty :: AuthenticatedUser -> Int64 -> AppM PartyDTO
+getParty user pidI = do
+  authorize [Admin, Manager, Reception, ReadOnly] user
+  getPartyAction pidI
+
+getPartyAction :: Int64 -> AppM PartyDTO
+getPartyAction pidI = do
   Env pool _ <- ask
   let pid = toSqlKey pidI :: Key Party
   mp <- liftIO $ flip runSqlPool pool $ getEntity pid
@@ -90,8 +141,13 @@ getParty pidI = do
     Nothing -> throwError err404
     Just ent -> pure (toPartyDTO ent)
 
-updateParty :: Int64 -> PartyUpdate -> AppM PartyDTO
-updateParty pidI req = do
+updateParty :: AuthenticatedUser -> Int64 -> PartyUpdate -> AppM PartyDTO
+updateParty user pidI req = do
+  authorize [Admin, Manager, Reception] user
+  updatePartyAction pidI req
+
+updatePartyAction :: Int64 -> PartyUpdate -> AppM PartyDTO
+updatePartyAction pidI req = do
   Env pool _ <- ask
   let pid = toSqlKey pidI :: Key Party
   liftIO $ flip runSqlPool pool $ do
@@ -112,10 +168,15 @@ updateParty pidI req = do
               , partyNotes            = maybe (partyNotes p) Just       (uNotes req)
               }
         replace pid p'
-  getParty pidI
+  getPartyAction pidI
 
-addRole :: Int64 -> Text -> AppM NoContent
-addRole pidI roleTxt = do
+addRole :: AuthenticatedUser -> Int64 -> Text -> AppM NoContent
+addRole user pidI roleTxt = do
+  authorize [Admin, Manager] user
+  addRoleAction pidI roleTxt
+
+addRoleAction :: Int64 -> Text -> AppM NoContent
+addRoleAction pidI roleTxt = do
   Env pool _ <- ask
   let pid  = toSqlKey pidI :: Key Party
       role = parseRole roleTxt
@@ -129,12 +190,16 @@ addRole pidI roleTxt = do
         Just r  -> r
         Nothing -> ReadOnly
 
--- Bookings
 bookingServer :: ServerT BookingAPI AppM
-bookingServer = listBookings :<|> createBooking
+bookingServer user = listBookings user :<|> createBooking user
 
-listBookings :: AppM [BookingDTO]
-listBookings = do
+listBookings :: AuthenticatedUser -> AppM [BookingDTO]
+listBookings user = do
+  authorize [Admin, Manager, Reception] user
+  listBookingsAction
+
+listBookingsAction :: AppM [BookingDTO]
+listBookingsAction = do
   Env pool _ <- ask
   bs <- liftIO $ flip runSqlPool pool $ selectList [] [Desc BookingId]
   pure $ map toDTO bs
@@ -148,8 +213,13 @@ listBookings = do
       , notes     = bookingNotes b
       }
 
-createBooking :: CreateBookingReq -> AppM BookingDTO
-createBooking req = do
+createBooking :: AuthenticatedUser -> CreateBookingReq -> AppM BookingDTO
+createBooking user req = do
+  authorize [Admin, Manager, Reception] user
+  createBookingAction req
+
+createBookingAction :: CreateBookingReq -> AppM BookingDTO
+createBookingAction req = do
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let status' = parseStatus (cbStatus req)
@@ -178,12 +248,16 @@ createBooking req = do
         Just s  -> s
         Nothing -> Confirmed
 
--- Packages
 packageServer :: ServerT PackageAPI AppM
-packageServer = listProducts :<|> createPurchase
+packageServer user = listProducts user :<|> createPurchase user
 
-listProducts :: AppM [PackageProductDTO]
-listProducts = do
+listProducts :: AuthenticatedUser -> AppM [PackageProductDTO]
+listProducts user = do
+  authorize [Admin, Manager, Reception, Accounting] user
+  listProductsAction
+
+listProductsAction :: AppM [PackageProductDTO]
+listProductsAction = do
   Env pool _ <- ask
   ps <- liftIO $ flip runSqlPool pool $ selectList [PackageProductActive ==. True] [Asc PackageProductId]
   pure $ map toDTO ps
@@ -197,8 +271,13 @@ listProducts = do
       , ppPriceCents = packageProductPriceCents p
       }
 
-createPurchase :: PackagePurchaseReq -> AppM NoContent
-createPurchase req = do
+createPurchase :: AuthenticatedUser -> PackagePurchaseReq -> AppM NoContent
+createPurchase user req = do
+  authorize [Admin, Manager, Reception] user
+  createPurchaseAction req
+
+createPurchaseAction :: PackagePurchaseReq -> AppM NoContent
+createPurchaseAction req = do
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let buyer = toSqlKey (buyerId req)   :: Key Party
@@ -222,12 +301,16 @@ createPurchase req = do
         pure ()
   pure NoContent
 
--- Invoices
 invoiceServer :: ServerT InvoiceAPI AppM
-invoiceServer = listInvoices :<|> createInvoice
+invoiceServer user = listInvoices user :<|> createInvoice user
 
-listInvoices :: AppM [InvoiceDTO]
-listInvoices = do
+listInvoices :: AuthenticatedUser -> AppM [InvoiceDTO]
+listInvoices user = do
+  authorize [Admin, Manager, Accounting] user
+  listInvoicesAction
+
+listInvoicesAction :: AppM [InvoiceDTO]
+listInvoicesAction = do
   Env pool _ <- ask
   is <- liftIO $ flip runSqlPool pool $ selectList [] [Desc InvoiceId]
   pure $ map toDTO is
@@ -241,8 +324,13 @@ listInvoices = do
       , totalC    = invoiceTotalCents i
       }
 
-createInvoice :: CreateInvoiceReq -> AppM InvoiceDTO
-createInvoice req = do
+createInvoice :: AuthenticatedUser -> CreateInvoiceReq -> AppM InvoiceDTO
+createInvoice user req = do
+  authorize [Admin, Accounting] user
+  createInvoiceAction req
+
+createInvoiceAction :: CreateInvoiceReq -> AppM InvoiceDTO
+createInvoiceAction req = do
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let day = utctDay now
@@ -271,12 +359,16 @@ createInvoice req = do
     , totalC    = invoiceTotalCents inv
     }
 
--- Admin (temporary)
 adminServer :: ServerT AdminAPI AppM
-adminServer = seedHandler
+adminServer user = seedHandler user
 
-seedHandler :: AppM NoContent
-seedHandler = do
+seedHandler :: AuthenticatedUser -> AppM NoContent
+seedHandler user = do
+  authorize [Admin] user
+  seedHandlerAction
+
+seedHandlerAction :: AppM NoContent
+seedHandlerAction = do
   Env pool _ <- ask
   liftIO $ flip runSqlPool pool seedAll
   pure NoContent
