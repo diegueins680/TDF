@@ -15,6 +15,7 @@ executable tdf-hq-exe
     TDF.Config
     TDF.DB
     TDF.DTO
+    TDF.Auth
     TDF.Models
     TDF.Seed
     TDF.Server

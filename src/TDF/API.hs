@@ -7,6 +7,7 @@
 module TDF.API where
 
 import           Servant
+import           Servant.API.Experimental.Auth (AuthProtect)
 import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (UTCTime, Day)
@@ -41,13 +42,16 @@ type AdminAPI =
 
 type HealthAPI = Get '[JSON] HealthStatus
 
-type API =
-       "health"  :> HealthAPI
-  :<|> "parties" :> PartyAPI
+type ProtectedAPI =
+       "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
   :<|> "admin"    :> AdminAPI
+
+type API =
+       "health" :> HealthAPI
+  :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
 
