@@ -100,6 +100,13 @@ instance ToJSON StockTxnReason
 instance FromJSON StockTxnReason
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
+ApiToken
+    token            Text
+    partyId          PartyId
+    label            Text Maybe
+    active           Bool
+    UniqueApiToken   token
+    deriving Show Generic
 Party
     legalName        Text Maybe
     displayName      Text
