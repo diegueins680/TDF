@@ -14,6 +14,7 @@ import           Control.Monad.Reader (ReaderT, runReaderT, ask)
 import           Crypto.BCrypt (validatePassword)
 import           Data.Int (Int64)
 import qualified Data.Set as Set
+import           Data.Maybe (fromMaybe)
 import           Data.Time (getCurrentTime, utctDay)
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -146,6 +147,9 @@ createParty user req = do
           , partyCreatedAt = now
           }
   pid <- liftIO $ flip runSqlPool pool $ insert p
+  liftIO $ flip runSqlPool pool $ mapM_ (\role -> upsert
+    (PartyRole pid role True)
+    [PartyRoleActive =. True]) (fromMaybe [] (cRoles req))
   pure $ toPartyDTO (Entity pid p)
 
 getParty :: AuthedUser -> Int64 -> AppM PartyDTO

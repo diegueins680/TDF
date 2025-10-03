@@ -45,6 +45,7 @@ data PartyCreate = PartyCreate
   , cInstagram        :: Maybe Text
   , cEmergencyContact :: Maybe Text
   , cNotes            :: Maybe Text
+  , cRoles            :: Maybe [RoleEnum]
   } deriving (Show, Generic)
 instance FromJSON PartyCreate
 
