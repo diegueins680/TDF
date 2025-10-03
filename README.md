@@ -2,12 +2,6 @@
 
 A minimal, type-safe skeleton for TDF's internal app: CRM, Scheduling, Packages, Invoicing & Inventory.
 
-> **zsh tip:** In interactive zsh, `#` is **not** a comment unless `setopt interactivecomments` is enabled. Either enable it once:
-> ```bash
-> echo 'setopt interactivecomments' >> ~/.zshrc && source ~/.zshrc
-> ```
-> or simply **do not paste lines that start with `#`**.
-
 ## Prereqs
 
 - PostgreSQL 16 (local) OR Docker (optional).
@@ -39,3 +33,18 @@ curl -X POST http://localhost:8080/admin/seed
 ```
 
 Server starts on `http://localhost:8080`.
+
+## Docker Compose (Postgres + App)
+
+Build and run both services:
+
+```bash
+make up       # builds the image and starts Postgres + app
+make logs     # follow combined logs
+make health   # check /health endpoint
+make seed     # seed demo data (uses admin-token)
+make down     # stop services (keep volumes)
+make clean    # stop and remove volumes
+```
+
+Compose sets DB env for the app; the server listens on `localhost:8080`.

@@ -2,10 +2,12 @@
 module TDF.Seed where
 
 import           Control.Monad.IO.Class (liftIO)
+import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy)
 import           Database.Persist
 import           Database.Persist.Sql
 import           Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import           Data.Time (UTCTime, getCurrentTime)
 import           TDF.Models
 
@@ -69,23 +71,30 @@ seedAll = do
   mapM_ (\a -> insertUnique (Asset Nothing a "Instrument" Nothing Nothing Nothing Nothing (Just "Studio") Nothing False Nothing True) >> pure ()) assets
 
   -- Staff accounts + API tokens for authentication examples
-  _ <- ensureStaff now "TDF Admin" (Just "TDF Admin") Admin "admin-token"
-  _ <- ensureStaff now "Front Desk Manager" Nothing Manager "manager-token"
-  _ <- ensureStaff now "Reception" Nothing Reception "reception-token"
-  _ <- ensureStaff now "Accounting" Nothing Accounting "accounting-token"
-  _ <- ensureStaff now "Scheduling" Nothing Engineer "scheduling-token"
-  _ <- ensureStaff now "Packages" Nothing Customer "packages-token"
+  let staffAccounts =
+        [ ("TDF Admin", Just "TDF Admin", Admin, "admin-token", "admin", "password123")
+        , ("Front Desk Manager", Nothing, Manager, "manager-token", "manager", "password123")
+        , ("Reception", Nothing, Reception, "reception-token", "reception", "password123")
+        , ("Accounting", Nothing, Accounting, "accounting-token", "accounting", "password123")
+        , ("Scheduling", Nothing, Engineer, "scheduling-token", "scheduling", "password123")
+        , ("Packages", Nothing, Customer, "packages-token", "packages", "password123")
+        ]
+  mapM_ (\(disp, mlegal, role, token, uname, pwd) -> do
+           _ <- ensureStaff now disp mlegal role token uname pwd
+           pure ()
+        ) staffAccounts
 
   pure ()
 
 slugify :: Text -> Text
 slugify = T.toLower . T.replace " " "-"
 
-ensureStaff :: UTCTime -> Text -> Maybe Text -> RoleEnum -> Text -> SqlPersistT IO (Key Party)
-ensureStaff now name mlegal role token = do
+ensureStaff :: UTCTime -> Text -> Maybe Text -> RoleEnum -> Text -> Text -> Text -> SqlPersistT IO (Key Party)
+ensureStaff now name mlegal role token uname pwd = do
   pid <- ensurePartyRecord now name mlegal
   _ <- upsert (PartyRole pid role True) [PartyRoleActive =. True]
   upsertToken token pid (Just (roleLabel role))
+  ensureCredential pid uname pwd
   pure pid
 
 ensurePartyRecord :: UTCTime -> Text -> Maybe Text -> SqlPersistT IO (Key Party)
@@ -103,6 +112,23 @@ upsertToken token pid label = do
     Nothing -> do
       _ <- insert $ ApiToken token pid label True
       pure ()
+
+ensureCredential :: PartyId -> Text -> Text -> SqlPersistT IO ()
+ensureCredential pid uname pwd = do
+  hashed <- liftIO (hashPasswordText pwd)
+  _ <- upsert (UserCredential pid uname hashed True)
+         [ UserCredentialPasswordHash =. hashed
+         , UserCredentialActive =. True
+         ]
+  pure ()
+
+hashPasswordText :: Text -> IO Text
+hashPasswordText pwd = do
+  let raw = TE.encodeUtf8 pwd
+  mHash <- hashPasswordUsingPolicy slowerBcryptHashingPolicy raw
+  case mHash of
+    Nothing   -> fail "Failed to hash password"
+    Just hash -> pure (TE.decodeUtf8 hash)
 
 roleLabel :: RoleEnum -> Text
 roleLabel = T.pack . show

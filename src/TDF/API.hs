@@ -42,6 +42,8 @@ type AdminAPI =
 
 type HealthAPI = Get '[JSON] HealthStatus
 
+type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
+
 type ProtectedAPI =
        "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
@@ -51,6 +53,7 @@ type ProtectedAPI =
 
 type API =
        "health" :> HealthAPI
+  :<|> "login"  :> LoginAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }

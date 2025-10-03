@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,17 +8,22 @@
 
 module TDF.Server where
 
+import           Control.Monad (void)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
+import           Crypto.BCrypt (validatePassword)
 import           Data.Int (Int64)
-import           Data.Time (getCurrentTime, UTCTime, Day, utctDay)
+import qualified Data.Set as Set
+import           Data.Time (getCurrentTime, utctDay)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Data.UUID (toText)
+import           Data.UUID.V4 (nextRandom)
 import           Text.Read (readMaybe)
 
 import           Servant
-import           Network.Wai (Application, Request)
+import           Network.Wai (Request)
 import qualified Data.ByteString.Lazy as BL
 import           Servant.Server.Experimental.Auth (AuthHandler)
 
@@ -30,7 +36,7 @@ import           TDF.DB
 import           TDF.Models
 import           TDF.DTO
 import           TDF.Seed (seedAll)
-import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName)
+import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 
 type AppM = ReaderT Env Handler
 
@@ -47,6 +53,7 @@ nt env x = runReaderT x env
 server :: ServerT API AppM
 server =
        health
+  :<|> login
   :<|> protectedServer
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
@@ -60,6 +67,52 @@ protectedServer user =
 -- Health
 health :: AppM TDF.API.HealthStatus
 health = pure (HealthStatus "ok" "ok")
+
+login :: LoginRequest -> AppM LoginResponse
+login LoginRequest{..} = do
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool (runLogin username password)
+  case result of
+    Left msg  -> throwAuthError msg
+    Right res -> pure res
+  where
+    throwAuthError msg = throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+
+runLogin :: Text -> Text -> SqlPersistT IO (Either Text LoginResponse)
+runLogin uname pwd = do
+  mCred <- getBy (UniqueCredentialUsername uname)
+  case mCred of
+    Nothing -> pure (Left invalidMsg)
+    Just (Entity _ cred)
+      | not (userCredentialActive cred) -> pure (Left "Account disabled")
+      | otherwise ->
+          if validatePassword (TE.encodeUtf8 (userCredentialPasswordHash cred)) (TE.encodeUtf8 pwd)
+            then do
+              token <- createSessionToken (userCredentialPartyId cred) uname
+              mUser  <- loadAuthedUser token
+              case mUser of
+                Nothing    -> pure (Left "Failed to load user profile")
+                Just user  -> pure (Right (toLoginResponse token user))
+            else pure (Left invalidMsg)
+  where
+    invalidMsg = "Invalid username or password"
+
+toLoginResponse :: Text -> AuthedUser -> LoginResponse
+toLoginResponse token AuthedUser{..} = LoginResponse
+  { token   = token
+  , partyId = fromSqlKey auPartyId
+  , roles   = auRoles
+  , modules = map moduleName (Set.toList auModules)
+  }
+
+createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
+createSessionToken pid uname = do
+  token <- liftIO (toText <$> nextRandom)
+  let label = Just ("password-login:" <> uname)
+  inserted <- insertUnique (ApiToken token pid label True)
+  case inserted of
+    Nothing -> createSessionToken pid uname
+    Just _  -> pure token
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
@@ -136,7 +189,7 @@ addRole user pidI roleTxt = do
   Env pool _ <- ask
   let pid  = toSqlKey pidI :: Key Party
       role = parseRole roleTxt
-  liftIO $ flip runSqlPool pool $ upsert
+  liftIO $ flip runSqlPool pool $ void $ upsert
     (PartyRole pid role True)
     [ PartyRoleActive =. True ]
   pure NoContent

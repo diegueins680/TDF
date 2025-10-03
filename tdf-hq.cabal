@@ -51,3 +51,5 @@ executable tdf-hq-exe
     , safe-exceptions
     , base64-bytestring
     , directory
+    , bcrypt
+    , uuid

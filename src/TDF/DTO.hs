@@ -119,3 +119,18 @@ data InvoiceDTO = InvoiceDTO
   , totalC       :: Int
   } deriving (Show, Generic)
 instance ToJSON InvoiceDTO
+
+-- Auth
+data LoginRequest = LoginRequest
+  { username :: Text
+  , password :: Text
+  } deriving (Show, Generic)
+instance FromJSON LoginRequest
+
+data LoginResponse = LoginResponse
+  { token   :: Text
+  , partyId :: Int64
+  , roles   :: [RoleEnum]
+  , modules :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON LoginResponse

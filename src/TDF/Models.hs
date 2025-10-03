@@ -107,6 +107,13 @@ ApiToken
     active           Bool
     UniqueApiToken   token
     deriving Show Generic
+UserCredential
+    partyId          PartyId
+    username         Text
+    passwordHash     Text
+    active           Bool
+    UniqueCredentialUsername username
+    deriving Show Generic
 Party
     legalName        Text Maybe
     displayName      Text
