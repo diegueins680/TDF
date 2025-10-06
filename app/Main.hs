@@ -70,11 +70,15 @@ main = do
       convertBandMembers
       rawExecute "ALTER TABLE band ALTER COLUMN party_id SET NOT NULL" []
       rawExecute "ALTER TABLE band_member ALTER COLUMN party_id SET NOT NULL" []
-      rawExecute "ALTER TABLE band ADD CONSTRAINT IF NOT EXISTS unique_band_party UNIQUE (party_id)" []
       rawExecute "ALTER TABLE band_member DROP CONSTRAINT IF EXISTS unique_band_member" []
-      rawExecute "ALTER TABLE band_member ADD CONSTRAINT IF NOT EXISTS unique_band_member UNIQUE (band_id, party_id)" []
-      rawExecute "ALTER TABLE band ADD CONSTRAINT IF NOT EXISTS band_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE" []
-      rawExecute "ALTER TABLE band_member ADD CONSTRAINT IF NOT EXISTS band_member_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE" []
+      ensureConstraint "band" "unique_band_party"
+        "ALTER TABLE band ADD CONSTRAINT unique_band_party UNIQUE (party_id)"
+      ensureConstraint "band_member" "unique_band_member"
+        "ALTER TABLE band_member ADD CONSTRAINT unique_band_member UNIQUE (band_id, party_id)"
+      ensureConstraint "band" "band_party_id_fkey"
+        "ALTER TABLE band ADD CONSTRAINT band_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
+      ensureConstraint "band_member" "band_member_party_id_fkey"
+        "ALTER TABLE band_member ADD CONSTRAINT band_member_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
       hasPartyRef <- columnExists "band_member" "party_ref"
       when hasPartyRef $
         rawExecute "ALTER TABLE band_member DROP COLUMN party_ref" []
@@ -91,6 +95,18 @@ main = do
     columnExists table column = do
       let sql = "SELECT 1::INT FROM information_schema.columns WHERE table_name = ? AND column_name = ? LIMIT 1"
       res <- rawSql sql [PersistText table, PersistText column] :: SqlPersistT IO [Single Int]
+      pure (not (null res))
+
+    ensureConstraint :: T.Text -> T.Text -> T.Text -> SqlPersistT IO ()
+    ensureConstraint table constraint statement = do
+      exists <- constraintExists table constraint
+      unless exists $
+        rawExecute statement []
+
+    constraintExists :: T.Text -> T.Text -> SqlPersistT IO Bool
+    constraintExists table constraint = do
+      let sql = "SELECT 1::INT\n                 FROM pg_constraint c\n                 JOIN pg_class t ON c.conrelid = t.oid\n                 JOIN pg_namespace n ON t.relnamespace = n.oid\n                 WHERE t.relname = ? AND c.conname = ? LIMIT 1"
+      res <- rawSql sql [PersistText table, PersistText constraint] :: SqlPersistT IO [Single Int]
       pure (not (null res))
 
     convertBands :: SqlPersistT IO ()

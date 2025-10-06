@@ -215,7 +215,7 @@
 ? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSzlib-0.6.3.0-JUxGbqjsKXnBaLmHE8VeIG-ghc9.6.6.dylib
 : hash: 426972e67d2fb02c249a04b3793e14bf2adccd06d976b8e5ea0d380e6cfa7b77
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/app/Main.hs:
-  hash: 08c048b4d3539b5668db1dd840e47716cfe7044e03e9bbf7dcfafd3709836982
+  hash: 960c2a7c09bd8c1b93a395b49668152d107d581ea3ce2f80656dc16dfa572d5d
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
   hash: f0d1a4acdc611aee868a866a623990318e8615b5bf3da69b9eb1b75c1e10cc1f
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Admin.hs:
