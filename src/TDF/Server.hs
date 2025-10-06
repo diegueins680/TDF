@@ -36,8 +36,10 @@ import           TDF.API
 import           TDF.DB
 import           TDF.Models
 import           TDF.DTO
-import           TDF.Seed (seedAll)
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.ServerAdmin (adminServer)
+import           TDF.ServerExtra (bandsServer, inventoryServer, roomsServer, sessionsServer)
+import           TDF.ServerFuture (futureServer)
 
 type AppM = ReaderT Env Handler
 
@@ -64,6 +66,11 @@ protectedServer user =
   :<|> packageServer user
   :<|> invoiceServer user
   :<|> adminServer user
+  :<|> inventoryServer user
+  :<|> bandsServer user
+  :<|> sessionsServer user
+  :<|> roomsServer user
+  :<|> futureServer
 
 -- Health
 health :: AppM TDF.API.HealthStatus
@@ -350,17 +357,6 @@ createInvoice user req = do
     , taxC      = invoiceTaxCents inv
     , totalC    = invoiceTotalCents inv
     }
-
--- Admin (temporary)
-adminServer :: AuthedUser -> ServerT AdminAPI AppM
-adminServer user = seedHandler user
-
-seedHandler :: AuthedUser -> AppM NoContent
-seedHandler user = do
-  requireModule user ModuleAdmin
-  Env pool _ <- ask
-  liftIO $ flip runSqlPool pool seedAll
-  pure NoContent
 
 requireModule :: AuthedUser -> ModuleAccess -> AppM ()
 requireModule user moduleTag

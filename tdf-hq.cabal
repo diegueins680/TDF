@@ -11,14 +11,25 @@ executable tdf-hq-exe
   main-is:          Main.hs
   hs-source-dirs:   app, src
   other-modules:
+    TDF.API.Admin
     TDF.API
+    TDF.API.Bands
+    TDF.API.Future
+    TDF.API.Inventory
+    TDF.API.Rooms
+    TDF.API.Sessions
+    TDF.API.Types
+    TDF.Auth
     TDF.Config
     TDF.DB
     TDF.DTO
-    TDF.Auth
     TDF.Models
+    TDF.ModelsExtra
     TDF.Seed
     TDF.Server
+    TDF.ServerAdmin
+    TDF.ServerExtra
+    TDF.ServerFuture
   default-language: Haskell2010
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:
@@ -52,4 +63,5 @@ executable tdf-hq-exe
     , base64-bytestring
     , directory
     , bcrypt
+    , path-pieces
     , uuid

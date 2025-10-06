@@ -7,13 +7,18 @@
 module TDF.API where
 
 import           Servant
-import           Servant.API.Experimental.Auth (AuthProtect)
 import           Data.Int (Int64)
 import           Data.Text (Text)
-import           Data.Time (UTCTime, Day)
+import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
 import           Data.Aeson (ToJSON(..), FromJSON(..), object, (.=))
 
+import           TDF.API.Admin     (AdminAPI)
+import           TDF.API.Future    (FutureAPI)
+import           TDF.API.Bands     (BandsAPI)
+import           TDF.API.Inventory (InventoryAPI)
+import           TDF.API.Rooms     (RoomsAPI)
+import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.DTO
 
 type PartyAPI =
@@ -37,9 +42,6 @@ type InvoiceAPI =
        Get '[JSON] [InvoiceDTO]
   :<|> ReqBody '[JSON] CreateInvoiceReq :> Post '[JSON] InvoiceDTO
 
-type AdminAPI =
-       "seed" :> Post '[JSON] NoContent
-
 type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
@@ -50,6 +52,11 @@ type ProtectedAPI =
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
   :<|> "admin"    :> AdminAPI
+  :<|> InventoryAPI
+  :<|> BandsAPI
+  :<|> SessionsAPI
+  :<|> RoomsAPI
+  :<|> "stubs"    :> FutureAPI
 
 type API =
        "health" :> HealthAPI

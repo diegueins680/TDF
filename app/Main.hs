@@ -1,40 +1,204 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
+import           Control.Monad            (forM_, unless, when)
+import           Control.Monad.IO.Class   (liftIO)
 import qualified Network.Wai.Handler.Warp as Warp
-import           Data.ByteString.Char8 (pack)
-import           Database.Persist.Sql (runSqlPool, runMigration)
+import           Data.ByteString.Char8    (pack)
+import qualified Data.Text                as T
+import           Data.Time                (UTCTime, getCurrentTime)
+import           Database.Persist         (Entity(..), get, insert, selectFirst, (==.))
+import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, rawExecute, rawSql,
+                                           runMigration, runSqlPool, toSqlKey, unSingle)
+import           Text.Read                (readMaybe)
 
 -- NEW: CORS middleware
 import           Network.Wai.Middleware.Cors
                  ( cors
                  , simpleCorsResourcePolicy
                  , CorsResourcePolicy(..)
+                 , simpleHeaders
                  )
 
-import           TDF.Config (loadConfig, dbConnString, appPort)
-import           TDF.DB     (makePool, Env(..))
-import           TDF.Models (migrateAll)
-import           TDF.Server (mkApp)
+import           TDF.Config     (appPort, dbConnString, loadConfig)
+import           TDF.DB         (Env(..), makePool)
+import           TDF.Models
+import           TDF.ModelsExtra (migrateExtra)
+import           TDF.Server     (mkApp)
 
 main :: IO ()
 main = do
   cfg  <- loadConfig
   pool <- makePool (pack (dbConnString cfg))
   putStrLn "Running DB migrations..."
-  runSqlPool (runMigration migrateAll) pool
+  runSqlPool migrationSteps pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
   -- Permissive CORS for development (tighten in production)
-  -- - Allows any Origin (leave 'corsOrigins = Nothing')
-  -- - Allows common methods & headers
-  let corsPolicy =
+  -- - Explicitly allow local frontend origins so credentials work when needed.
+  -- - Keep default simple headers and add Authorization for authenticated calls.
+  let allowedOrigins =
+        [ "http://localhost:5173"
+        , "http://127.0.0.1:5173"
+        , "http://localhost:4173"
+        , "http://127.0.0.1:4173"
+        , "http://localhost:3000"
+        , "http://127.0.0.1:3000"
+        ]
+      corsPolicy =
         simpleCorsResourcePolicy
-          { corsRequestHeaders = ["Content-Type", "Authorization"]
+          { corsRequestHeaders = "Authorization" : simpleHeaders
           , corsMethods        = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"]
-          -- To restrict in prod, set a whitelist like:
-          -- , corsOrigins = Just (["https://your-frontend.example"], True)
+          , corsOrigins        = Just (allowedOrigins, True)
+          -- To restrict in prod, overwrite 'allowedOrigins' with trusted hosts.
           }
       app = mkApp Env{ envPool = pool, envConfig = cfg }
 
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
+  where
+    migrationSteps = do
+      runMigration migrateAll
+      rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
+      upgradeBandsToParties
+      runMigration migrateExtra
+
+    upgradeBandsToParties :: SqlPersistT IO ()
+    upgradeBandsToParties = do
+      ensureColumn "band" "party_id" "BIGINT"
+      ensureColumn "band_member" "party_id" "BIGINT"
+      convertBands
+      convertBandMembers
+      rawExecute "ALTER TABLE band ALTER COLUMN party_id SET NOT NULL" []
+      rawExecute "ALTER TABLE band_member ALTER COLUMN party_id SET NOT NULL" []
+      rawExecute "ALTER TABLE band ADD CONSTRAINT IF NOT EXISTS unique_band_party UNIQUE (party_id)" []
+      rawExecute "ALTER TABLE band_member DROP CONSTRAINT IF EXISTS unique_band_member" []
+      rawExecute "ALTER TABLE band_member ADD CONSTRAINT IF NOT EXISTS unique_band_member UNIQUE (band_id, party_id)" []
+      rawExecute "ALTER TABLE band ADD CONSTRAINT IF NOT EXISTS band_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE" []
+      rawExecute "ALTER TABLE band_member ADD CONSTRAINT IF NOT EXISTS band_member_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE" []
+      hasPartyRef <- columnExists "band_member" "party_ref"
+      when hasPartyRef $
+        rawExecute "ALTER TABLE band_member DROP COLUMN party_ref" []
+
+    ensureColumn :: T.Text -> T.Text -> T.Text -> SqlPersistT IO ()
+    ensureColumn table column columnType = do
+      exists <- columnExists table column
+      unless exists $
+        rawExecute (
+          "ALTER TABLE " <> table <> " ADD COLUMN " <> column <> " " <> columnType
+        ) []
+
+    columnExists :: T.Text -> T.Text -> SqlPersistT IO Bool
+    columnExists table column = do
+      let sql = "SELECT 1::INT FROM information_schema.columns WHERE table_name = ? AND column_name = ? LIMIT 1"
+      res <- rawSql sql [PersistText table, PersistText column] :: SqlPersistT IO [Single Int]
+      pure (not (null res))
+
+    convertBands :: SqlPersistT IO ()
+    convertBands = do
+      rows <- rawSql
+        "SELECT id::text, name, label_artist, primary_genre, home_city, photo_url, contract_flags\
+        \ FROM band WHERE party_id IS NULL"
+        [] :: SqlPersistT IO [( Single T.Text
+                               , Single T.Text
+                               , Single Bool
+                               , Single (Maybe T.Text)
+                               , Single (Maybe T.Text)
+                               , Single (Maybe T.Text)
+                               , Single (Maybe T.Text)
+                               )]
+      unless (null rows) $ do
+        now <- liftIO getCurrentTime
+        forM_ rows $ \(bandIdTxt, nameTxt, labelArtistTxt, genreTxt, homeCityTxt, photoTxt, flagsTxt) -> do
+          let bandId        = unSingle bandIdTxt
+              name          = unSingle nameTxt
+              isLabelArtist = unSingle labelArtistTxt
+              mGenre        = unSingle genreTxt
+              mHomeCity     = unSingle homeCityTxt
+              mPhoto        = unSingle photoTxt
+              mFlags        = unSingle flagsTxt
+          partyKey <- insert Party
+            { partyLegalName        = Nothing
+            , partyDisplayName      = name
+            , partyIsOrg            = True
+            , partyTaxId            = Nothing
+            , partyPrimaryEmail     = Nothing
+            , partyPrimaryPhone     = Nothing
+            , partyWhatsapp         = Nothing
+            , partyInstagram        = Nothing
+            , partyEmergencyContact = Nothing
+            , partyNotes            = Just (buildNote isLabelArtist mGenre mHomeCity mPhoto mFlags)
+            , partyCreatedAt        = now
+            }
+          rawExecute
+            "UPDATE band SET party_id = ? WHERE id = ?::uuid"
+            [PersistInt64 (fromSqlKey partyKey), PersistText bandId]
+
+    convertBandMembers :: SqlPersistT IO ()
+    convertBandMembers = do
+      hasPartyRef <- columnExists "band_member" "party_ref"
+      when hasPartyRef $ do
+        rows <- rawSql
+          "SELECT id::text, party_ref FROM band_member WHERE party_id IS NULL"
+          [] :: SqlPersistT IO [(Single T.Text, Single (Maybe T.Text))]
+        now <- liftIO getCurrentTime
+        forM_ rows $ \(memberIdTxt, refTxt) -> do
+          let memberId = unSingle memberIdTxt
+              mRef     = fmap T.strip (unSingle refTxt)
+          mKey <- resolvePartyRef now mRef
+          case mKey of
+            Nothing -> pure ()
+            Just partyKey ->
+              rawExecute
+                "UPDATE band_member SET party_id = ? WHERE id = ?::uuid"
+                [PersistInt64 (fromSqlKey partyKey), PersistText memberId]
+
+    resolvePartyRef :: UTCTime -> Maybe T.Text -> SqlPersistT IO (Maybe (Key Party))
+    resolvePartyRef _ Nothing = pure Nothing
+    resolvePartyRef now (Just refTxt)
+      | T.null refTxt = createAnonymousParty now "Band member"
+      | otherwise = case readMaybe (T.unpack refTxt) of
+          Just intId -> do
+            let partyKey = toSqlKey intId :: Key Party
+            existing <- get partyKey
+            case existing of
+              Just _  -> pure (Just partyKey)
+              Nothing -> createAnonymousParty now ("Migrated member " <> T.pack (show intId))
+          Nothing -> do
+            existing <- selectFirst [PartyDisplayName ==. refTxt] []
+            case existing of
+              Just (Entity key _) -> pure (Just key)
+              Nothing             -> createAnonymousParty now refTxt
+
+    createAnonymousParty :: UTCTime -> T.Text -> SqlPersistT IO (Maybe (Key Party))
+    createAnonymousParty now label = do
+      let name = if T.null (T.strip label) then "Migrated Band Member" else label
+      mExisting <- selectFirst [PartyDisplayName ==. name] []
+      case mExisting of
+        Just (Entity key _) -> pure (Just key)
+        Nothing -> do
+          key <- insert Party
+            { partyLegalName        = Nothing
+            , partyDisplayName      = name
+            , partyIsOrg            = False
+            , partyTaxId            = Nothing
+            , partyPrimaryEmail     = Nothing
+            , partyPrimaryPhone     = Nothing
+            , partyWhatsapp         = Nothing
+            , partyInstagram        = Nothing
+            , partyEmergencyContact = Nothing
+            , partyNotes            = Just "Migrated auto-generated party"
+            , partyCreatedAt        = now
+            }
+          pure (Just key)
+
+    buildNote :: Bool -> Maybe T.Text -> Maybe T.Text -> Maybe T.Text -> Maybe T.Text -> T.Text
+    buildNote isLabelArtist mGenre mHomeCity mPhoto mFlags = T.intercalate "; " . filter (not . T.null) $
+      [ if isLabelArtist then "Label artist" else "Independent"
+      , maybe "" ("Genre: " <>) (nonEmpty mGenre)
+      , maybe "" ("Home city: " <>) (nonEmpty mHomeCity)
+      , maybe "" ("Photo URL: " <>) (nonEmpty mPhoto)
+      , maybe "" ("Contract: " <>) (nonEmpty mFlags)
+      ]
+
+    nonEmpty :: Maybe T.Text -> Maybe T.Text
+    nonEmpty = maybe Nothing $ \val -> let trimmed = T.strip val in if T.null trimmed then Nothing else Just trimmed

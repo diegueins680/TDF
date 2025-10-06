@@ -133,19 +133,6 @@ PartyRole
     active           Bool
     UniquePartyRole  partyId role
     deriving Show Generic
-Band
-    name             Text
-    labelArtist      Bool
-    notes            Text Maybe
-    deriving Show Generic
-BandMember
-    bandId           BandId
-    partyId          PartyId
-    roleInBand       Text Maybe
-    startDate        Day Maybe
-    endDate          Day Maybe
-    UniqueBandMember bandId partyId
-    deriving Show Generic
 ServiceCatalog
     name             Text
     kind             ServiceKind
@@ -270,56 +257,6 @@ PaymentSplit
     paymentId        PaymentId
     payerId          PartyId
     amountCents      Int
-    deriving Show Generic
-Asset
-    sku              Text Maybe
-    name             Text
-    category         Text
-    serialNumber     Text Maybe
-    purchaseDate     Day Maybe
-    purchaseVendor   Text Maybe
-    purchaseCostCents Int Maybe
-    location         Text Maybe
-    condition        Text Maybe
-    insured          Bool
-    insurancePolicy  Text Maybe
-    active           Bool
-    UniqueSerial     serialNumber !force
-    deriving Show Generic
-AssetCheckout
-    assetId          AssetId
-    bookingId        BookingId Maybe
-    partyId          PartyId Maybe
-    outAt            UTCTime
-    dueAt            UTCTime Maybe
-    inAt             UTCTime Maybe
-    notes            Text Maybe
-    deriving Show Generic
-MaintenanceTicket
-    assetId          AssetId
-    openedAt         UTCTime
-    status           TicketStatus
-    description      Text
-    costCents        Int Maybe
-    nextServiceAt    Day Maybe
-    deriving Show Generic
-StockItem
-    sku              Text
-    name             Text
-    unit             Text
-    minLevel         Int Maybe
-    reorderPoint     Int Maybe
-    vendor           Text Maybe
-    active           Bool
-    UniqueStockSku   sku
-    deriving Show Generic
-StockTxn
-    stockItemId      StockItemId
-    qty              Int
-    reason           StockTxnReason
-    costCents        Int Maybe
-    bookingId        BookingId Maybe
-    createdAt        UTCTime
     deriving Show Generic
 ExternalCalendarMapping
     resourceId       ResourceId

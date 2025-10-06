@@ -5,11 +5,14 @@ import           Control.Monad.IO.Class (liftIO)
 import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy)
 import           Database.Persist
 import           Database.Persist.Sql
+import           Data.Maybe (fromMaybe)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import           Data.Time (UTCTime, getCurrentTime)
 import           TDF.Models
+import           TDF.ModelsExtra (DropdownOption(..))
+import qualified TDF.ModelsExtra as ME
 
 -- Seed data from Diego's YAML (normalized)
 seedAll :: SqlPersistT IO ()
@@ -66,10 +69,6 @@ seedAll = do
   let rooms = ["Booth A","Booth B","Booth C","Booth D","Live Room","Control Room","Synth Room","Studio A","Studio B","Rehearsal 1","Classroom"]
   mapM_ (\r -> insertUnique (Resource r (slugify r) Room Nothing True) >> pure ()) rooms
 
-  -- Assets (gear)
-  let assets = ["Korg SV1","Prophet 08","Moog Subsequent 37","Gibson Ripper Bass","Model 1","SVT","Tone Hammer"]
-  mapM_ (\a -> insertUnique (Asset Nothing a "Instrument" Nothing Nothing Nothing Nothing (Just "Studio") Nothing False Nothing True) >> pure ()) assets
-
   -- Staff accounts + API tokens for authentication examples
   let staffAccounts =
         [ ("TDF Admin", Just "TDF Admin", Admin, "admin-token", "admin", "password123")
@@ -83,6 +82,20 @@ seedAll = do
            _ <- ensureStaff now disp mlegal role token uname pwd
            pure ()
         ) staffAccounts
+
+  -- Dropdown options for admin-managed metadata
+  let dropdowns =
+        [ ("band-role", "Singer", Nothing, Just 1)
+        , ("band-role", "Bassist", Nothing, Just 2)
+        , ("band-role", "Guitar Player", Nothing, Just 3)
+        , ("band-role", "Drummer", Nothing, Just 4)
+        , ("band-genre", "Rock", Nothing, Just 1)
+        , ("band-genre", "Pop", Nothing, Just 2)
+        , ("band-genre", "Jazz", Nothing, Just 3)
+        , ("band-genre", "Metal", Nothing, Just 4)
+        , ("band-genre", "Reggae", Nothing, Just 5)
+        ]
+  mapM_ (ensureDropdownOption now) dropdowns
 
   pure ()
 
@@ -132,3 +145,34 @@ hashPasswordText pwd = do
 
 roleLabel :: RoleEnum -> Text
 roleLabel = T.pack . show
+
+ensureDropdownOption
+  :: UTCTime
+  -> (Text, Text, Maybe Text, Maybe Int)
+  -> SqlPersistT IO ()
+ensureDropdownOption now (categoryKey, valueTxt, mLabel, sortOrder) = do
+  let labelValue = fromMaybe valueTxt mLabel
+  existing <- selectFirst
+    [ ME.DropdownOptionCategory ==. categoryKey
+    , ME.DropdownOptionValue ==. valueTxt
+    ]
+    []
+  case existing of
+    Just (Entity optionId _) ->
+      update optionId
+        [ ME.DropdownOptionLabel =. Just labelValue
+        , ME.DropdownOptionSortOrder =. sortOrder
+        , ME.DropdownOptionActive =. True
+        , ME.DropdownOptionUpdatedAt =. now
+        ]
+    Nothing -> do
+      _ <- insert DropdownOption
+        { dropdownOptionCategory  = categoryKey
+        , dropdownOptionValue     = valueTxt
+        , dropdownOptionLabel     = Just labelValue
+        , dropdownOptionActive    = True
+        , dropdownOptionSortOrder = sortOrder
+        , dropdownOptionCreatedAt = now
+        , dropdownOptionUpdatedAt = now
+        }
+      pure ()
