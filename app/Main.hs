@@ -96,26 +96,19 @@ main = do
     convertBands :: SqlPersistT IO ()
     convertBands = do
       rows <- rawSql
-        "SELECT id::text, name, label_artist, primary_genre, home_city, photo_url, contract_flags\
-        \ FROM band WHERE party_id IS NULL"
+        "SELECT id::text, name, label_artist, notes FROM band WHERE party_id IS NULL"
         [] :: SqlPersistT IO [( Single T.Text
                                , Single T.Text
                                , Single Bool
                                , Single (Maybe T.Text)
-                               , Single (Maybe T.Text)
-                               , Single (Maybe T.Text)
-                               , Single (Maybe T.Text)
                                )]
       unless (null rows) $ do
         now <- liftIO getCurrentTime
-        forM_ rows $ \(bandIdTxt, nameTxt, labelArtistTxt, genreTxt, homeCityTxt, photoTxt, flagsTxt) -> do
+        forM_ rows $ \(bandIdTxt, nameTxt, labelArtistTxt, notesTxt) -> do
           let bandId        = unSingle bandIdTxt
               name          = unSingle nameTxt
               isLabelArtist = unSingle labelArtistTxt
-              mGenre        = unSingle genreTxt
-              mHomeCity     = unSingle homeCityTxt
-              mPhoto        = unSingle photoTxt
-              mFlags        = unSingle flagsTxt
+              legacyNotes   = unSingle notesTxt
           partyKey <- insert Party
             { partyLegalName        = Nothing
             , partyDisplayName      = name
@@ -126,7 +119,7 @@ main = do
             , partyWhatsapp         = Nothing
             , partyInstagram        = Nothing
             , partyEmergencyContact = Nothing
-            , partyNotes            = Just (buildNote isLabelArtist mGenre mHomeCity mPhoto mFlags)
+            , partyNotes            = buildNote isLabelArtist legacyNotes
             , partyCreatedAt        = now
             }
           rawExecute
@@ -191,14 +184,12 @@ main = do
             }
           pure (Just key)
 
-    buildNote :: Bool -> Maybe T.Text -> Maybe T.Text -> Maybe T.Text -> Maybe T.Text -> T.Text
-    buildNote isLabelArtist mGenre mHomeCity mPhoto mFlags = T.intercalate "; " . filter (not . T.null) $
-      [ if isLabelArtist then "Label artist" else "Independent"
-      , maybe "" ("Genre: " <>) (nonEmpty mGenre)
-      , maybe "" ("Home city: " <>) (nonEmpty mHomeCity)
-      , maybe "" ("Photo URL: " <>) (nonEmpty mPhoto)
-      , maybe "" ("Contract: " <>) (nonEmpty mFlags)
-      ]
+    buildNote :: Bool -> Maybe T.Text -> Maybe T.Text
+    buildNote isLabelArtist legacyNotes =
+      let base = if isLabelArtist then "Label artist" else "Independent"
+      in case nonEmpty legacyNotes of
+           Nothing   -> Just base
+           Just note -> Just (base <> "; " <> note)
 
     nonEmpty :: Maybe T.Text -> Maybe T.Text
     nonEmpty = maybe Nothing $ \val -> let trimmed = T.strip val in if T.null trimmed then Nothing else Just trimmed
