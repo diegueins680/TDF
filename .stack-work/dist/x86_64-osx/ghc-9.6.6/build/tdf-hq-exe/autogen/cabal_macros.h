@@ -40,6 +40,16 @@
   (major1) == 1 && (major2) <  2 || \
   (major1) == 1 && (major2) == 2 && (minor) <= 1)
 #endif /* MIN_VERSION_base64_bytestring */
+/* package bcrypt-0.0.11 */
+#ifndef VERSION_bcrypt
+#define VERSION_bcrypt "0.0.11"
+#endif /* VERSION_bcrypt */
+#ifndef MIN_VERSION_bcrypt
+#define MIN_VERSION_bcrypt(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  0 || \
+  (major1) == 0 && (major2) == 0 && (minor) <= 11)
+#endif /* MIN_VERSION_bcrypt */
 /* package bytestring-0.11.5.3 */
 #ifndef VERSION_bytestring
 #define VERSION_bytestring "0.11.5.3"
@@ -120,6 +130,16 @@
   (major1) == 2 && (major2) <  3 || \
   (major1) == 2 && (major2) == 3 && (minor) <= 1)
 #endif /* MIN_VERSION_mtl */
+/* package path-pieces-0.2.1 */
+#ifndef VERSION_path_pieces
+#define VERSION_path_pieces "0.2.1"
+#endif /* VERSION_path_pieces */
+#ifndef MIN_VERSION_path_pieces
+#define MIN_VERSION_path_pieces(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  2 || \
+  (major1) == 0 && (major2) == 2 && (minor) <= 1)
+#endif /* MIN_VERSION_path_pieces */
 /* package persistent-2.14.6.1 */
 #ifndef VERSION_persistent
 #define VERSION_persistent "2.14.6.1"
@@ -250,6 +270,16 @@
   (major1) == 0 && (major2) <  2 || \
   (major1) == 0 && (major2) == 2 && (minor) <= 20)
 #endif /* MIN_VERSION_unordered_containers */
+/* package uuid-1.3.15 */
+#ifndef VERSION_uuid
+#define VERSION_uuid "1.3.15"
+#endif /* VERSION_uuid */
+#ifndef MIN_VERSION_uuid
+#define MIN_VERSION_uuid(major1,major2,minor) (\
+  (major1) <  1 || \
+  (major1) == 1 && (major2) <  3 || \
+  (major1) == 1 && (major2) == 3 && (minor) <= 15)
+#endif /* MIN_VERSION_uuid */
 /* package uuid-types-1.0.5.1 */
 #ifndef VERSION_uuid_types
 #define VERSION_uuid_types "1.0.5.1"
@@ -373,7 +403,7 @@
 #endif /* MIN_TOOL_VERSION_runghc */
 
 #ifndef CURRENT_COMPONENT_ID
-#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-8ODKnb9tw1U42UaiXsupn9-tdf-hq-exe"
+#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-LCvGOpP5TbE7jwFbbLTDTk-tdf-hq-exe"
 #endif /* CURRENT_COMPONENT_ID */
 #ifndef CURRENT_PACKAGE_VERSION
 #define CURRENT_PACKAGE_VERSION "0.1.0.0"

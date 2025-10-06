@@ -214,21 +214,45 @@
 : hash: 934f687739e33bf5089bafe9a50e36b056f14705e236be7c24c03d824d7d1d68
 ? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSzlib-0.6.3.0-JUxGbqjsKXnBaLmHE8VeIG-ghc9.6.6.dylib
 : hash: 426972e67d2fb02c249a04b3793e14bf2adccd06d976b8e5ea0d380e6cfa7b77
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/app/Main.hs:
-  hash: 908eb1050c7bbd19e692ab55a7acba07e87fd291d8e2b7c278121365af8e5d10
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
-  hash: ad27da01a804b9e4f1e3d32af268db254532fb920a8a9a84cfe7e3015abef867
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Config.hs:
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/app/Main.hs:
+  hash: 08c048b4d3539b5668db1dd840e47716cfe7044e03e9bbf7dcfafd3709836982
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
+  hash: f0d1a4acdc611aee868a866a623990318e8615b5bf3da69b9eb1b75c1e10cc1f
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Admin.hs:
+  hash: 0b07d53911ab56927e2b9b4e9d02b6e6e4c88c6eb25c5a4bc7907272272eca2b
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Bands.hs:
+  hash: e9128025195ecf714665296b19b61868115c438a92c6e1960350a54b516221c0
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Future.hs:
+  hash: 666b946cbe0d22f6d85ab93d8c30780f14a8b62c342a212abb4fdb4e56af0ec0
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Inventory.hs:
+  hash: 1423919020f934d5f4250bd924d2c7330f6572eb393f9ab343b71723b6ec88a9
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Rooms.hs:
+  hash: 990755847b78ed423eeed206d7685fcbf3db3c0d01e8b8c91f593b0a951ea933
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Sessions.hs:
+  hash: dc32edbbcb6e559dfed70a3cf8097c78fa6c19f42dff37e23526f6bd42f1c659
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Types.hs:
+  hash: df636ea7e17e602e521033ee421ae1cdaf377cd2079e546e248168a9558fb4ca
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Auth.hs:
+  hash: 8d1252a3690a560947d4442056e05a52d25f00780a05cff1d9522d57c568f50e
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Config.hs:
   hash: 76a4f386e6e2777ba4eaae5b90bac57a1d2eeb772188dafc11d9b31fa88b0dff
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/DB.hs:
-  hash: 60b089a5b613d3f41e5276602e440c7f2eda908827d53b9a60c54d4e79d40ce9
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/DTO.hs:
-  hash: 8e9129eab8cdc07e5d6f94feeecd786b56ae47986801d3f8c1eb0ba95efe7de7
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Models.hs:
-  hash: 224b881cfa37ef23961ab5c812fa7f3b120ef3fdb547e9957bb1d03d3d0f47d2
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Seed.hs:
-  hash: c4dfb43d37e695946f08106fc6ff0fae93c358d162a72c98fcca4603dc587770
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/src/TDF/Server.hs:
-  hash: f509adb5d5c48be87421a50f70ebbaadd6376dcb912b35e37e7b2b4addc72645
-/Users/diegosaa/Documents/GitHub/tdf-app/tdf-hq/tdf-hq.cabal:
-  hash: 96271dd769ea658d32fd6a6883551883948bac66561768bfa7fb4bde64883c9d
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/DB.hs:
+  hash: 4c9d3c02cac5f40229f366b55eadcaea07c7cf0aa463172d4194f38b40d374b2
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/DTO.hs:
+  hash: 74aa01eee6b07bbc16c66ae5e5d5f7f9a9c27551101bae164f618a5f93f7feb2
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Models.hs:
+  hash: af0ec30e6937f3cef156458692a71a723ec810ba40690ac82bc47d4fd7a33681
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ModelsExtra.hs:
+  hash: 5e0c9ad1cd55605d45b2f879342897f63f0ee511bb19916571bcd64232400048
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Seed.hs:
+  hash: 345a8ae2bb86cf7cbda865015911d99a58744c6134a723b64b0caae18a506c38
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Server.hs:
+  hash: 03064f702d85d6fcc455388ac5fd245093ffc34a08d53ce8ef4b79701a5e66d0
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerAdmin.hs:
+  hash: 58cf3f40d5328b573e5be0ed684a3e67018f08483a0349b0f50de0b15dbfd6be
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerExtra.hs:
+  hash: 125bd82689e15e3ce2bc5c1502f49fe12d79955329dd43157080eb989c4e4328
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerFuture.hs:
+  hash: d6647abdbefd98da2f7ea08c0e0c2af4fbcf52f0a5283e775c3f4de89521fd64
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/tdf-hq.cabal:
+  hash: c1b321bb9fd3a9063c1d556e050ea978e5ed871d4d5c941f562cc659ffdb4207
