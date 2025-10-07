@@ -214,10 +214,23 @@ main = do
     runSafeMigration :: Migration -> SqlPersistT IO ()
     runSafeMigration migration = do
       statements <- getMigration migration
-      forM_ (filter (not . isUnsafe) statements) $ \stmt -> rawExecute stmt []
+      let allowed = filter (not . isUnsafe) statements
+          skipped = length statements - length allowed
+      forM_ allowed $ \stmt -> rawExecute stmt []
+      unless (skipped == 0) $
+        liftIO $ putStrLn "Skipped legacy-incompatible migration statements"
 
     isUnsafe :: T.Text -> Bool
-    isUnsafe stmt = "DROP COLUMN" `T.isInfixOf` stmt
+    isUnsafe stmt =
+      any (`T.isInfixOf` stmt)
+        [ "DROP COLUMN"
+        , "\"asset\""
+        , "\"asset_checkout\""
+        , "\"maintenance_ticket\""
+        , "\"stock_item\""
+        , "\"room_default_gear\""
+        , "\"asset_kit_member\""
+        ]
 
     ensureLegacyTables :: SqlPersistT IO ()
     ensureLegacyTables = do
