@@ -106,13 +106,6 @@ Room
     UniqueRoomName name
     deriving Show Generic
 
-RoomDefaultGear
-    Id        UUID default=gen_random_uuid()
-    roomId    RoomId
-    assetId   AssetId
-    UniqueRoomDefaultGear roomId assetId
-    deriving Show Generic
-
 RoomFeature
     Id        UUID default=gen_random_uuid()
     roomId    RoomId
@@ -142,6 +135,13 @@ Asset
     nextMaintenanceDue   Day  Maybe
     UniqueAssetSerial serialNumber !force
     UniqueAssetQr     qrCode       !force
+    deriving Show Generic
+
+RoomDefaultGear
+    Id        UUID default=gen_random_uuid()
+    roomId    RoomId
+    assetId   AssetId
+    UniqueRoomDefaultGear roomId assetId
     deriving Show Generic
 
 AssetKitMember

@@ -65,6 +65,7 @@ main = do
     upgradeBandsToParties :: SqlPersistT IO ()
     upgradeBandsToParties = do
       dropLegacyTables
+      createModernTables
       ensureColumn "band" "party_id" "BIGINT"
       ensureColumn "band_member" "party_id" "BIGINT"
       convertBands
@@ -106,6 +107,9 @@ main = do
       let sql = "SELECT 1::INT\n                 FROM pg_constraint c\n                 JOIN pg_class t ON c.conrelid = t.oid\n                 JOIN pg_namespace n ON t.relnamespace = n.oid\n                 WHERE t.relname = ? AND c.conname = ? LIMIT 1"
       res <- rawSql sql [PersistText table, PersistText constraint] :: SqlPersistT IO [Single Int]
       pure (not (null res))
+
+    createModernTables :: SqlPersistT IO ()
+    createModernTables = pure () -- tables are created in the final runSafeMigration step
 
     convertBands :: SqlPersistT IO ()
     convertBands = do
@@ -218,7 +222,48 @@ main = do
         liftIO $ putStrLn "Skipped legacy-incompatible migration statements"
 
     isUnsafe :: T.Text -> Bool
-    isUnsafe stmt = "DROP COLUMN" `T.isInfixOf` stmt
+    isUnsafe stmt =
+      let upperStmt = T.toUpper stmt
+          touchesSensitive = any (`T.isInfixOf` upperStmt) sensitiveTablesUpper
+          hasDropKeyword = any (`T.isInfixOf` upperStmt) dropKeywords
+      in "DROP COLUMN" `T.isInfixOf` upperStmt
+         || (touchesSensitive && hasDropKeyword)
+
+    dropKeywords :: [T.Text]
+    dropKeywords =
+      [ "DROP TABLE"
+      , "DROP CONSTRAINT"
+      , "DROP INDEX"
+      , "DELETE FROM"
+      , "TRUNCATE"
+      ]
+
+    sensitiveTables :: [T.Text]
+    sensitiveTables =
+      [ "\"dropdown_option\""
+      , "\"room\""
+      , "\"room_default_gear\""
+      , "\"room_feature\""
+      , "\"asset\""
+      , "\"asset_kit_member\""
+      , "\"asset_checkout\""
+      , "\"asset_audit\""
+      , "\"maintenance_ticket\""
+      , "\"maintenance_attachment\""
+      , "\"stock_item\""
+      , "\"stock_movement\""
+      , "\"session\""
+      , "\"session_room\""
+      , "\"session_deliverable\""
+      , "\"input_list_template\""
+      , "\"input_list_template_row\""
+      , "\"input_list\""
+      , "\"input_list_version\""
+      , "\"input_row\""
+      ]
+
+    sensitiveTablesUpper :: [T.Text]
+    sensitiveTablesUpper = map T.toUpper sensitiveTables
 
     dropLegacyTables :: SqlPersistT IO ()
     dropLegacyTables = do
@@ -226,9 +271,9 @@ main = do
       rawExecute "DROP TABLE IF EXISTS room_feature CASCADE" []
       rawExecute "DROP TABLE IF EXISTS asset_kit_member CASCADE" []
       rawExecute "DROP TABLE IF EXISTS asset_checkout CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS asset CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS maintenance_ticket CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS stock_item CASCADE" []
       rawExecute "DROP TABLE IF EXISTS asset_audit CASCADE" []
       rawExecute "DROP TABLE IF EXISTS maintenance_attachment CASCADE" []
       rawExecute "DROP TABLE IF EXISTS stock_movement CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS asset CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS maintenance_ticket CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS stock_item CASCADE" []
