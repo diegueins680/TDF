@@ -230,6 +230,17 @@ main = do
         , "\"stock_item\""
         , "\"room_default_gear\""
         , "\"asset_kit_member\""
+        , "\"asset_audit\""
+        , "\"maintenance_attachment\""
+        , "\"stock_movement\""
+        , "\"session\""
+        , "\"session_room\""
+        , "\"session_deliverable\""
+        , "\"input_list\""
+        , "\"input_list_version\""
+        , "\"input_list_template\""
+        , "\"input_list_template_row\""
+        , "\"input_row\""
         ]
 
     ensureLegacyTables :: SqlPersistT IO ()
