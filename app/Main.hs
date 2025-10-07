@@ -64,11 +64,11 @@ main = do
 
     upgradeBandsToParties :: SqlPersistT IO ()
     upgradeBandsToParties = do
+      dropLegacyTables
       ensureColumn "band" "party_id" "BIGINT"
       ensureColumn "band_member" "party_id" "BIGINT"
       convertBands
       convertBandMembers
-      ensureLegacyTables
       rawExecute "ALTER TABLE band ALTER COLUMN party_id SET NOT NULL" []
       rawExecute "ALTER TABLE band_member ALTER COLUMN party_id SET NOT NULL" []
       rawExecute "ALTER TABLE band_member DROP CONSTRAINT IF EXISTS unique_band_member" []
@@ -80,9 +80,6 @@ main = do
         "ALTER TABLE band ADD CONSTRAINT band_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
       ensureConstraint "band_member" "band_member_party_id_fkey"
         "ALTER TABLE band_member ADD CONSTRAINT band_member_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
-      hasPartyRef <- columnExists "band_member" "party_ref"
-      when hasPartyRef $
-        rawExecute "ALTER TABLE band_member DROP COLUMN party_ref" []
 
     ensureColumn :: T.Text -> T.Text -> T.Text -> SqlPersistT IO ()
     ensureColumn table column columnType = do
@@ -221,40 +218,17 @@ main = do
         liftIO $ putStrLn "Skipped legacy-incompatible migration statements"
 
     isUnsafe :: T.Text -> Bool
-    isUnsafe stmt =
-      any (`T.isInfixOf` stmt)
-        [ "DROP COLUMN"
-        , "\"asset\""
-        , "\"asset_checkout\""
-        , "\"maintenance_ticket\""
-        , "\"stock_item\""
-        , "\"room_default_gear\""
-        , "\"asset_kit_member\""
-        , "\"asset_audit\""
-        , "\"maintenance_attachment\""
-        , "\"stock_movement\""
-        , "\"session\""
-        , "\"session_room\""
-        , "\"session_deliverable\""
-        , "\"input_list\""
-        , "\"input_list_version\""
-        , "\"input_list_template\""
-        , "\"input_list_template_row\""
-        , "\"input_row\""
-        ]
+    isUnsafe stmt = "DROP COLUMN" `T.isInfixOf` stmt
 
-    ensureLegacyTables :: SqlPersistT IO ()
-    ensureLegacyTables = do
-      rawExecute
-        "CREATE TABLE IF NOT EXISTS asset\n         ( id BIGSERIAL PRIMARY KEY\n         , sku TEXT NULL\n         , name TEXT NOT NULL\n         , category TEXT NOT NULL\n         , serial_number TEXT NULL\n         , purchase_date DATE NULL\n         , purchase_vendor TEXT NULL\n         , purchase_cost_cents INT NULL\n         , location TEXT NULL\n         , condition TEXT NULL\n         , insured BOOL NOT NULL DEFAULT false\n         , insurance_policy TEXT NULL\n         , active BOOL NOT NULL DEFAULT true\n         );"
-        []
-      rawExecute "CREATE UNIQUE INDEX IF NOT EXISTS unique_serial ON asset(serial_number)" []
-      rawExecute
-        "CREATE TABLE IF NOT EXISTS asset_checkout\n         ( id BIGSERIAL PRIMARY KEY\n         , asset_id BIGINT NOT NULL\n         , booking_id BIGINT NULL\n         , party_id BIGINT NULL\n         , out_at TIMESTAMPTZ NOT NULL DEFAULT now()\n         , due_at TIMESTAMPTZ NULL\n         , in_at TIMESTAMPTZ NULL\n         , notes TEXT NULL\n         );"
-        []
-      rawExecute
-        "CREATE TABLE IF NOT EXISTS maintenance_ticket\n         ( id BIGSERIAL PRIMARY KEY\n         , asset_id BIGINT NOT NULL\n         , opened_at TIMESTAMPTZ NOT NULL DEFAULT now()\n         , status TEXT NOT NULL\n         , description TEXT NOT NULL\n         , cost_cents INT NULL\n         , next_service_at DATE NULL\n         );"
-        []
-      rawExecute
-        "CREATE TABLE IF NOT EXISTS stock_item\n         ( id BIGSERIAL PRIMARY KEY\n         , sku TEXT NOT NULL\n         , name TEXT NOT NULL\n         , unit TEXT NOT NULL DEFAULT 'Pcs'\n         , min_level INT NULL\n         , reorder_point INT NULL\n         , vendor TEXT NULL\n         , active BOOL NOT NULL DEFAULT true\n         );"
-        []
+    dropLegacyTables :: SqlPersistT IO ()
+    dropLegacyTables = do
+      rawExecute "DROP TABLE IF EXISTS room_default_gear CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS room_feature CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS asset_kit_member CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS asset_checkout CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS asset CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS maintenance_ticket CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS stock_item CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS asset_audit CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS maintenance_attachment CASCADE" []
+      rawExecute "DROP TABLE IF EXISTS stock_movement CASCADE" []
