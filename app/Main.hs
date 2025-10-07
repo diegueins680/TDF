@@ -8,8 +8,9 @@ import           Data.ByteString.Char8    (pack)
 import qualified Data.Text                as T
 import           Data.Time                (UTCTime, getCurrentTime)
 import           Database.Persist         (Entity(..), get, insert, selectFirst, (==.))
-import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, rawExecute, rawSql,
-                                           runMigration, runSqlPool, toSqlKey, unSingle)
+import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, getMigration, rawExecute, rawSql,
+                                           runSqlPool, toSqlKey, unSingle, Migration)
+import           Data.List               (partition)
 import           Text.Read                (readMaybe)
 
 -- NEW: CORS middleware
@@ -57,10 +58,10 @@ main = do
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
   where
     migrationSteps = do
-      runMigration migrateAll
+      runSafeMigration migrateAll
       rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
       upgradeBandsToParties
-      runMigration migrateExtra
+      runSafeMigration migrateExtra
 
     upgradeBandsToParties :: SqlPersistT IO ()
     upgradeBandsToParties = do
@@ -209,3 +210,14 @@ main = do
 
     nonEmpty :: Maybe T.Text -> Maybe T.Text
     nonEmpty = maybe Nothing $ \val -> let trimmed = T.strip val in if T.null trimmed then Nothing else Just trimmed
+
+    runSafeMigration :: Migration -> SqlPersistT IO ()
+    runSafeMigration migration = do
+      statements <- getMigration migration
+      let (unsafe, safe) = partition isUnsafe statements
+      forM_ safe $ \stmt -> rawExecute stmt []
+      unless (null unsafe) $
+        liftIO $ putStrLn "Skipping drop-column statements; manual cleanup may be required."
+
+    isUnsafe :: T.Text -> Bool
+    isUnsafe stmt = "DROP COLUMN" `T.isInfixOf` stmt
