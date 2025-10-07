@@ -10,7 +10,6 @@ import           Data.Time                (UTCTime, getCurrentTime)
 import           Database.Persist         (Entity(..), get, insert, selectFirst, (==.))
 import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, getMigration, rawExecute, rawSql,
                                            runSqlPool, toSqlKey, unSingle, Migration)
-import           Data.List               (partition)
 import           Text.Read                (readMaybe)
 
 -- NEW: CORS middleware
@@ -69,6 +68,7 @@ main = do
       ensureColumn "band_member" "party_id" "BIGINT"
       convertBands
       convertBandMembers
+      ensureLegacyTables
       rawExecute "ALTER TABLE band ALTER COLUMN party_id SET NOT NULL" []
       rawExecute "ALTER TABLE band_member ALTER COLUMN party_id SET NOT NULL" []
       rawExecute "ALTER TABLE band_member DROP CONSTRAINT IF EXISTS unique_band_member" []
@@ -214,10 +214,23 @@ main = do
     runSafeMigration :: Migration -> SqlPersistT IO ()
     runSafeMigration migration = do
       statements <- getMigration migration
-      let (unsafe, safe) = partition isUnsafe statements
-      forM_ safe $ \stmt -> rawExecute stmt []
-      unless (null unsafe) $
-        liftIO $ putStrLn "Skipping drop-column statements; manual cleanup may be required."
+      forM_ (filter (not . isUnsafe) statements) $ \stmt -> rawExecute stmt []
 
     isUnsafe :: T.Text -> Bool
     isUnsafe stmt = "DROP COLUMN" `T.isInfixOf` stmt
+
+    ensureLegacyTables :: SqlPersistT IO ()
+    ensureLegacyTables = do
+      rawExecute
+        "CREATE TABLE IF NOT EXISTS asset\n         ( id BIGSERIAL PRIMARY KEY\n         , sku TEXT NULL\n         , name TEXT NOT NULL\n         , category TEXT NOT NULL\n         , serial_number TEXT NULL\n         , purchase_date DATE NULL\n         , purchase_vendor TEXT NULL\n         , purchase_cost_cents INT NULL\n         , location TEXT NULL\n         , condition TEXT NULL\n         , insured BOOL NOT NULL DEFAULT false\n         , insurance_policy TEXT NULL\n         , active BOOL NOT NULL DEFAULT true\n         );"
+        []
+      rawExecute "CREATE UNIQUE INDEX IF NOT EXISTS unique_serial ON asset(serial_number)" []
+      rawExecute
+        "CREATE TABLE IF NOT EXISTS asset_checkout\n         ( id BIGSERIAL PRIMARY KEY\n         , asset_id BIGINT NOT NULL\n         , booking_id BIGINT NULL\n         , party_id BIGINT NULL\n         , out_at TIMESTAMPTZ NOT NULL DEFAULT now()\n         , due_at TIMESTAMPTZ NULL\n         , in_at TIMESTAMPTZ NULL\n         , notes TEXT NULL\n         );"
+        []
+      rawExecute
+        "CREATE TABLE IF NOT EXISTS maintenance_ticket\n         ( id BIGSERIAL PRIMARY KEY\n         , asset_id BIGINT NOT NULL\n         , opened_at TIMESTAMPTZ NOT NULL DEFAULT now()\n         , status TEXT NOT NULL\n         , description TEXT NOT NULL\n         , cost_cents INT NULL\n         , next_service_at DATE NULL\n         );"
+        []
+      rawExecute
+        "CREATE TABLE IF NOT EXISTS stock_item\n         ( id BIGSERIAL PRIMARY KEY\n         , sku TEXT NOT NULL\n         , name TEXT NOT NULL\n         , unit TEXT NOT NULL DEFAULT 'Pcs'\n         , min_level INT NULL\n         , reorder_point INT NULL\n         , vendor TEXT NULL\n         , active BOOL NOT NULL DEFAULT true\n         );"
+        []
