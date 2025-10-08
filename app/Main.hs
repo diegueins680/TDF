@@ -229,8 +229,16 @@ main = do
       let upperStmt = T.toUpper stmt
           touchesSensitive = any (`T.isInfixOf` upperStmt) sensitiveTablesUpper
           hasDropKeyword = any (`T.isInfixOf` upperStmt) dropKeywords
+          altersBandId = "\"BAND\"" `T.isInfixOf` upperStmt
+                        && "ALTER COLUMN \"ID\"" `T.isInfixOf` upperStmt
+                        && "TYPE UUID" `T.isInfixOf` upperStmt
+          altersBandMemberId = "\"BAND_MEMBER\"" `T.isInfixOf` upperStmt
+                           && "ALTER COLUMN \"ID\"" `T.isInfixOf` upperStmt
+                           && "TYPE UUID" `T.isInfixOf` upperStmt
       in "DROP COLUMN" `T.isInfixOf` upperStmt
          || (touchesSensitive && hasDropKeyword)
+         || altersBandId
+         || altersBandMemberId
 
     dropKeywords :: [T.Text]
     dropKeywords =
