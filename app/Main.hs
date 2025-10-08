@@ -1,19 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Monad            (forM_, unless, when)
-import           Control.Monad.IO.Class   (liftIO)
 import qualified Network.Wai.Handler.Warp as Warp
 import           Data.ByteString.Char8    (pack)
-import qualified Data.Text                as T
-import           Data.Time                (UTCTime, getCurrentTime)
-import           Data.Maybe               (listToMaybe)
-import           Database.Persist         (Entity(..), get, insert, selectFirst, (==.))
-import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, getMigration, rawExecute, rawSql,
-                                           runMigration, runSqlPool, toSqlKey, unSingle, Migration)
-import           Text.Read                (readMaybe)
+import           Database.Persist.Sql     (SqlPersistT, rawExecute, runMigration, runSqlPool)
 
--- NEW: CORS middleware
 import           Network.Wai.Middleware.Cors
                  ( cors
                  , simpleCorsResourcePolicy
@@ -23,7 +14,7 @@ import           Network.Wai.Middleware.Cors
 
 import           TDF.Config     (appPort, dbConnString, loadConfig)
 import           TDF.DB         (Env(..), makePool)
-import           TDF.Models
+import           TDF.Models     (migrateAll)
 import           TDF.ModelsExtra (migrateExtra)
 import           TDF.Server     (mkApp)
 
@@ -31,14 +22,11 @@ main :: IO ()
 main = do
   cfg  <- loadConfig
   pool <- makePool (pack (dbConnString cfg))
-  freshInstall <- runSqlPool isFreshInstall pool
   putStrLn "Running DB migrations..."
-  runSqlPool (migrationSteps freshInstall) pool
+  runSqlPool initializeSchema pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
   -- Permissive CORS for development (tighten in production)
-  -- - Explicitly allow local frontend origins so credentials work when needed.
-  -- - Keep default simple headers and add Authorization for authenticated calls.
   let allowedOrigins =
         [ "http://localhost:5173"
         , "http://127.0.0.1:5173"
@@ -52,261 +40,13 @@ main = do
           { corsRequestHeaders = "Authorization" : simpleHeaders
           , corsMethods        = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"]
           , corsOrigins        = Just (allowedOrigins, True)
-          -- To restrict in prod, overwrite 'allowedOrigins' with trusted hosts.
           }
       app = mkApp Env{ envPool = pool, envConfig = cfg }
 
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
-  where
-    migrationSteps freshInstall = do
-      rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
-      if freshInstall
-        then do
-          runMigration migrateAll
-          runMigration migrateExtra
-        else do
-          runSafeMigration migrateAll
-          upgradeBandsToParties
-          runSafeMigration migrateExtra
 
-    isFreshInstall :: SqlPersistT IO Bool
-    isFreshInstall = not <$> tableExists "party"
-
-    upgradeBandsToParties :: SqlPersistT IO ()
-    upgradeBandsToParties = do
-      dropLegacyTables
-      createModernTables
-      ensureColumn "band" "party_id" "BIGINT"
-      ensureColumn "band_member" "party_id" "BIGINT"
-      convertBands
-      convertBandMembers
-      rawExecute "ALTER TABLE band ALTER COLUMN party_id SET NOT NULL" []
-      rawExecute "ALTER TABLE band_member ALTER COLUMN party_id SET NOT NULL" []
-      rawExecute "ALTER TABLE band_member DROP CONSTRAINT IF EXISTS unique_band_member" []
-      ensureConstraint "band" "unique_band_party"
-        "ALTER TABLE band ADD CONSTRAINT unique_band_party UNIQUE (party_id)"
-      ensureConstraint "band_member" "unique_band_member"
-        "ALTER TABLE band_member ADD CONSTRAINT unique_band_member UNIQUE (band_id, party_id)"
-      ensureConstraint "band" "band_party_id_fkey"
-        "ALTER TABLE band ADD CONSTRAINT band_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
-      ensureConstraint "band_member" "band_member_party_id_fkey"
-        "ALTER TABLE band_member ADD CONSTRAINT band_member_party_id_fkey FOREIGN KEY (party_id) REFERENCES party(id) ON DELETE CASCADE"
-
-    ensureColumn :: T.Text -> T.Text -> T.Text -> SqlPersistT IO ()
-    ensureColumn table column columnType = do
-      exists <- columnExists table column
-      unless exists $
-        rawExecute (
-          "ALTER TABLE " <> table <> " ADD COLUMN " <> column <> " " <> columnType
-        ) []
-
-    columnExists :: T.Text -> T.Text -> SqlPersistT IO Bool
-    columnExists table column = do
-      let sql = "SELECT 1::INT FROM information_schema.columns WHERE table_name = ? AND column_name = ? LIMIT 1"
-      res <- rawSql sql [PersistText table, PersistText column] :: SqlPersistT IO [Single Int]
-      pure (not (null res))
-
-    ensureConstraint :: T.Text -> T.Text -> T.Text -> SqlPersistT IO ()
-    ensureConstraint table constraint statement = do
-      exists <- constraintExists table constraint
-      unless exists $
-        rawExecute statement []
-
-    constraintExists :: T.Text -> T.Text -> SqlPersistT IO Bool
-    constraintExists table constraint = do
-      let sql = "SELECT 1::INT\n                 FROM pg_constraint c\n                 JOIN pg_class t ON c.conrelid = t.oid\n                 JOIN pg_namespace n ON t.relnamespace = n.oid\n                 WHERE t.relname = ? AND c.conname = ? LIMIT 1"
-      res <- rawSql sql [PersistText table, PersistText constraint] :: SqlPersistT IO [Single Int]
-      pure (not (null res))
-
-    tableExists :: T.Text -> SqlPersistT IO Bool
-    tableExists table = do
-      let sql = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?)"
-      res <- rawSql sql [PersistText table] :: SqlPersistT IO [Single Bool]
-      pure (maybe False unSingle (listToMaybe res))
-
-    createModernTables :: SqlPersistT IO ()
-    createModernTables = pure () -- tables are created in the final runSafeMigration step
-
-    convertBands :: SqlPersistT IO ()
-    convertBands = do
-      hasNotes <- columnExists "band" "notes"
-      let selectNotes
-            | hasNotes  = "notes"
-            | otherwise = "NULL::text AS notes"
-          sql = "SELECT id::text, name, label_artist, " <> selectNotes <> " FROM band WHERE party_id IS NULL"
-      rows <- rawSql sql [] :: SqlPersistT IO [( Single T.Text
-                                              , Single T.Text
-                                              , Single Bool
-                                              , Single (Maybe T.Text)
-                                              )]
-      unless (null rows) $ do
-        now <- liftIO getCurrentTime
-        forM_ rows $ \(bandIdTxt, nameTxt, labelArtistTxt, notesTxt) -> do
-          let bandId        = unSingle bandIdTxt
-              name          = unSingle nameTxt
-              isLabelArtist = unSingle labelArtistTxt
-              legacyNotes   = unSingle notesTxt
-          partyKey <- insert Party
-            { partyLegalName        = Nothing
-            , partyDisplayName      = name
-            , partyIsOrg            = True
-            , partyTaxId            = Nothing
-            , partyPrimaryEmail     = Nothing
-            , partyPrimaryPhone     = Nothing
-            , partyWhatsapp         = Nothing
-            , partyInstagram        = Nothing
-            , partyEmergencyContact = Nothing
-            , partyNotes            = buildNote isLabelArtist legacyNotes
-            , partyCreatedAt        = now
-            }
-          rawExecute
-            "UPDATE band SET party_id = ? WHERE id = ?::uuid"
-            [PersistInt64 (fromSqlKey partyKey), PersistText bandId]
-
-    convertBandMembers :: SqlPersistT IO ()
-    convertBandMembers = do
-      hasPartyRef <- columnExists "band_member" "party_ref"
-      when hasPartyRef $ do
-        rows <- rawSql
-          "SELECT id::text, party_ref FROM band_member WHERE party_id IS NULL"
-          [] :: SqlPersistT IO [(Single T.Text, Single (Maybe T.Text))]
-        now <- liftIO getCurrentTime
-        forM_ rows $ \(memberIdTxt, refTxt) -> do
-          let memberId = unSingle memberIdTxt
-              mRef     = fmap T.strip (unSingle refTxt)
-          mKey <- resolvePartyRef now mRef
-          case mKey of
-            Nothing -> pure ()
-            Just partyKey ->
-              rawExecute
-                "UPDATE band_member SET party_id = ? WHERE id = ?::uuid"
-                [PersistInt64 (fromSqlKey partyKey), PersistText memberId]
-
-    resolvePartyRef :: UTCTime -> Maybe T.Text -> SqlPersistT IO (Maybe (Key Party))
-    resolvePartyRef _ Nothing = pure Nothing
-    resolvePartyRef now (Just refTxt)
-      | T.null refTxt = createAnonymousParty now "Band member"
-      | otherwise = case readMaybe (T.unpack refTxt) of
-          Just intId -> do
-            let partyKey = toSqlKey intId :: Key Party
-            existing <- get partyKey
-            case existing of
-              Just _  -> pure (Just partyKey)
-              Nothing -> createAnonymousParty now ("Migrated member " <> T.pack (show intId))
-          Nothing -> do
-            existing <- selectFirst [PartyDisplayName ==. refTxt] []
-            case existing of
-              Just (Entity key _) -> pure (Just key)
-              Nothing             -> createAnonymousParty now refTxt
-
-    createAnonymousParty :: UTCTime -> T.Text -> SqlPersistT IO (Maybe (Key Party))
-    createAnonymousParty now label = do
-      let name = if T.null (T.strip label) then "Migrated Band Member" else label
-      mExisting <- selectFirst [PartyDisplayName ==. name] []
-      case mExisting of
-        Just (Entity key _) -> pure (Just key)
-        Nothing -> do
-          key <- insert Party
-            { partyLegalName        = Nothing
-            , partyDisplayName      = name
-            , partyIsOrg            = False
-            , partyTaxId            = Nothing
-            , partyPrimaryEmail     = Nothing
-            , partyPrimaryPhone     = Nothing
-            , partyWhatsapp         = Nothing
-            , partyInstagram        = Nothing
-            , partyEmergencyContact = Nothing
-            , partyNotes            = Just "Migrated auto-generated party"
-            , partyCreatedAt        = now
-            }
-          pure (Just key)
-
-    buildNote :: Bool -> Maybe T.Text -> Maybe T.Text
-    buildNote isLabelArtist legacyNotes =
-      let base = if isLabelArtist then "Label artist" else "Independent"
-      in case nonEmpty legacyNotes of
-           Nothing   -> Just base
-           Just note -> Just (base <> "; " <> note)
-
-    nonEmpty :: Maybe T.Text -> Maybe T.Text
-    nonEmpty = maybe Nothing $ \val -> let trimmed = T.strip val in if T.null trimmed then Nothing else Just trimmed
-
-    runSafeMigration :: Migration -> SqlPersistT IO ()
-    runSafeMigration migration = do
-      statements <- getMigration migration
-      let allowed = filter (not . isUnsafe) statements
-          skipped = length statements - length allowed
-      forM_ allowed $ \stmt -> rawExecute stmt []
-      unless (skipped == 0) $
-        liftIO $ putStrLn "Skipped legacy-incompatible migration statements"
-
-    isUnsafe :: T.Text -> Bool
-    isUnsafe stmt =
-      let upperStmt = T.toUpper stmt
-          touchesSensitive = any (`T.isInfixOf` upperStmt) sensitiveTablesUpper
-          hasDropKeyword = any (`T.isInfixOf` upperStmt) dropKeywords
-          altersBandId = tableAlterType upperStmt "\"BAND\"" "\"ID\""
-          altersBandMemberId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"ID\""
-          altersBandMemberBandId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"BAND_ID\""
-          altersSessionBandId = tableAlterType upperStmt "\"SESSION\"" "\"BAND_ID\""
-      in "DROP COLUMN" `T.isInfixOf` upperStmt
-         || (touchesSensitive && hasDropKeyword)
-         || altersBandId
-         || altersBandMemberId
-         || altersBandMemberBandId
-         || altersSessionBandId
-
-    dropKeywords :: [T.Text]
-    dropKeywords =
-      [ "DROP TABLE"
-      , "DROP CONSTRAINT"
-      , "DROP INDEX"
-      , "DELETE FROM"
-      , "TRUNCATE"
-      ]
-
-    sensitiveTables :: [T.Text]
-    sensitiveTables =
-      [ "\"dropdown_option\""
-      , "\"room\""
-      , "\"room_default_gear\""
-      , "\"room_feature\""
-      , "\"asset\""
-      , "\"asset_kit_member\""
-      , "\"asset_checkout\""
-      , "\"asset_audit\""
-      , "\"maintenance_ticket\""
-      , "\"maintenance_attachment\""
-      , "\"stock_item\""
-      , "\"stock_movement\""
-      , "\"session\""
-      , "\"session_room\""
-      , "\"session_deliverable\""
-      , "\"input_list_template\""
-      , "\"input_list_template_row\""
-      , "\"input_list\""
-      , "\"input_list_version\""
-      , "\"input_row\""
-      ]
-
-    sensitiveTablesUpper :: [T.Text]
-    sensitiveTablesUpper = map T.toUpper sensitiveTables
-
-    tableAlterType :: T.Text -> T.Text -> T.Text -> Bool
-    tableAlterType stmt tableName columnName =
-      tableName `T.isInfixOf` stmt
-      && ("ALTER COLUMN " <> columnName) `T.isInfixOf` stmt
-      && "TYPE UUID" `T.isInfixOf` stmt
-
-    dropLegacyTables :: SqlPersistT IO ()
-    dropLegacyTables = do
-      rawExecute "DROP TABLE IF EXISTS room_default_gear CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS room_feature CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS asset_kit_member CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS asset_checkout CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS asset_audit CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS maintenance_attachment CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS stock_movement CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS asset CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS maintenance_ticket CASCADE" []
-      rawExecute "DROP TABLE IF EXISTS stock_item CASCADE" []
+initializeSchema :: SqlPersistT IO ()
+initializeSchema = do
+  rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
+  runMigration migrateAll
+  runMigration migrateExtra
