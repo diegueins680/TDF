@@ -167,7 +167,6 @@ StockItem
     deriving Show Generic
 
 Band
-    Id           UUID default=gen_random_uuid()
     partyId      PartyId
     name         Text
     labelArtist  Bool default=False
@@ -180,7 +179,6 @@ Band
     deriving Show Generic
 
 BandMember
-    Id         UUID default=gen_random_uuid()
     bandId     BandId
     partyId    PartyId
     roleInBand Text Maybe
