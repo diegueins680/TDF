@@ -7,9 +7,10 @@ import qualified Network.Wai.Handler.Warp as Warp
 import           Data.ByteString.Char8    (pack)
 import qualified Data.Text                as T
 import           Data.Time                (UTCTime, getCurrentTime)
+import           Data.Maybe               (listToMaybe)
 import           Database.Persist         (Entity(..), get, insert, selectFirst, (==.))
 import           Database.Persist.Sql     (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, getMigration, rawExecute, rawSql,
-                                           runSqlPool, toSqlKey, unSingle, Migration)
+                                           runMigration, runSqlPool, toSqlKey, unSingle, Migration)
 import           Text.Read                (readMaybe)
 
 -- NEW: CORS middleware
@@ -30,8 +31,9 @@ main :: IO ()
 main = do
   cfg  <- loadConfig
   pool <- makePool (pack (dbConnString cfg))
+  freshInstall <- runSqlPool isFreshInstall pool
   putStrLn "Running DB migrations..."
-  runSqlPool migrationSteps pool
+  runSqlPool (migrationSteps freshInstall) pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
   -- Permissive CORS for development (tighten in production)
@@ -56,11 +58,19 @@ main = do
 
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
   where
-    migrationSteps = do
-      runSafeMigration migrateAll
+    migrationSteps freshInstall = do
       rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
-      upgradeBandsToParties
-      runSafeMigration migrateExtra
+      if freshInstall
+        then do
+          runMigration migrateAll
+          runMigration migrateExtra
+        else do
+          runSafeMigration migrateAll
+          upgradeBandsToParties
+          runSafeMigration migrateExtra
+
+    isFreshInstall :: SqlPersistT IO Bool
+    isFreshInstall = not <$> tableExists "party"
 
     upgradeBandsToParties :: SqlPersistT IO ()
     upgradeBandsToParties = do
@@ -107,6 +117,12 @@ main = do
       let sql = "SELECT 1::INT\n                 FROM pg_constraint c\n                 JOIN pg_class t ON c.conrelid = t.oid\n                 JOIN pg_namespace n ON t.relnamespace = n.oid\n                 WHERE t.relname = ? AND c.conname = ? LIMIT 1"
       res <- rawSql sql [PersistText table, PersistText constraint] :: SqlPersistT IO [Single Int]
       pure (not (null res))
+
+    tableExists :: T.Text -> SqlPersistT IO Bool
+    tableExists table = do
+      let sql = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?)"
+      res <- rawSql sql [PersistText table] :: SqlPersistT IO [Single Bool]
+      pure (maybe False unSingle (listToMaybe res))
 
     createModernTables :: SqlPersistT IO ()
     createModernTables = pure () -- tables are created in the final runSafeMigration step
