@@ -22,11 +22,12 @@ main :: IO ()
 main = do
   cfg  <- loadConfig
   pool <- makePool (pack (dbConnString cfg))
+  putStrLn "Resetting DB schema..."
+  runSqlPool resetSchema pool
   putStrLn "Running DB migrations..."
-  runSqlPool initializeSchema pool
+  runSqlPool runMigrations pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
-  -- Permissive CORS for development (tighten in production)
   let allowedOrigins =
         [ "http://localhost:5173"
         , "http://127.0.0.1:5173"
@@ -45,8 +46,16 @@ main = do
 
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
 
-initializeSchema :: SqlPersistT IO ()
-initializeSchema = do
+resetSchema :: SqlPersistT IO ()
+resetSchema = do
+  rawExecute "DROP EXTENSION IF EXISTS pgcrypto" []
+  rawExecute "DROP SCHEMA IF EXISTS public CASCADE" []
+  rawExecute "CREATE SCHEMA public" []
+  rawExecute "GRANT ALL ON SCHEMA public TO CURRENT_USER" []
+  rawExecute "GRANT ALL ON SCHEMA public TO public" []
+
+runMigrations :: SqlPersistT IO ()
+runMigrations = do
   rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
   runMigration migrateAll
   runMigration migrateExtra
