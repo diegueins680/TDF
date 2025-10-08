@@ -17,6 +17,7 @@ import           TDF.DB         (Env(..), makePool)
 import           TDF.Models     (migrateAll)
 import           TDF.ModelsExtra (migrateExtra)
 import           TDF.Server     (mkApp)
+import           TDF.Seed       (seedAll)
 
 main :: IO ()
 main = do
@@ -26,6 +27,8 @@ main = do
   runSqlPool resetSchema pool
   putStrLn "Running DB migrations..."
   runSqlPool runMigrations pool
+  putStrLn "Seeding initial data..."
+  runSqlPool seedAll pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
   let allowedOrigins =
