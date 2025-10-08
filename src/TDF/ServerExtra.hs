@@ -278,28 +278,6 @@ bandsServer user =
         , genres = map toOptionDTO genreOptions
         }
 
-    toBandDTO partyMap (Entity key band) members = BandDTO
-      { bandId         = toPathPiece key
-      , partyId        = fromSqlKey (bandPartyId band)
-      , bName          = maybe (bandName band) (partyDisplayName . entityVal) (Map.lookup (bandPartyId band) partyMap)
-      , bLabelArtist   = bandLabelArtist band
-      , bPrimaryGenre  = bandPrimaryGenre band
-      , bHomeCity      = bandHomeCity band
-      , bPhotoUrl      = bandPhotoUrl band
-      , bContractFlags = bandContractFlags band
-      , bMembers       = map (toMemberDTO partyMap) members
-      }
-
-    toMemberDTO partyMap (Entity memberKey member) = BandMemberDTO
-      { bmId         = toPathPiece memberKey
-      , bmPartyId    = fromSqlKey (bandMemberPartyId member)
-      , bmPartyName  = maybe
-          (T.pack . show $ fromSqlKey (bandMemberPartyId member))
-          (partyDisplayName . entityVal)
-          (Map.lookup (bandMemberPartyId member) partyMap)
-      , bmRole       = bandMemberRoleInBand member
-      }
-
     toOptionDTO (Entity optKey option) = DropdownOptionDTO
       { optionId  = toPathPiece optKey
       , category  = dropdownOptionCategory option
@@ -588,3 +566,51 @@ ensureModule
 ensureModule moduleTag user =
   unless (hasModuleAccess moduleTag user) $
     throwError err403 { errBody = "Missing required module access" }
+
+-- Shared helpers ----------------------------------------------------------
+
+toBandDTO
+  :: Map.Map (Key Party) (Entity Party)
+  -> Entity Band
+  -> [Entity BandMember]
+  -> BandDTO
+toBandDTO partyMap (Entity key band) members = BandDTO
+  { bandId         = toPathPiece key
+  , partyId        = fromSqlKey (bandPartyId band)
+  , bName          = maybe (bandName band) (partyDisplayName . entityVal) (Map.lookup (bandPartyId band) partyMap)
+  , bLabelArtist   = bandLabelArtist band
+  , bPrimaryGenre  = bandPrimaryGenre band
+  , bHomeCity      = bandHomeCity band
+  , bPhotoUrl      = bandPhotoUrl band
+  , bContractFlags = bandContractFlags band
+  , bMembers       = map (toMemberDTO partyMap) members
+  }
+  where
+    toMemberDTO pMap (Entity memberKey member) = BandMemberDTO
+      { bmId         = toPathPiece memberKey
+      , bmPartyId    = fromSqlKey (bandMemberPartyId member)
+      , bmPartyName  = maybe
+          (T.pack . show $ fromSqlKey (bandMemberPartyId member))
+          (partyDisplayName . entityVal)
+          (Map.lookup (bandMemberPartyId member) pMap)
+      , bmRole       = bandMemberRoleInBand member
+      }
+
+loadBandForParty
+  :: Key Party
+  -> SqlPersistT IO (Maybe BandDTO)
+loadBandForParty partyKey = do
+  mBand <- selectFirst [BandPartyId ==. partyKey] []
+  case mBand of
+    Nothing -> pure Nothing
+    Just bandEnt -> do
+      let bandKey = entityKey bandEnt
+      members <- selectList [BandMemberBandId ==. bandKey] [Asc BandMemberId]
+      let requiredPartyIds = Set.toList . Set.fromList
+            $ bandPartyId (entityVal bandEnt)
+            : map (bandMemberPartyId . entityVal) members
+      partyList <- if null requiredPartyIds
+        then pure []
+        else selectList [M.PartyId <-. requiredPartyIds] []
+      let partyMap = Map.fromList [ (entityKey p, p) | p <- partyList ]
+      pure (Just (toBandDTO partyMap bandEnt members))

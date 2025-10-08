@@ -38,7 +38,7 @@ import           TDF.Models
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.ServerAdmin (adminServer)
-import           TDF.ServerExtra (bandsServer, inventoryServer, roomsServer, sessionsServer)
+import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
 
 type AppM = ReaderT Env Handler
@@ -167,7 +167,9 @@ getParty user pidI = do
   mp <- liftIO $ flip runSqlPool pool $ getEntity pid
   case mp of
     Nothing -> throwError err404
-    Just ent -> pure (toPartyDTO ent)
+    Just ent -> do
+      bandDetails <- liftIO $ flip runSqlPool pool $ loadBandForParty (entityKey ent)
+      pure (toPartyDTOWithBand bandDetails ent)
 
 updateParty :: AuthedUser -> Int64 -> PartyUpdate -> AppM PartyDTO
 updateParty user pidI req = do

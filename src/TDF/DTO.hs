@@ -15,6 +15,7 @@ import           Database.Persist (Entity(..))
 import           Database.Persist.Sql (fromSqlKey)
 
 import           TDF.Models
+import           TDF.API.Types (BandDTO)
 
 -- Parties
 data PartyDTO = PartyDTO
@@ -29,6 +30,7 @@ data PartyDTO = PartyDTO
   , instagram        :: Maybe Text
   , emergencyContact :: Maybe Text
   , notes            :: Maybe Text
+  , band             :: Maybe BandDTO
   } deriving (Show, Generic)
 
 instance ToJSON PartyDTO
@@ -64,7 +66,10 @@ data PartyUpdate = PartyUpdate
 instance FromJSON PartyUpdate
 
 toPartyDTO :: Entity Party -> PartyDTO
-toPartyDTO (Entity pid p) = PartyDTO
+toPartyDTO = toPartyDTOWithBand Nothing
+
+toPartyDTOWithBand :: Maybe BandDTO -> Entity Party -> PartyDTO
+toPartyDTOWithBand mBand (Entity pid p) = PartyDTO
   { partyId          = fromSqlKey pid
   , legalName        = partyLegalName p
   , displayName      = partyDisplayName p
@@ -76,6 +81,7 @@ toPartyDTO (Entity pid p) = PartyDTO
   , instagram        = partyInstagram p
   , emergencyContact = partyEmergencyContact p
   , notes            = partyNotes p
+  , band             = mBand
   }
 
 -- Helper
