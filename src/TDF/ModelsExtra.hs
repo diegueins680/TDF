@@ -153,49 +153,6 @@ AssetKitMember
     deriving Show Generic
 
 -- Party/Booking references use free-text refs to avoid coupling to existing tables
-AssetCheckout
-    Id               UUID default=gen_random_uuid()
-    assetId          AssetId
-    targetKind       CheckoutTarget
-    targetSessionId  SessionId   Maybe
-    targetPartyRef   Text        Maybe
-    targetRoomId     RoomId      Maybe
-    checkedOutByRef  Text
-    checkedOutAt     UTCTime default=now()
-    dueAt            UTCTime Maybe
-    conditionOut     Text Maybe
-    photoDriveFileId Text Maybe
-    returnedAt       UTCTime Maybe
-    conditionIn      Text Maybe
-    notes            Text Maybe
-    deriving Show Generic
-
-AssetAudit
-    Id        UUID default=gen_random_uuid()
-    assetId   AssetId
-    at        UTCTime default=now()
-    event     Text
-    detail    Text Maybe
-    deriving Show Generic
-
-MaintenanceTicket
-    Id            UUID default=gen_random_uuid()
-    assetId       AssetId
-    status        Text
-    openedAt      UTCTime default=now()
-    closedAt      UTCTime Maybe
-    vendorPartyRef Text Maybe
-    summary       Text
-    details       Text Maybe
-    deriving Show Generic
-
-MaintenanceAttachment
-    Id          UUID default=gen_random_uuid()
-    ticketId    MaintenanceTicketId
-    driveFileId Text
-    label       Text Maybe
-    deriving Show Generic
-
 StockItem
     Id           UUID default=gen_random_uuid()
     name         Text
@@ -207,17 +164,6 @@ StockItem
     vendorPartyRef Text Maybe
     notes        Text Maybe
     UniqueStockSku sku
-    deriving Show Generic
-
-StockMovement
-    Id            UUID default=gen_random_uuid()
-    stockItemId   StockItemId
-    changeQty     Int
-    reason        StockMoveReason default='OtherMove'
-    at            UTCTime default=now()
-    refCheckoutId AssetCheckoutId Maybe
-    refSessionId  SessionId      Maybe
-    notes         Text Maybe
     deriving Show Generic
 
 Band
@@ -340,6 +286,61 @@ InputRow
     pad               Bool Maybe
     notes             Text Maybe
     UniqueRowPerChannel versionId channelNumber
+    deriving Show Generic
+
+-- Party/Booking references use free-text refs to avoid coupling to existing tables
+AssetCheckout
+    Id               UUID default=gen_random_uuid()
+    assetId          AssetId
+    targetKind       CheckoutTarget
+    targetSessionId  SessionId   Maybe
+    targetPartyRef   Text        Maybe
+    targetRoomId     RoomId      Maybe
+    checkedOutByRef  Text
+    checkedOutAt     UTCTime default=now()
+    dueAt            UTCTime Maybe
+    conditionOut     Text Maybe
+    photoDriveFileId Text Maybe
+    returnedAt       UTCTime Maybe
+    conditionIn      Text Maybe
+    notes            Text Maybe
+    deriving Show Generic
+
+AssetAudit
+    Id        UUID default=gen_random_uuid()
+    assetId   AssetId
+    at        UTCTime default=now()
+    event     Text
+    detail    Text Maybe
+    deriving Show Generic
+
+MaintenanceTicket
+    Id            UUID default=gen_random_uuid()
+    assetId       AssetId
+    status        Text
+    openedAt      UTCTime default=now()
+    closedAt      UTCTime Maybe
+    vendorPartyRef Text Maybe
+    summary       Text
+    details       Text Maybe
+    deriving Show Generic
+
+MaintenanceAttachment
+    Id          UUID default=gen_random_uuid()
+    ticketId    MaintenanceTicketId
+    driveFileId Text
+    label       Text Maybe
+    deriving Show Generic
+
+StockMovement
+    Id            UUID default=gen_random_uuid()
+    stockItemId   StockItemId
+    changeQty     Int
+    reason        StockMoveReason default='OtherMove'
+    at            UTCTime default=now()
+    refCheckoutId AssetCheckoutId Maybe
+    refSessionId  SessionId      Maybe
+    notes         Text Maybe
     deriving Show Generic
 
 |]
