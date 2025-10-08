@@ -113,13 +113,16 @@ main = do
 
     convertBands :: SqlPersistT IO ()
     convertBands = do
-      rows <- rawSql
-        "SELECT id::text, name, label_artist, notes FROM band WHERE party_id IS NULL"
-        [] :: SqlPersistT IO [( Single T.Text
-                               , Single T.Text
-                               , Single Bool
-                               , Single (Maybe T.Text)
-                               )]
+      hasNotes <- columnExists "band" "notes"
+      let selectNotes
+            | hasNotes  = "notes"
+            | otherwise = "NULL::text AS notes"
+          sql = "SELECT id::text, name, label_artist, " <> selectNotes <> " FROM band WHERE party_id IS NULL"
+      rows <- rawSql sql [] :: SqlPersistT IO [( Single T.Text
+                                              , Single T.Text
+                                              , Single Bool
+                                              , Single (Maybe T.Text)
+                                              )]
       unless (null rows) $ do
         now <- liftIO getCurrentTime
         forM_ rows $ \(bandIdTxt, nameTxt, labelArtistTxt, notesTxt) -> do
