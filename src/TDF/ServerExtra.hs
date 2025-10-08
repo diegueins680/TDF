@@ -319,9 +319,9 @@ sessionsServer
 sessionsServer user =
        listSessions
   :<|> createSessionH
+  :<|> sessionOptionsH
   :<|> getSessionH
   :<|> patchSessionH
-  :<|> sessionOptionsH
   where
     listSessions mp mps = do
       ensureModule ModuleScheduling user
