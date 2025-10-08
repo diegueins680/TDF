@@ -245,16 +245,14 @@ main = do
       let upperStmt = T.toUpper stmt
           touchesSensitive = any (`T.isInfixOf` upperStmt) sensitiveTablesUpper
           hasDropKeyword = any (`T.isInfixOf` upperStmt) dropKeywords
-          altersBandId = "\"BAND\"" `T.isInfixOf` upperStmt
-                        && "ALTER COLUMN \"ID\"" `T.isInfixOf` upperStmt
-                        && "TYPE UUID" `T.isInfixOf` upperStmt
-          altersBandMemberId = "\"BAND_MEMBER\"" `T.isInfixOf` upperStmt
-                           && "ALTER COLUMN \"ID\"" `T.isInfixOf` upperStmt
-                           && "TYPE UUID" `T.isInfixOf` upperStmt
+          altersBandId = tableAlterType upperStmt "\"BAND\"" "\"ID\""
+          altersBandMemberId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"ID\""
+          altersBandMemberBandId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"BAND_ID\""
       in "DROP COLUMN" `T.isInfixOf` upperStmt
          || (touchesSensitive && hasDropKeyword)
          || altersBandId
          || altersBandMemberId
+         || altersBandMemberBandId
 
     dropKeywords :: [T.Text]
     dropKeywords =
@@ -291,6 +289,12 @@ main = do
 
     sensitiveTablesUpper :: [T.Text]
     sensitiveTablesUpper = map T.toUpper sensitiveTables
+
+    tableAlterType :: T.Text -> T.Text -> T.Text -> Bool
+    tableAlterType stmt tableName columnName =
+      tableName `T.isInfixOf` stmt
+      && ("ALTER COLUMN " <> columnName) `T.isInfixOf` stmt
+      && "TYPE UUID" `T.isInfixOf` stmt
 
     dropLegacyTables :: SqlPersistT IO ()
     dropLegacyTables = do
