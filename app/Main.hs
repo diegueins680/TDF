@@ -248,11 +248,13 @@ main = do
           altersBandId = tableAlterType upperStmt "\"BAND\"" "\"ID\""
           altersBandMemberId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"ID\""
           altersBandMemberBandId = tableAlterType upperStmt "\"BAND_MEMBER\"" "\"BAND_ID\""
+          altersSessionBandId = tableAlterType upperStmt "\"SESSION\"" "\"BAND_ID\""
       in "DROP COLUMN" `T.isInfixOf` upperStmt
          || (touchesSensitive && hasDropKeyword)
          || altersBandId
          || altersBandMemberId
          || altersBandMemberBandId
+         || altersSessionBandId
 
     dropKeywords :: [T.Text]
     dropKeywords =
