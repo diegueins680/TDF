@@ -30,6 +30,11 @@ executable tdf-hq-exe
     TDF.ServerAdmin
     TDF.ServerExtra
     TDF.ServerFuture
+    TDF.Trials.API
+    TDF.Trials.DTO
+    TDF.Trials.Models
+    TDF.Trials.Seed
+    TDF.Trials.Server
   default-language: Haskell2010
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:

@@ -16,6 +16,7 @@ import           TDF.Config     (appPort, dbConnString, loadConfig)
 import           TDF.DB         (Env(..), makePool)
 import           TDF.Models     (migrateAll)
 import           TDF.ModelsExtra (migrateExtra)
+import           TDF.Trials.Models (migrateTrials)
 import           TDF.Server     (mkApp)
 import           TDF.Seed       (seedAll)
 
@@ -64,3 +65,4 @@ runMigrations = do
   rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
   runMigration migrateAll
   runMigration migrateExtra
+  runMigration migrateTrials

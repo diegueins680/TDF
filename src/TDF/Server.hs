@@ -40,15 +40,22 @@ import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasMod
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
+import           TDF.Trials.API (TrialsAPI)
+import           TDF.Trials.Server (trialsServer)
 
 type AppM = ReaderT Env Handler
+
+type CombinedAPI = TrialsAPI :<|> API
 
 mkApp :: Env -> Application
 mkApp env =
   let apiProxy = Proxy :: Proxy API
+      combinedProxy = Proxy :: Proxy CombinedAPI
       ctxProxy = Proxy :: Proxy '[AuthHandler Request AuthedUser]
       ctx      = authContext env
-  in serveWithContext apiProxy ctx (hoistServerWithContext apiProxy ctxProxy (nt env) server)
+      trials   = trialsServer (envPool env)
+      apiSrv   = hoistServerWithContext apiProxy ctxProxy (nt env) server
+  in serveWithContext combinedProxy ctx (trials :<|> apiSrv)
 
 nt :: Env -> AppM a -> Handler a
 nt env x = runReaderT x env
