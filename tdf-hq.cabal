@@ -54,6 +54,7 @@ executable tdf-hq-exe
     , servant              >=0.19
     , servant-server       >=0.19
     , http-types
+    , http-media
     , warp                 >=3.3
     , wai
     , wai-cors

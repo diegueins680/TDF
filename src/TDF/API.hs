@@ -19,15 +19,16 @@ import           TDF.API.Bands     (BandsAPI)
 import           TDF.API.Inventory (InventoryAPI)
 import           TDF.API.Rooms     (RoomsAPI)
 import           TDF.API.Sessions  (SessionsAPI)
+import           TDF.API.Types     (LooseJSON, RolePayload)
 import           TDF.DTO
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
   :<|> ReqBody '[JSON] PartyCreate :> Post '[JSON] PartyDTO
-  :<|> Capture "partyId" Int64 :> (
+      :<|> Capture "partyId" Int64 :> (
            Get '[JSON] PartyDTO
       :<|> ReqBody '[JSON] PartyUpdate :> Put '[JSON] PartyDTO
-      :<|> "roles" :> ReqBody '[JSON] Text :> Post '[JSON] NoContent
+      :<|> "roles" :> ReqBody '[LooseJSON, PlainText, OctetStream] RolePayload :> Post '[JSON] NoContent
       )
 
 type BookingAPI =

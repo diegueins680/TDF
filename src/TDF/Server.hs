@@ -33,6 +33,7 @@ import           Database.Persist.Sql
 import           Database.Persist.Postgresql ()
 
 import           TDF.API
+import           TDF.API.Types (RolePayload(..))
 import           TDF.DB
 import           TDF.Models
 import           TDF.DTO
@@ -203,8 +204,8 @@ updateParty user pidI req = do
         replace pid p'
   getParty user pidI
 
-addRole :: AuthedUser -> Int64 -> Text -> AppM NoContent
-addRole user pidI roleTxt = do
+addRole :: AuthedUser -> Int64 -> RolePayload -> AppM NoContent
+addRole user pidI (RolePayload roleTxt) = do
   requireModule user ModuleAdmin
   Env pool _ <- ask
   let pid  = toSqlKey pidI :: Key Party
@@ -215,7 +216,7 @@ addRole user pidI roleTxt = do
   pure NoContent
   where
     parseRole t =
-      case readMaybe (T.unpack t) of
+      case readMaybe (T.unpack (T.strip t)) of
         Just r  -> r
         Nothing -> ReadOnly
 

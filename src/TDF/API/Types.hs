@@ -2,14 +2,20 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module TDF.API.Types where
 
-import           Data.Aeson   (FromJSON(..), ToJSON(..), object, withObject, (.:), (.:?), (.=))
+import           Control.Applicative ((<|>))
+import           Data.Aeson   (FromJSON(..), ToJSON(..), Value(..), eitherDecode, object, withObject, (.:), (.:?), (.=))
 import           Data.Int     (Int64)
 import           Data.Text    (Text)
+import qualified Data.Text.Encoding as TE
+import qualified Data.ByteString.Lazy as BL
 import           Data.Time    (UTCTime)
 import           GHC.Generics (Generic)
+import           Network.HTTP.Media ((//))
+import           Servant.API  (Accept(..), MimeUnrender(..), OctetStream, PlainText)
 
 data Page a = Page
   { items    :: [a]
@@ -216,6 +222,33 @@ data SessionUpdate = SessionUpdate
 
 instance ToJSON SessionUpdate
 instance FromJSON SessionUpdate
+
+newtype RolePayload = RolePayload { rolePayloadValue :: Text }
+  deriving (Show, Generic)
+
+instance FromJSON RolePayload where
+  parseJSON v =
+    case v of
+      String t -> pure (RolePayload t)
+      Object o -> RolePayload <$> (o .: "role" <|> o .: "value")
+      _        -> fail "Expected role string or object with 'role'"
+
+instance MimeUnrender PlainText RolePayload where
+  mimeUnrender _ = Right . RolePayload . TE.decodeUtf8 . BL.toStrict
+
+instance MimeUnrender OctetStream RolePayload where
+  mimeUnrender _ = Right . RolePayload . TE.decodeUtf8 . BL.toStrict
+
+data LooseJSON
+
+instance Accept LooseJSON where
+  contentType _ = "application" // "json"
+
+instance MimeUnrender LooseJSON RolePayload where
+  mimeUnrender _ bs =
+    case eitherDecode bs of
+      Right rp -> Right rp
+      Left _   -> Right (RolePayload (TE.decodeUtf8 (BL.toStrict bs)))
 
 data BandMemberDTO = BandMemberDTO
   { bmId         :: Text
