@@ -6,6 +6,7 @@
 module TDF.Trials.Server where
 
 import           Control.Exception      (throwIO)
+import           Control.Monad          (unless)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Int               (Int64)
 import           Data.Maybe             (catMaybes, fromMaybe, listToMaybe)
@@ -128,13 +129,15 @@ publicTrialsServer =
       now <- liftIO getCurrentTime
       case preferred of
         [] -> liftIO $ throwIO err400 { errBody = "Need at least one preferred slot" }
-        (PreferredSlot firstStart firstEnd : rest) -> do
-          let pref2 = listToMaybe rest
+        (slot1@(PreferredSlot firstStart firstEnd) : rest) -> do
+          let slots = take 3 (slot1 : rest)
+              pref2 = listToMaybe rest
               pref3 = listToMaybe (drop 1 rest)
               (pref2Start, pref2End) = slotBounds pref2
               (pref3Start, pref3End) = slotBounds pref3
               partyKey = maybe (intKey 0) intKey partyId
               subjectKey = intKey subjectId
+          ensureSubjectAvailability subjectKey slots
           rid <- insert TrialRequest
             { trialRequestPartyId           = partyKey
             , trialRequestSubjectId         = subjectKey
@@ -154,6 +157,42 @@ publicTrialsServer =
 
     slotBounds :: Maybe PreferredSlot -> (Maybe UTCTime, Maybe UTCTime)
     slotBounds = maybe (Nothing, Nothing) $ \(PreferredSlot s e) -> (Just s, Just e)
+
+    ensureSubjectAvailability :: Trials.SubjectId -> [PreferredSlot] -> AppM ()
+    ensureSubjectAvailability subjectKey slots = do
+      teacherLinks <- selectList [TeacherSubjectSubjectId ==. subjectKey] []
+      whenNoTeachers teacherLinks
+      let teacherIds = map (Trials.teacherSubjectTeacherId . entityVal) teacherLinks
+      mapM_ (ensureSlotHasTeacher teacherIds) slots
+      where
+        whenNoTeachers [] = liftIO $ throwIO err422 { errBody = "No hay profesores disponibles para esta materia" }
+        whenNoTeachers _  = pure ()
+
+        ensureSlotHasTeacher teacherIds (PreferredSlot slotStart slotEnd) = do
+          available <- anyM (\teacherId -> teacherAvailable teacherId slotStart slotEnd) teacherIds
+          unless available $ liftIO $ throwIO err422 { errBody = "No hay profesores disponibles en el horario solicitado" }
+
+    teacherAvailable :: PartyId -> UTCTime -> UTCTime -> AppM Bool
+    teacherAvailable teacherId slotStart slotEnd = do
+      hasTrialConflict <- exists [ TrialAssignmentTeacherId ==. teacherId
+                                 , TrialAssignmentStartAt <. slotEnd
+                                 , TrialAssignmentEndAt   >. slotStart
+                                 ]
+      hasClassConflict <- exists [ ClassSessionTeacherId ==. teacherId
+                                 , ClassSessionStartAt <. slotEnd
+                                 , ClassSessionEndAt   >. slotStart
+                                 ]
+      pure (not (hasTrialConflict || hasClassConflict))
+
+    exists :: (PersistEntity record, PersistEntityBackend record ~ SqlBackend)
+           => [Filter record]
+           -> AppM Bool
+    exists filters = do
+      mEntity <- selectFirst filters []
+      pure (maybe False (const True) mEntity)
+
+    anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+    anyM f = fmap or . mapM f
 
 privateTrialsServer :: ServerT PrivateTrialsAPI AppM
 privateTrialsServer =
