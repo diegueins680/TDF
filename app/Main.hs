@@ -2,6 +2,7 @@
 module Main where
 
 import qualified Network.Wai.Handler.Warp as Warp
+import           Control.Monad            (when)
 import           Data.ByteString.Char8    (pack)
 import           Database.Persist.Sql     (SqlPersistT, rawExecute, runMigration, runSqlPool)
 
@@ -24,12 +25,17 @@ main :: IO ()
 main = do
   cfg  <- loadConfig
   pool <- makePool (pack (dbConnString cfg))
-  putStrLn "Resetting DB schema..."
-  runSqlPool resetSchema pool
+  if resetDb cfg
+    then do
+      putStrLn "Resetting DB schema..."
+      runSqlPool resetSchema pool
+    else
+      putStrLn "RESET_DB disabled, preserving existing schema."
   putStrLn "Running DB migrations..."
   runSqlPool runMigrations pool
-  putStrLn "Seeding initial data..."
-  runSqlPool seedAll pool
+  when (seedDatabase cfg) $ do
+    putStrLn "Seeding initial data..."
+    runSqlPool seedAll pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
   let allowedOrigins =
