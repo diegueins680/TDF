@@ -42,9 +42,14 @@ main = do
         , "https://tdf-ui.onrender.com"
         , "https://tdf-7t2qa.onrender.com"
         ]
+      allowedHeaders =
+        "Authorization"
+        : "Content-Type"
+        : "X-Requested-With"
+        : simpleHeaders
       corsPolicy =
         simpleCorsResourcePolicy
-          { corsRequestHeaders = "Authorization" : simpleHeaders
+          { corsRequestHeaders = allowedHeaders
           , corsMethods        = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"]
           , corsOrigins        = Just (allowedOrigins, True)
           }

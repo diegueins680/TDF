@@ -215,9 +215,9 @@
 ? /Users/diegosaa/.stack/snapshots/x86_64-osx/fc42097e877d470571a1f395ed2521825b002f3ede4a1e563fc1a776c1284694/9.6.6/lib/x86_64-osx-ghc-9.6.6/libHSzlib-0.6.3.0-JUxGbqjsKXnBaLmHE8VeIG-ghc9.6.6.dylib
 : hash: 426972e67d2fb02c249a04b3793e14bf2adccd06d976b8e5ea0d380e6cfa7b77
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/app/Main.hs:
-  hash: 51fe465033bcefef7076c0eb8800a4db8fee084146b5581485dbdd61147eecb5
+  hash: d0a1fbc03dd02268ddea40973e176a73f21cfdd9d8991ff7e964911b7fb545cb
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API.hs:
-  hash: f0d1a4acdc611aee868a866a623990318e8615b5bf3da69b9eb1b75c1e10cc1f
+  hash: 03a362dcce0b0b7e42ceaec8a4c910d52a6595e448f3e1ef5b46fa66939a7d1a
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Admin.hs:
   hash: 0b07d53911ab56927e2b9b4e9d02b6e6e4c88c6eb25c5a4bc7907272272eca2b
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Bands.hs:
@@ -229,30 +229,40 @@
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Rooms.hs:
   hash: 990755847b78ed423eeed206d7685fcbf3db3c0d01e8b8c91f593b0a951ea933
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Sessions.hs:
-  hash: dc32edbbcb6e559dfed70a3cf8097c78fa6c19f42dff37e23526f6bd42f1c659
+  hash: 9e60540ed5b0a23a927e07f69750f97992a69f6c673917ec90c89a0e8907aaa5
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/API/Types.hs:
-  hash: df636ea7e17e602e521033ee421ae1cdaf377cd2079e546e248168a9558fb4ca
+  hash: e7b2093b8631cb4840effc5b21a6bb139575c92001693cdc33dac2180693fc2c
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Auth.hs:
   hash: 8d1252a3690a560947d4442056e05a52d25f00780a05cff1d9522d57c568f50e
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Config.hs:
   hash: 76a4f386e6e2777ba4eaae5b90bac57a1d2eeb772188dafc11d9b31fa88b0dff
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/DB.hs:
-  hash: 4c9d3c02cac5f40229f366b55eadcaea07c7cf0aa463172d4194f38b40d374b2
+  hash: 42beb0a62afeae7856ac74a3eedb8e89d62432819a5162ab6698f1552021bc2d
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/DTO.hs:
-  hash: 74aa01eee6b07bbc16c66ae5e5d5f7f9a9c27551101bae164f618a5f93f7feb2
+  hash: 8efb74360645286fe4c70d479b1574304956c74b28680bea9bf45e0f3432222a
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Models.hs:
   hash: af0ec30e6937f3cef156458692a71a723ec810ba40690ac82bc47d4fd7a33681
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ModelsExtra.hs:
-  hash: 5e0c9ad1cd55605d45b2f879342897f63f0ee511bb19916571bcd64232400048
+  hash: dec2191f0c6f6a0ccc0bea57308ce6b3832ae3989ae23aa419eced96a2780d45
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Seed.hs:
   hash: 345a8ae2bb86cf7cbda865015911d99a58744c6134a723b64b0caae18a506c38
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Server.hs:
-  hash: 03064f702d85d6fcc455388ac5fd245093ffc34a08d53ce8ef4b79701a5e66d0
+  hash: 95ae19a2d3cba677a66035e72d03aa892caefa77473970bc64f6f86cc59a2d35
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerAdmin.hs:
   hash: 58cf3f40d5328b573e5be0ed684a3e67018f08483a0349b0f50de0b15dbfd6be
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerExtra.hs:
-  hash: 125bd82689e15e3ce2bc5c1502f49fe12d79955329dd43157080eb989c4e4328
+  hash: 5fbfb40abd79ad220684d979685c6b54a43030e1999629f1d604a00bc8548061
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/ServerFuture.hs:
   hash: d6647abdbefd98da2f7ea08c0e0c2af4fbcf52f0a5283e775c3f4de89521fd64
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Trials/API.hs:
+  hash: a061e45170cc1508fd46107886fd62e6de6570cff90ed4c1ccf8c1f35d6f2bd6
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Trials/DTO.hs:
+  hash: 896084f5abecd5d951d16303357b2ec5e447699f9ea91a4c557c5b1889651a86
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Trials/Models.hs:
+  hash: 9189d42e8f802b8aafd573b3de0867562156d8a23dddd0b35bf1117f75bbcd0b
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Trials/Seed.hs:
+  hash: ec62062a0d5bfe36949e7107fb67d21957c38d15340665ca7b09b13a675ec76b
+/Users/diegosaa/GitHub/tdf-app/tdf-hq/src/TDF/Trials/Server.hs:
+  hash: e7efd97bc3af25fa51378ea2d57447b361c3c672b3303ff6db5f60c6e2529b3e
 /Users/diegosaa/GitHub/tdf-app/tdf-hq/tdf-hq.cabal:
-  hash: c1b321bb9fd3a9063c1d556e050ea978e5ed871d4d5c941f562cc659ffdb4207
+  hash: 3a476753bb9b7fc14734813f9175d117422156ba61f74184d873a312c0f5fd0d
