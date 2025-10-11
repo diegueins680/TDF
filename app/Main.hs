@@ -39,6 +39,8 @@ main = do
         , "http://127.0.0.1:4173"
         , "http://localhost:3000"
         , "http://127.0.0.1:3000"
+        , "http://localhost:5174"
+        , "http://127.0.0.1:5174"
         , "https://tdf-ui.onrender.com"
         , "https://tdf-7t2qa.onrender.com"
         ]
