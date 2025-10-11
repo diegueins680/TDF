@@ -50,7 +50,7 @@ LeadInterest
     details              Text Maybe
     source               Text
     driveLink            Text Maybe
-    status               Text             default="Open"
+    status               Text             default='Open'
     createdAt            UTCTime          default=CURRENT_TIMESTAMP
     deriving Show
 
@@ -92,7 +92,7 @@ PackageCatalog
     UniquePackagePerSubject subjectId name
     deriving Show
 
-PackagePurchase
+ClassPackagePurchase
     studentId            PartyId
     packageId            PackageCatalogId
     priceCents           Int
@@ -103,7 +103,7 @@ PackagePurchase
     sellerId             PartyId Maybe
     commissionedTeacherId PartyId Maybe
     trialRequestId       TrialRequestId Maybe
-    status               Text             default="Open"
+    status               Text             default='Open'
     deriving Show
 
 ClassSession
@@ -115,19 +115,19 @@ ClassSession
     roomId               ResourceId
     bookingId            BookingId Maybe
     attended             Bool             default=False
-    purchaseId           PackagePurchaseId Maybe
+    purchaseId           ClassPackagePurchaseId Maybe
     consumedMinutes      Int              default=0
     notes                Text Maybe
     deriving Show
 
 Commission
     teacherId            PartyId
-    purchaseId           PackagePurchaseId
+    purchaseId           ClassPackagePurchaseId
     basisCents           Int
     percent              Double
     amountCents          Int
     recognizedAt         UTCTime
-    status               Text             default="Accrued"
+    status               Text             default='Accrued'
     paidAt               UTCTime Maybe
     deriving Show
 

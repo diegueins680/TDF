@@ -45,12 +45,19 @@ main = do
         , "http://127.0.0.1:4173"
         , "http://localhost:3000"
         , "http://127.0.0.1:3000"
+        , "http://localhost:5174"
+        , "http://127.0.0.1:5174"
         , "https://tdf-ui.onrender.com"
         , "https://tdf-7t2qa.onrender.com"
         ]
+      allowedHeaders =
+        "Authorization"
+        : "Content-Type"
+        : "X-Requested-With"
+        : simpleHeaders
       corsPolicy =
         simpleCorsResourcePolicy
-          { corsRequestHeaders = "Authorization" : simpleHeaders
+          { corsRequestHeaders = allowedHeaders
           , corsMethods        = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"]
           , corsOrigins        = Just (allowedOrigins, True)
           }

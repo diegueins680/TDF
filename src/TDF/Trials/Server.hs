@@ -18,7 +18,6 @@ import           Network.Wai                     (Request)
 import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler)
 
-import           Database.Persist        (PersistEntity, PersistEntityBackend, ToBackendKey, (==.), (=.), (<-.), (>=.), (<=.))
 import           Database.Persist.Sql
 
 import           TDF.Auth             (AuthedUser)
@@ -269,18 +268,18 @@ privateTrialsServer =
           discount   = fromMaybe 0 discountCents
           tax        = fromMaybe 0 taxCents
           total      = priceCents - discount + tax
-      pid <- insert PackagePurchase
-        { packagePurchaseStudentId            = studentKey
-        , packagePurchasePackageId            = packageKey
-        , packagePurchasePriceCents           = priceCents
-        , packagePurchaseDiscountCents        = discount
-        , packagePurchaseTaxCents             = tax
-        , packagePurchaseTotalPaidCents       = total
-        , packagePurchasePurchasedAt          = now
-        , packagePurchaseSellerId             = sellerKey
-        , packagePurchaseCommissionedTeacherId = commissionKey
-        , packagePurchaseTrialRequestId       = trialKey
-        , packagePurchaseStatus               = "Open"
+      pid <- insert ClassPackagePurchase
+        { classPackagePurchaseStudentId            = studentKey
+        , classPackagePurchasePackageId            = packageKey
+        , classPackagePurchasePriceCents           = priceCents
+        , classPackagePurchaseDiscountCents        = discount
+        , classPackagePurchaseTaxCents             = tax
+        , classPackagePurchaseTotalPaidCents       = total
+        , classPackagePurchasePurchasedAt          = now
+        , classPackagePurchaseSellerId             = sellerKey
+        , classPackagePurchaseCommissionedTeacherId = commissionKey
+        , classPackagePurchaseTrialRequestId       = trialKey
+        , classPackagePurchaseStatus               = "Open"
         }
       pure (PurchaseOut (entityKeyInt pid))
 

@@ -100,6 +100,16 @@
   (major1) == 1 && (major2) <  4 || \
   (major1) == 1 && (major2) == 4 && (minor) <= 300)
 #endif /* MIN_VERSION_filepath */
+/* package http-media-0.8.1.1 */
+#ifndef VERSION_http_media
+#define VERSION_http_media "0.8.1.1"
+#endif /* VERSION_http_media */
+#ifndef MIN_VERSION_http_media
+#define MIN_VERSION_http_media(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  8 || \
+  (major1) == 0 && (major2) == 8 && (minor) <= 1)
+#endif /* MIN_VERSION_http_media */
 /* package http-types-0.12.4 */
 #ifndef VERSION_http_types
 #define VERSION_http_types "0.12.4"
@@ -403,7 +413,7 @@
 #endif /* MIN_TOOL_VERSION_runghc */
 
 #ifndef CURRENT_COMPONENT_ID
-#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-LCvGOpP5TbE7jwFbbLTDTk-tdf-hq-exe"
+#define CURRENT_COMPONENT_ID "tdf-hq-0.1.0.0-Lpa100qt5PxIrgI7dM00lj-tdf-hq-exe"
 #endif /* CURRENT_COMPONENT_ID */
 #ifndef CURRENT_PACKAGE_VERSION
 #define CURRENT_PACKAGE_VERSION "0.1.0.0"
