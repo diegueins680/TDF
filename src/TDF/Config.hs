@@ -1,16 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 module TDF.Config where
 
+import           Data.Char          (toLower)
+import           Data.Maybe         (fromMaybe)
 import           System.Environment (lookupEnv)
-import           Data.Maybe (fromMaybe)
 
 data AppConfig = AppConfig
-  { dbHost  :: String
-  , dbPort  :: String
-  , dbUser  :: String
-  , dbPass  :: String
-  , dbName  :: String
-  , appPort :: Int
+  { dbHost       :: String
+  , dbPort       :: String
+  , dbUser       :: String
+  , dbPass       :: String
+  , dbName       :: String
+  , appPort      :: Int
+  , resetDb      :: Bool
+  , seedDatabase :: Bool
   } deriving (Show)
 
 dbConnString :: AppConfig -> String
@@ -23,13 +26,29 @@ dbConnString cfg =
 
 loadConfig :: IO AppConfig
 loadConfig = do
-  h  <- get "DB_HOST" "127.0.0.1"
-  p  <- get "DB_PORT" "5432"
-  u  <- get "DB_USER" "postgres"
-  w  <- get "DB_PASS" "postgres"
-  d  <- get "DB_NAME" "tdf_hq"
-  ap <- get "APP_PORT" "8080"
+  h   <- get "DB_HOST" "127.0.0.1"
+  p   <- get "DB_PORT" "5432"
+  u   <- get "DB_USER" "postgres"
+  w   <- get "DB_PASS" "postgres"
+  d   <- get "DB_NAME" "tdf_hq"
+  ap  <- get "APP_PORT" "8080"
+  rdb <- get "RESET_DB" "false"
+  sdb <- get "SEED_DB" "false"
   pure AppConfig
-    { dbHost = h, dbPort = p, dbUser = u, dbPass = w, dbName = d, appPort = read ap }
+    { dbHost = h
+    , dbPort = p
+    , dbUser = u
+    , dbPass = w
+    , dbName = d
+    , appPort = read ap
+    , resetDb = asBool rdb
+    , seedDatabase = asBool sdb
+    }
   where
     get k def = fmap (fromMaybe def) (lookupEnv k)
+    asBool v = case fmap toLower v of
+      "true"  -> True
+      "1"     -> True
+      "yes"   -> True
+      "on"    -> True
+      _       -> False
