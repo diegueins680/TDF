@@ -13,7 +13,7 @@ import           Network.Wai.Middleware.Cors
                  , simpleHeaders
                  )
 
-import           TDF.Config     (appPort, dbConnString, loadConfig)
+import           TDF.Config     (appPort, dbConnString, loadConfig, resetDb, seedDatabase)
 import           TDF.DB         (Env(..), makePool)
 import           TDF.Models     (migrateAll)
 import           TDF.ModelsExtra (migrateExtra)
