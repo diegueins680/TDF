@@ -8,6 +8,7 @@ module TDF.Auth
   , authContext
   , hasModuleAccess
   , moduleName
+  , modulesForRoles
   , loadAuthedUser
   ) where
 

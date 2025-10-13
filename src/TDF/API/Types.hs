@@ -17,6 +17,8 @@ import           GHC.Generics (Generic)
 import           Network.HTTP.Media ((//))
 import           Servant.API  (Accept(..), MimeUnrender(..), OctetStream, PlainText)
 
+import           TDF.Models   (RoleEnum)
+
 data Page a = Page
   { items    :: [a]
   , page     :: Int
@@ -58,6 +60,49 @@ data DropdownOptionUpdate = DropdownOptionUpdate
 
 instance ToJSON DropdownOptionUpdate
 instance FromJSON DropdownOptionUpdate
+
+data RoleDetailDTO = RoleDetailDTO
+  { role    :: RoleEnum
+  , label   :: Text
+  , modules :: [Text]
+  } deriving (Show, Generic)
+
+instance ToJSON RoleDetailDTO
+instance FromJSON RoleDetailDTO
+
+data UserAccountDTO = UserAccountDTO
+  { userId    :: Int64
+  , partyId   :: Int64
+  , partyName :: Text
+  , username  :: Text
+  , active    :: Bool
+  , roles     :: [RoleEnum]
+  , modules   :: [Text]
+  } deriving (Show, Generic)
+
+instance ToJSON UserAccountDTO
+instance FromJSON UserAccountDTO
+
+data UserAccountCreate = UserAccountCreate
+  { uacPartyId  :: Int64
+  , uacUsername :: Text
+  , uacPassword :: Text
+  , uacActive   :: Maybe Bool
+  , uacRoles    :: Maybe [RoleEnum]
+  } deriving (Show, Generic)
+
+instance ToJSON UserAccountCreate
+instance FromJSON UserAccountCreate
+
+data UserAccountUpdate = UserAccountUpdate
+  { uauUsername :: Maybe Text
+  , uauPassword :: Maybe Text
+  , uauActive   :: Maybe Bool
+  , uauRoles    :: Maybe [RoleEnum]
+  } deriving (Show, Generic)
+
+instance ToJSON UserAccountUpdate
+instance FromJSON UserAccountUpdate
 
 data BandOptionsDTO = BandOptionsDTO
   { roles  :: [DropdownOptionDTO]
