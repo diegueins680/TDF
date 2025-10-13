@@ -28,7 +28,7 @@ seedAll = do
         , ("Juano Ledesma", Just "Juan Ledesma")
         ]
   mapM_ (\(disp, mlegal) -> do
-           _ <- insertUnique $ Party mlegal disp False Nothing Nothing Nothing Nothing Nothing Nothing Nothing now
+           _ <- ensurePartyRecord now disp mlegal
            pure ()
         ) artists
 
@@ -38,8 +38,9 @@ seedAll = do
         , ("Juan Ledesma", Nothing)
         ]
   mapM_ (\(disp, mlegal) -> do
-           pid <- insert $ Party mlegal disp False Nothing Nothing Nothing Nothing Nothing Nothing Nothing now
-           _ <- insertUnique (PartyRole pid Teacher True)
+           pid <- ensurePartyRecord now disp mlegal
+           _ <- upsert (PartyRole pid Teacher True)
+             [ PartyRoleActive =. True ]
            pure ()
         ) teachers
 
