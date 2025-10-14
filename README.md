@@ -28,8 +28,7 @@ set -a; source config/default.env; set +a
 stack setup
 stack build
 stack run
-# seed initial data (temporary endpoint)
-curl -X POST http://localhost:8080/admin/seed
+# database seeds now run automatically (set SEED_DB=false to skip)
 ```
 
 Server starts on `http://localhost:8080`.
