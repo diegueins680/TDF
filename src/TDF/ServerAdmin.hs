@@ -54,16 +54,7 @@ import           TDF.Auth               ( AuthedUser
                                         , modulesForRoles
                                         )
 import           TDF.DB                 (Env(..))
-import           TDF.Models             ( Party(..)
-                                        , PartyId
-                                        , PartyRole(..)
-                                        , PartyRoleId
-                                        , RoleEnum
-                                        , UniqueCredentialUsername
-                                        , UniquePartyRole
-                                        , UserCredential(..)
-                                        , UserCredentialId
-                                        )
+import           TDF.Models
 import           TDF.ModelsExtra (DropdownOption(..))
 import qualified TDF.ModelsExtra as ME
 import           TDF.Seed               (seedAll)
@@ -187,12 +178,12 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
                   updates = if null baseUpdates
                     then []
                     else baseUpdates ++ [ME.DropdownOptionUpdatedAt =. now]
-      entity <- if null updates
-        then pure (Entity key option)
-        else withPool $ do
-          update key updates
-          getJustEntity key
-      pure (toDTO entity)
+              entity <- if null updates
+                then pure (Entity key option)
+                else withPool $ do
+                  update key updates
+                  getJustEntity key
+              pure (toDTO entity)
 
     listUsers mIncludeInactive = do
       ensureModule ModuleAdmin user

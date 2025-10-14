@@ -34,7 +34,7 @@ data PricingModel = Hourly | PerSong | Package | Quote | Retainer
 derivePersistField "PricingModel"
 
 data RoleEnum = Admin | Manager | Engineer | Teacher | Reception | Accounting | Artist | Student | Vendor | ReadOnly | Customer
-  deriving (Show, Read, Eq, Enum, Bounded, Generic)
+  deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
 derivePersistField "RoleEnum"
 
 data ResourceType = Room | Person | Equipment
