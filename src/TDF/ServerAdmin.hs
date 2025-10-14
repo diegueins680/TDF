@@ -23,7 +23,6 @@ import           Database.Persist       ( (==.), (!=.)
                                         , (=.)
                                         , Entity(..)
                                         , Update
-                                        , Key
                                         , SelectOpt(..)
                                         , selectFirst
                                         , selectList
@@ -246,7 +245,7 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
       mCred <- withPool $ getEntity credKey
       case mCred of
         Nothing -> throwError err404
-        Just credEnt@(Entity _ cred) -> do
+        Just (Entity _ cred) -> do
           for_ usernameUpdate $ \newUsername ->
             when (newUsername /= userCredentialUsername cred) $ do
               conflict <- withPool $ getBy (UniqueCredentialUsername newUsername)
@@ -304,7 +303,7 @@ ensureModule moduleTag user =
     throwError err403 { errBody = "Missing required module access" }
 
 loadUserAccount :: Entity UserCredential -> SqlPersistT IO UserAccountDTO
-loadUserAccount credEnt@(Entity credId cred) = do
+loadUserAccount (Entity credId cred) = do
   party <- getJustEntity (userCredentialPartyId cred)
   roles <- selectList
     [ PartyRolePartyId ==. userCredentialPartyId cred
