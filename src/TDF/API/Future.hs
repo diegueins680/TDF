@@ -20,6 +20,23 @@ data StubResponse = StubResponse
 
 instance ToJSON StubResponse
 
+-- | Minimal card metadata for the admin console preview.
+data AdminConsoleCard = AdminConsoleCard
+  { cardId :: Text
+  , title  :: Text
+  , body   :: [Text]
+  } deriving stock (Show, Generic)
+
+instance ToJSON AdminConsoleCard
+
+-- | Wrapper payload for the admin console endpoint.
+data AdminConsoleView = AdminConsoleView
+  { status :: Text
+  , cards  :: [AdminConsoleCard]
+  } deriving stock (Show, Generic)
+
+instance ToJSON AdminConsoleView
+
 -- Access & session management discovery endpoints
 type AccessStubAPI =
        "login-options" :> Get '[JSON] StubResponse
@@ -57,7 +74,7 @@ type InventoryStubAPI =
 -- Admin and platform discovery endpoints
 type AdminStubAPI =
        "seed"    :> Get '[JSON] StubResponse
-  :<|> "console" :> Get '[JSON] StubResponse
+  :<|> "console" :> Get '[JSON] AdminConsoleView
 
 -- Cross-cutting UI considerations
 type CrossCuttingStubAPI =
