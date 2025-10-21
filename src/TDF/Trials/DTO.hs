@@ -31,6 +31,15 @@ data TrialRequestOut = TrialRequestOut
 instance ToJSON TrialRequestOut
 instance FromJSON TrialRequestOut
 
+data TrialSlotDTO = TrialSlotDTO
+  { subjectId  :: Int
+  , teacherId  :: Int
+  , teacherName :: Text
+  , slots      :: [PreferredSlot]
+  } deriving (Show, Generic)
+instance ToJSON TrialSlotDTO
+instance FromJSON TrialSlotDTO
+
 data TrialAssignIn = TrialAssignIn
   { teacherId :: Int
   } deriving (Show, Generic)

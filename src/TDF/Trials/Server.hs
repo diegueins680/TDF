@@ -13,7 +13,8 @@ import           Data.Maybe             (catMaybes, fromMaybe, listToMaybe)
 import qualified Data.Map.Strict        as Map
 import           Data.Text              (Text)
 import qualified Data.Text              as T
-import           Data.Time              (UTCTime, diffUTCTime, getCurrentTime)
+import           Data.Time              (UTCTime, diffUTCTime, getCurrentTime, addUTCTime)
+import           Data.Time.Clock        (secondsToNominalDiffTime)
 
 import           Network.Wai                     (Request)
 import           Servant
@@ -81,11 +82,62 @@ trialRequestOut rid req =
     , status    = trialRequestStatus req
     }
 
+listActiveSubjects :: AppM [SubjectDTO]
+listActiveSubjects = do
+  entities <- selectList [SubjectActive ==. True] [Asc SubjectName]
+  pure
+    [ SubjectDTO (entityKeyInt sid) (Trials.subjectName subj)
+    | Entity sid subj <- entities
+    ]
+
+trialSlotsForSubject :: Maybe Int -> AppM [TrialSlotDTO]
+trialSlotsForSubject Nothing = pure []
+trialSlotsForSubject (Just sidInt) = do
+  let subjectKey = intKey sidInt :: Trials.SubjectId
+  teacherLinks <- selectList [TeacherSubjectSubjectId ==. subjectKey] [Asc TeacherSubjectTeacherId]
+  if null teacherLinks
+    then pure []
+    else do
+      now <- liftIO getCurrentTime
+      let teacherIds = map (Trials.teacherSubjectTeacherId . entityVal) teacherLinks
+      teacherEntities <- selectList [Models.PartyId <-. teacherIds] []
+      let nameMap = Map.fromList
+            [ (entityKey ent, partyDisplayName (entityVal ent))
+            | ent <- teacherEntities
+            ]
+          indexed = zip [0 :: Int ..] teacherLinks
+      pure
+        [ TrialSlotDTO
+            { subjectId   = sidInt
+            , teacherId   = entityKeyInt teacherKey
+            , teacherName = fromMaybe "Profesor disponible" (Map.lookup teacherKey nameMap)
+            , slots       = defaultSlots now idx
+            }
+        | (idx, Entity _ link) <- indexed
+        , let teacherKey = Trials.teacherSubjectTeacherId link
+        ]
+  where
+    defaultSlots :: UTCTime -> Int -> [PreferredSlot]
+    defaultSlots base idx =
+      let duration = secondsToNominalDiffTime (45 * 60)
+          offsets =
+            [ secondsToNominalDiffTime (fromIntegral (24 * 3600 + idx * 900))
+            , secondsToNominalDiffTime (fromIntegral (24 * 3600 + 5400 + idx * 900))
+            , secondsToNominalDiffTime (fromIntegral (48 * 3600 + 3600 + idx * 900))
+            ]
+      in [ let start = addUTCTime offset base
+               end   = addUTCTime duration start
+           in PreferredSlot start end
+         | offset <- offsets
+         ]
+
 publicTrialsServer :: ServerT PublicTrialsAPI AppM
 publicTrialsServer =
   signupH
     :<|> interestH
     :<|> trialRequestCreateH
+    :<|> publicSubjectsH
+    :<|> publicSlotsH
   where
     signupH :: SignupIn -> AppM SignupOut
     signupH SignupIn{..} = do
@@ -157,6 +209,12 @@ publicTrialsServer =
 
     slotBounds :: Maybe PreferredSlot -> (Maybe UTCTime, Maybe UTCTime)
     slotBounds = maybe (Nothing, Nothing) $ \(PreferredSlot s e) -> (Just s, Just e)
+
+    publicSubjectsH :: AppM [SubjectDTO]
+    publicSubjectsH = listActiveSubjects
+
+    publicSlotsH :: Maybe Int -> AppM [TrialSlotDTO]
+    publicSlotsH = trialSlotsForSubject
 
     ensureSubjectAvailability :: Trials.SubjectId -> [PreferredSlot] -> AppM ()
     ensureSubjectAvailability subjectKey slots = do
@@ -276,11 +334,7 @@ privateTrialsServer =
           pure (trialRequestOut rid req { trialRequestStatus = statusScheduled })
 
     subjectsH :: AppM [SubjectDTO]
-    subjectsH = do
-      entities <- selectList [SubjectActive ==. True] [Asc SubjectName]
-      pure [ SubjectDTO (entityKeyInt sid) (Trials.subjectName subj)
-           | Entity sid subj <- entities
-           ]
+    subjectsH = listActiveSubjects
 
     packagesH :: Maybe Int -> AppM [PackageDTO]
     packagesH mSubject = do

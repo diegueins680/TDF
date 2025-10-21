@@ -15,6 +15,8 @@ type PublicTrialsAPI =
        "signup" :> ReqBody '[JSON] SignupIn :> Post '[JSON] SignupOut
   :<|> "interests" :> ReqBody '[JSON] InterestIn :> Post '[JSON] InterestOut
   :<|> "trial-requests" :> ReqBody '[JSON] TrialRequestIn :> PostCreated '[JSON] TrialRequestOut
+  :<|> "subjects" :> Get '[JSON] [SubjectDTO]
+  :<|> "trial-slots" :> QueryParam "subjectId" Int :> Get '[JSON] [TrialSlotDTO]
 
 type PrivateTrialsAPI =
        "trial-requests" :> QueryParam "subjectId" Int :> QueryParam "status" Text :> Get '[JSON] [TrialQueueItem]
