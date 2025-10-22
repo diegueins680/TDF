@@ -26,7 +26,7 @@ import           Database.Persist.TH
 import           GHC.Generics       (Generic)
 import           Web.PathPieces     (PathPiece(..))
 
-import           TDF.Models         (PartyId)
+import           TDF.Models         (PartyId, ServiceKind)
 
 -- Enumerations
 instance PersistField UUID where
@@ -150,6 +150,18 @@ AssetKitMember
     memberId   AssetId
     qty        Int default=1
     UniqueKitMember kitId memberId
+    deriving Show Generic
+
+PipelineCard
+    Id          UUID default=gen_random_uuid()
+    serviceKind ServiceKind
+    title       Text
+    artist      Text Maybe
+    stage       Text
+    sortOrder   Int default=0
+    notes       Text Maybe
+    createdAt   UTCTime default=now()
+    updatedAt   UTCTime default=now()
     deriving Show Generic
 
 -- Party/Booking references use free-text refs to avoid coupling to existing tables
