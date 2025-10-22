@@ -17,6 +17,7 @@ import           TDF.API.Admin     (AdminAPI)
 import           TDF.API.Future    (FutureAPI)
 import           TDF.API.Bands     (BandsAPI)
 import           TDF.API.Inventory (InventoryAPI)
+import           TDF.API.Pipelines (PipelinesAPI)
 import           TDF.API.Rooms     (RoomsAPI)
 import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload)
@@ -56,6 +57,7 @@ type ProtectedAPI =
   :<|> InventoryAPI
   :<|> BandsAPI
   :<|> SessionsAPI
+  :<|> PipelinesAPI
   :<|> RoomsAPI
   :<|> "stubs"    :> FutureAPI
 
