@@ -43,6 +43,16 @@ SubjectRoomPreference
     UniqueSubjectRoom    subjectId roomId
     deriving Show Eq
 
+TeacherAvailability
+    teacherId            PartyId
+    subjectId            SubjectId
+    roomId               ResourceId
+    startAt              UTCTime
+    endAt                UTCTime
+    notes                Text Maybe
+    createdAt            UTCTime          default=CURRENT_TIMESTAMP
+    deriving Show Eq
+
 LeadInterest
     partyId              PartyId
     interestType         Text

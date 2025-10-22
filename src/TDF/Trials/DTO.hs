@@ -40,6 +40,33 @@ data TrialSlotDTO = TrialSlotDTO
 instance ToJSON TrialSlotDTO
 instance FromJSON TrialSlotDTO
 
+data TrialAvailabilitySlotDTO = TrialAvailabilitySlotDTO
+  { availabilityId :: Int
+  , subjectId      :: Int
+  , subjectName    :: Maybe Text
+  , teacherId      :: Int
+  , teacherName    :: Maybe Text
+  , roomId         :: Text
+  , roomName       :: Maybe Text
+  , startAt        :: UTCTime
+  , endAt          :: UTCTime
+  , notes          :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON TrialAvailabilitySlotDTO
+instance FromJSON TrialAvailabilitySlotDTO
+
+data TrialAvailabilityUpsert = TrialAvailabilityUpsert
+  { availabilityId :: Maybe Int
+  , subjectId      :: Int
+  , roomId         :: Text
+  , startAt        :: UTCTime
+  , endAt          :: UTCTime
+  , notes          :: Maybe Text
+  , teacherId      :: Maybe Int
+  } deriving (Show, Generic)
+instance ToJSON TrialAvailabilityUpsert
+instance FromJSON TrialAvailabilityUpsert
+
 data TrialAssignIn = TrialAssignIn
   { teacherId :: Int
   } deriving (Show, Generic)
