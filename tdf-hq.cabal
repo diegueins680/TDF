@@ -16,6 +16,7 @@ executable tdf-hq-exe
     TDF.API.Bands
     TDF.API.Future
     TDF.API.Inventory
+    TDF.API.Pipelines
     TDF.API.Rooms
     TDF.API.Sessions
     TDF.API.Types
@@ -25,6 +26,7 @@ executable tdf-hq-exe
     TDF.DTO
     TDF.Models
     TDF.ModelsExtra
+    TDF.Pipelines
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin

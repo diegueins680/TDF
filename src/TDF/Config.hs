@@ -33,7 +33,7 @@ loadConfig = do
   d   <- get "DB_NAME" "tdf_hq"
   ap  <- get "APP_PORT" "8080"
   rdb <- get "RESET_DB" "false"
-  sdb <- get "SEED_DB" "false"
+  sdb <- get "SEED_DB" "true"
   pure AppConfig
     { dbHost = h
     , dbPort = p

@@ -55,7 +55,21 @@ futureServer = accessStubs
                 :<|> stub "inventory" "stock"
 
     adminStubs =     stub "admin" "seed"
-                :<|> stub "admin" "console"
+                :<|> adminConsole
+
+    adminConsole = pure AdminConsoleView
+      { status = "preview"
+      , cards =
+          [ AdminConsoleCard
+              { cardId = "user-management"
+              , title  = "Gestión de usuarios"
+              , body   =
+                  [ "La asignación de roles se administra desde la pantalla de Parties."
+                  , "Próximamente aquí se podrá crear usuarios de servicio y tokens API."
+                  ]
+              }
+          ]
+      }
 
     crossCuttingStubs = stub "experience" "navigation"
                     :<|> stub "experience" "feedback"

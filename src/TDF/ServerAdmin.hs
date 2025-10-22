@@ -23,7 +23,6 @@ import           Database.Persist       ( (==.), (!=.)
                                         , (=.)
                                         , Entity(..)
                                         , Update
-                                        , Key
                                         , SelectOpt(..)
                                         , selectFirst
                                         , selectList
@@ -54,16 +53,7 @@ import           TDF.Auth               ( AuthedUser
                                         , modulesForRoles
                                         )
 import           TDF.DB                 (Env(..))
-import           TDF.Models             ( Party(..)
-                                        , PartyId
-                                        , PartyRole(..)
-                                        , PartyRoleId
-                                        , RoleEnum
-                                        , UniqueCredentialUsername
-                                        , UniquePartyRole
-                                        , UserCredential(..)
-                                        , UserCredentialId
-                                        )
+import           TDF.Models
 import           TDF.ModelsExtra (DropdownOption(..))
 import qualified TDF.ModelsExtra as ME
 import           TDF.Seed               (seedAll)
@@ -187,12 +177,12 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
                   updates = if null baseUpdates
                     then []
                     else baseUpdates ++ [ME.DropdownOptionUpdatedAt =. now]
-      entity <- if null updates
-        then pure (Entity key option)
-        else withPool $ do
-          update key updates
-          getJustEntity key
-      pure (toDTO entity)
+              entity <- if null updates
+                then pure (Entity key option)
+                else withPool $ do
+                  update key updates
+                  getJustEntity key
+              pure (toDTO entity)
 
     listUsers mIncludeInactive = do
       ensureModule ModuleAdmin user
@@ -255,7 +245,7 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
       mCred <- withPool $ getEntity credKey
       case mCred of
         Nothing -> throwError err404
-        Just credEnt@(Entity _ cred) -> do
+        Just (Entity _ cred) -> do
           for_ usernameUpdate $ \newUsername ->
             when (newUsername /= userCredentialUsername cred) $ do
               conflict <- withPool $ getBy (UniqueCredentialUsername newUsername)
@@ -313,7 +303,7 @@ ensureModule moduleTag user =
     throwError err403 { errBody = "Missing required module access" }
 
 loadUserAccount :: Entity UserCredential -> SqlPersistT IO UserAccountDTO
-loadUserAccount credEnt@(Entity credId cred) = do
+loadUserAccount (Entity credId cred) = do
   party <- getJustEntity (userCredentialPartyId cred)
   roles <- selectList
     [ PartyRolePartyId ==. userCredentialPartyId cred

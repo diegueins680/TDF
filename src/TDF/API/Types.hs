@@ -13,6 +13,7 @@ import           Data.Text    (Text)
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as BL
 import           Data.Time    (UTCTime)
+import           Data.Maybe   (fromMaybe)
 import           GHC.Generics (Generic)
 import           Network.HTTP.Media ((//))
 import           Servant.API  (Accept(..), MimeUnrender(..), OctetStream, PlainText)
@@ -180,6 +181,73 @@ data RoomUpdate = RoomUpdate
 
 instance ToJSON RoomUpdate
 instance FromJSON RoomUpdate
+
+data PipelineCardDTO = PipelineCardDTO
+  { pcId        :: Text
+  , pcTitle     :: Text
+  , pcArtist    :: Maybe Text
+  , pcType      :: Text
+  , pcStage     :: Text
+  , pcSortOrder :: Int
+  , pcNotes     :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON PipelineCardDTO where
+  toJSON dto = object
+    [ "id"        .= pcId dto
+    , "title"     .= pcTitle dto
+    , "artist"    .= pcArtist dto
+    , "type"      .= pcType dto
+    , "stage"     .= pcStage dto
+    , "sortOrder" .= pcSortOrder dto
+    , "notes"     .= pcNotes dto
+    ]
+
+instance FromJSON PipelineCardDTO where
+  parseJSON = withObject "PipelineCardDTO" $ \o -> do
+    sortOrder <- o .:? "sortOrder"
+    PipelineCardDTO
+      <$> o .:  "id"
+      <*> o .:  "title"
+      <*> o .:? "artist"
+      <*> o .:  "type"
+      <*> o .:  "stage"
+      <*> pure (fromMaybe 0 sortOrder)
+      <*> o .:? "notes"
+
+data PipelineCardCreate = PipelineCardCreate
+  { pccTitle     :: Text
+  , pccArtist    :: Maybe Text
+  , pccStage     :: Maybe Text
+  , pccSortOrder :: Maybe Int
+  , pccNotes     :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON PipelineCardCreate where
+  parseJSON = withObject "PipelineCardCreate" $ \o ->
+    PipelineCardCreate
+      <$> o .:  "title"
+      <*> o .:? "artist"
+      <*> o .:? "stage"
+      <*> o .:? "sortOrder"
+      <*> o .:? "notes"
+
+data PipelineCardUpdate = PipelineCardUpdate
+  { pcuTitle     :: Maybe Text
+  , pcuArtist    :: Maybe (Maybe Text)
+  , pcuStage     :: Maybe Text
+  , pcuSortOrder :: Maybe Int
+  , pcuNotes     :: Maybe (Maybe Text)
+  } deriving (Show, Generic)
+
+instance FromJSON PipelineCardUpdate where
+  parseJSON = withObject "PipelineCardUpdate" $ \o ->
+    PipelineCardUpdate
+      <$> o .:? "title"
+      <*> o .:? "artist"
+      <*> o .:? "stage"
+      <*> o .:? "sortOrder"
+      <*> o .:? "notes"
 
 data SessionInputRow = SessionInputRow
   { channelNumber    :: Int

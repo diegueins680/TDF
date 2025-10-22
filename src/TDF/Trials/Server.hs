@@ -6,14 +6,17 @@
 module TDF.Trials.Server where
 
 import           Control.Exception      (throwIO)
-import           Control.Monad          (unless)
+import           Control.Monad          (forM, unless, when)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Int               (Int64)
 import           Data.Maybe             (catMaybes, fromMaybe, listToMaybe)
 import qualified Data.Map.Strict        as Map
+import qualified Data.Set               as Set
+import           Data.List              (foldl')
 import           Data.Text              (Text)
 import qualified Data.Text              as T
 import           Data.Time              (UTCTime, diffUTCTime, getCurrentTime)
+import           Web.PathPieces         (fromPathPiece, toPathPiece)
 
 import           Network.Wai                     (Request)
 import           Servant
@@ -21,7 +24,7 @@ import           Servant.Server.Experimental.Auth (AuthHandler)
 
 import           Database.Persist.Sql
 
-import           TDF.Auth             (AuthedUser)
+import           TDF.Auth             (AuthedUser(..), ModuleAccess(..), hasModuleAccess)
 import           TDF.Models          (Party(..), PartyId, ResourceId, partyDisplayName)
 import qualified TDF.Models          as Models
 import           TDF.Trials.API
@@ -81,11 +84,110 @@ trialRequestOut rid req =
     , status    = trialRequestStatus req
     }
 
+subjectEntityToDTO :: Map.Map SubjectId [Text] -> Entity Subject -> SubjectDTO
+subjectEntityToDTO roomMap (Entity sid subj) =
+  SubjectDTO
+    { subjectId = entityKeyInt sid
+    , name      = Trials.subjectName subj
+    , active    = Trials.subjectActive subj
+    , roomIds   = Map.findWithDefault [] sid roomMap
+    }
+
+listSubjects :: Bool -> AppM [SubjectDTO]
+listSubjects includeInactive = do
+  let filters = if includeInactive then [] else [SubjectActive ==. True]
+  entities <- selectList filters [Asc SubjectName]
+  roomMap <- subjectRoomMap (map entityKey entities)
+  pure (map (subjectEntityToDTO roomMap) entities)
+
+subjectRoomMap :: [SubjectId] -> AppM (Map.Map SubjectId [Text])
+subjectRoomMap [] = pure Map.empty
+subjectRoomMap subjectIds = do
+  prefs <- selectList [SubjectRoomPreferenceSubjectId <-. subjectIds] [Asc SubjectRoomPreferencePriority, Asc SubjectRoomPreferenceRoomId]
+  pure $
+    foldl'
+      (\acc (Entity _ pref) ->
+          Map.insertWith (++) (subjectRoomPreferenceSubjectId pref)
+            [toPathPiece (subjectRoomPreferenceRoomId pref)]
+            acc
+      )
+      Map.empty
+      prefs
+
+listActiveSubjects :: AppM [SubjectDTO]
+listActiveSubjects = listSubjects False
+
+trialSlotsForSubject :: Maybe Int -> AppM [TrialSlotDTO]
+trialSlotsForSubject Nothing = pure []
+trialSlotsForSubject (Just sidInt) = do
+  now <- liftIO getCurrentTime
+  let subjectKey = intKey sidInt :: Trials.SubjectId
+  availabilities <- selectList
+    [ TeacherAvailabilitySubjectId ==. subjectKey
+    , TeacherAvailabilityEndAt >=. now
+    ] [Asc TeacherAvailabilityStartAt]
+  validAvailabilities <- fmap catMaybes $
+    forM availabilities $ \entity@(Entity _ availability) -> do
+      let teacherKey = Trials.teacherAvailabilityTeacherId availability
+          slotStart  = Trials.teacherAvailabilityStartAt availability
+          slotEnd    = Trials.teacherAvailabilityEndAt availability
+      isFree <- teacherAvailable teacherKey slotStart slotEnd
+      pure $ if isFree then Just entity else Nothing
+  if null validAvailabilities
+    then pure []
+    else do
+      let grouped = Map.fromListWith (++)
+            [ (Trials.teacherAvailabilityTeacherId avail, [PreferredSlot (Trials.teacherAvailabilityStartAt avail) (Trials.teacherAvailabilityEndAt avail)])
+            | Entity _ avail <- validAvailabilities
+            ]
+          teacherIds = Map.keys grouped
+      teacherEntities <- selectList [Models.PartyId <-. teacherIds] []
+      let nameMap = Map.fromList
+            [ (entityKey ent, partyDisplayName (entityVal ent))
+            | ent <- teacherEntities
+            ]
+      pure
+        [ TrialSlotDTO
+            { subjectId   = sidInt
+            , teacherId   = entityKeyInt teacherKey
+            , teacherName = fromMaybe "Profesor disponible" (Map.lookup teacherKey nameMap)
+            , slots       = slots
+            }
+        | (teacherKey, slots) <- Map.toList grouped
+        ]
+
+teacherAvailable :: PartyId -> UTCTime -> UTCTime -> AppM Bool
+teacherAvailable teacherId slotStart slotEnd = do
+  hasTrialConflict <- recordExists [ TrialAssignmentTeacherId ==. teacherId
+                                   , TrialAssignmentStartAt <. slotEnd
+                                   , TrialAssignmentEndAt   >. slotStart
+                                   ]
+  hasClassConflict <- recordExists [ ClassSessionTeacherId ==. teacherId
+                                   , ClassSessionStartAt <. slotEnd
+                                   , ClassSessionEndAt   >. slotStart
+                                   ]
+  pure (not (hasTrialConflict || hasClassConflict))
+
+recordExists
+  :: ( PersistEntity record
+     , PersistEntityBackend record ~ SqlBackend
+     )
+  => [Filter record]
+  -> AppM Bool
+recordExists filters = do
+  mEntity <- selectFirst filters []
+  pure (maybe False (const True) mEntity)
+
+anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+anyM f = fmap or . mapM f
+
 publicTrialsServer :: ServerT PublicTrialsAPI AppM
 publicTrialsServer =
   signupH
     :<|> interestH
     :<|> trialRequestCreateH
+    :<|> publicSubjectsH
+    :<|> publicSlotsH
   where
     signupH :: SignupIn -> AppM SignupOut
     signupH SignupIn{..} = do
@@ -158,6 +260,12 @@ publicTrialsServer =
     slotBounds :: Maybe PreferredSlot -> (Maybe UTCTime, Maybe UTCTime)
     slotBounds = maybe (Nothing, Nothing) $ \(PreferredSlot s e) -> (Just s, Just e)
 
+    publicSubjectsH :: AppM [SubjectDTO]
+    publicSubjectsH = listActiveSubjects
+
+    publicSlotsH :: Maybe Int -> AppM [TrialSlotDTO]
+    publicSlotsH = trialSlotsForSubject
+
     ensureSubjectAvailability :: Trials.SubjectId -> [PreferredSlot] -> AppM ()
     ensureSubjectAvailability subjectKey slots = do
       teacherLinks <- selectList [TeacherSubjectSubjectId ==. subjectKey] []
@@ -172,34 +280,18 @@ publicTrialsServer =
           available <- anyM (\teacherId -> teacherAvailable teacherId slotStart slotEnd) teacherIds
           unless available $ liftIO $ throwIO err422 { errBody = "No hay profesores disponibles en el horario solicitado" }
 
-    teacherAvailable :: PartyId -> UTCTime -> UTCTime -> AppM Bool
-    teacherAvailable teacherId slotStart slotEnd = do
-      hasTrialConflict <- exists [ TrialAssignmentTeacherId ==. teacherId
-                                 , TrialAssignmentStartAt <. slotEnd
-                                 , TrialAssignmentEndAt   >. slotStart
-                                 ]
-      hasClassConflict <- exists [ ClassSessionTeacherId ==. teacherId
-                                 , ClassSessionStartAt <. slotEnd
-                                 , ClassSessionEndAt   >. slotStart
-                                 ]
-      pure (not (hasTrialConflict || hasClassConflict))
-
-    exists :: (PersistEntity record, PersistEntityBackend record ~ SqlBackend)
-           => [Filter record]
-           -> AppM Bool
-    exists filters = do
-      mEntity <- selectFirst filters []
-      pure (maybe False (const True) mEntity)
-
-    anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-    anyM f = fmap or . mapM f
-
-privateTrialsServer :: ServerT PrivateTrialsAPI AppM
-privateTrialsServer =
+privateTrialsServer :: AuthedUser -> ServerT PrivateTrialsAPI AppM
+privateTrialsServer user@AuthedUser{..} =
   queueH
     :<|> assignH
     :<|> scheduleH
+    :<|> availabilityListH
+    :<|> availabilityUpsertH
+    :<|> availabilityDeleteH
     :<|> subjectsH
+    :<|> createSubjectH
+    :<|> updateSubjectH
+    :<|> deleteSubjectH
     :<|> packagesH
     :<|> purchaseH
     :<|> createClassH
@@ -273,14 +365,254 @@ privateTrialsServer =
             , TrialRequestAssignedAt        =. Just now
             , TrialRequestStatus            =. statusScheduled
             ]
+          deleteWhere
+            [ TeacherAvailabilityTeacherId ==. teacherK
+            , TeacherAvailabilitySubjectId ==. trialRequestSubjectId req
+            , TeacherAvailabilityStartAt ==. startAt
+            , TeacherAvailabilityEndAt ==. endAt
+            ]
           pure (trialRequestOut rid req { trialRequestStatus = statusScheduled })
 
-    subjectsH :: AppM [SubjectDTO]
-    subjectsH = do
-      entities <- selectList [SubjectActive ==. True] [Asc SubjectName]
-      pure [ SubjectDTO (entityKeyInt sid) (Trials.subjectName subj)
-           | Entity sid subj <- entities
-           ]
+    availabilityListH :: Maybe Int -> Maybe UTCTime -> Maybe UTCTime -> AppM [TrialAvailabilitySlotDTO]
+    availabilityListH mSubject mFrom mTo = do
+      ensureModuleAccess ModuleScheduling
+      let teacherKey = auPartyId
+          filters =
+            [ TeacherAvailabilityTeacherId ==. teacherKey ]
+            ++ maybe [] (\sid -> [TeacherAvailabilitySubjectId ==. intKey sid]) mSubject
+            ++ maybe [] (\fromTs -> [TeacherAvailabilityEndAt >=. fromTs]) mFrom
+            ++ maybe [] (\toTs -> [TeacherAvailabilityStartAt <=. toTs]) mTo
+      records <- selectList filters [Asc TeacherAvailabilityStartAt]
+      let subjects = map (Trials.teacherAvailabilitySubjectId . entityVal) records
+          teachers = map (Trials.teacherAvailabilityTeacherId . entityVal) records
+          rooms    = map (Trials.teacherAvailabilityRoomId . entityVal) records
+      subjectMap <- loadSubjectNames subjects
+      teacherMap <- loadTeacherNames teachers
+      roomMap    <- loadRoomNames rooms
+      pure (map (availabilityEntityToDTO subjectMap teacherMap roomMap) records)
+
+    availabilityUpsertH :: TrialAvailabilityUpsert -> AppM TrialAvailabilitySlotDTO
+    availabilityUpsertH TrialAvailabilityUpsert{..} = do
+      ensureModuleAccess ModuleScheduling
+      when (startAt >= endAt) $
+        liftIO $ throwIO err400 { errBody = "La hora de fin debe ser posterior al inicio." }
+      teacherKey <- resolveTeacherKey teacherId
+      let isSelf = teacherKey == auPartyId
+      subjectKey <- ensureSubjectExists subjectId
+      roomKey <- parseRoomKey roomId
+      ensureRoomAllowed subjectKey roomKey
+      when (isSelf && not (hasModuleAccess ModuleAdmin user)) $
+        ensureTeacherSubject teacherKey subjectKey
+      isFree <- teacherAvailable teacherKey startAt endAt
+      unless isFree $
+        liftIO $ throwIO err409 { errBody = "Ya tienes una clase o prueba en ese horario." }
+      let overlapFilters =
+            [ TeacherAvailabilityTeacherId ==. teacherKey
+            , TeacherAvailabilityStartAt <. endAt
+            , TeacherAvailabilityEndAt   >. startAt
+            ] ++ maybe [] (\aid -> [TeacherAvailabilityId !=. intKey aid]) availabilityId
+      hasOverlap <- recordExists overlapFilters
+      when hasOverlap $
+        liftIO $ throwIO err409 { errBody = "Ya publicaste disponibilidad en ese horario." }
+      now <- liftIO getCurrentTime
+      entity <- case availabilityId of
+        Nothing -> do
+          newId <- insert TeacherAvailability
+            { teacherAvailabilityTeacherId = teacherKey
+            , teacherAvailabilitySubjectId = subjectKey
+            , teacherAvailabilityRoomId    = roomKey
+            , teacherAvailabilityStartAt   = startAt
+            , teacherAvailabilityEndAt     = endAt
+            , teacherAvailabilityNotes     = notes
+            , teacherAvailabilityCreatedAt = now
+            }
+          getJustEntity newId
+        Just aid -> do
+          let availabilityKey = intKey aid :: Key TeacherAvailability
+          mExisting <- get availabilityKey
+          case mExisting of
+            Nothing -> liftIO $ throwIO err404
+            Just existing -> do
+              unless (teacherAvailabilityTeacherId existing == teacherKey || hasModuleAccess ModuleAdmin user) $
+                liftIO $ throwIO err403
+              update availabilityKey
+                [ TeacherAvailabilityTeacherId =. teacherKey
+                , TeacherAvailabilitySubjectId =. subjectKey
+                , TeacherAvailabilityRoomId    =. roomKey
+                , TeacherAvailabilityStartAt   =. startAt
+                , TeacherAvailabilityEndAt     =. endAt
+                , TeacherAvailabilityNotes     =. notes
+                ]
+              getJustEntity availabilityKey
+      let subjectIds = [Trials.teacherAvailabilitySubjectId (entityVal entity)]
+          teacherIds = [Trials.teacherAvailabilityTeacherId (entityVal entity)]
+          roomIds    = [Trials.teacherAvailabilityRoomId (entityVal entity)]
+      subjectMap <- loadSubjectNames subjectIds
+      teacherMap <- loadTeacherNames teacherIds
+      roomMap    <- loadRoomNames roomIds
+      pure (availabilityEntityToDTO subjectMap teacherMap roomMap entity)
+
+    availabilityDeleteH :: Int -> AppM NoContent
+    availabilityDeleteH availabilityIdInt = do
+      ensureModuleAccess ModuleScheduling
+      let availabilityKey = intKey availabilityIdInt :: Key TeacherAvailability
+      mEntity <- get availabilityKey
+      case mEntity of
+        Nothing -> liftIO $ throwIO err404
+        Just row -> do
+          let owner = teacherAvailabilityTeacherId row
+          unless (owner == auPartyId || hasModuleAccess ModuleAdmin user) $
+            liftIO $ throwIO err403
+          delete availabilityKey
+          pure NoContent
+
+    subjectsH :: Maybe Bool -> AppM [SubjectDTO]
+    subjectsH includeInactive = do
+      ensureModuleAccess ModuleScheduling
+      listSubjects (fromMaybe False includeInactive)
+
+    createSubjectH :: SubjectCreate -> AppM SubjectDTO
+    createSubjectH SubjectCreate{..} = do
+      ensureModuleAccess ModuleAdmin
+      let trimmed = T.strip name
+      when (T.null trimmed) $ liftIO $ throwIO err400 { errBody = "El nombre es obligatorio" }
+      let isActive = fromMaybe True active
+          entityVal = Subject
+            { subjectName   = trimmed
+            , subjectActive = isActive
+            }
+      sid <- insert entityVal
+      roomMap <- subjectRoomMap [sid]
+      pure (subjectEntityToDTO roomMap (Entity sid entityVal))
+
+    updateSubjectH :: Int -> SubjectUpdate -> AppM SubjectDTO
+    updateSubjectH subjectIdInt SubjectUpdate{..} = do
+      ensureModuleAccess ModuleAdmin
+      let sid = intKey subjectIdInt :: Key Subject
+      when (maybe False (T.null . T.strip) name) $ liftIO $ throwIO err400 { errBody = "El nombre es obligatorio" }
+      mSubject <- get sid
+      case mSubject of
+        Nothing -> liftIO $ throwIO err404
+        Just _ -> do
+          let trimmed = T.strip <$> name
+              updates = catMaybes
+                [ (SubjectName =.) <$> trimmed
+                , (SubjectActive =.) <$> active
+                ]
+          unless (null updates) $ update sid updates
+          fresh <- get sid
+          case fresh of
+            Nothing       -> liftIO $ throwIO err404
+            Just newSubj  -> do
+              roomMap <- subjectRoomMap [sid]
+              pure (subjectEntityToDTO roomMap (Entity sid newSubj))
+
+    deleteSubjectH :: Int -> AppM NoContent
+    deleteSubjectH subjectIdInt = do
+      ensureModuleAccess ModuleAdmin
+      let sid = intKey subjectIdInt :: Key Subject
+      mSubj <- get sid
+      case mSubj of
+        Nothing -> liftIO $ throwIO err404
+        Just _  -> do
+          update sid [SubjectActive =. False]
+          pure NoContent
+
+    ensureModuleAccess :: ModuleAccess -> AppM ()
+    ensureModuleAccess tag =
+      unless (hasModuleAccess tag user) $
+        liftIO $ throwIO err403
+
+    resolveTeacherKey :: Maybe Int -> AppM PartyId
+    resolveTeacherKey Nothing = pure auPartyId
+    resolveTeacherKey (Just tid) = do
+      let key = intKey tid :: PartyId
+      unless (key == auPartyId || hasModuleAccess ModuleAdmin user) $
+        liftIO $ throwIO err403
+      pure key
+
+    ensureSubjectExists :: Int -> AppM SubjectId
+    ensureSubjectExists sidInt = do
+      let key = intKey sidInt :: SubjectId
+      mSubject <- get key
+      case mSubject of
+        Nothing -> liftIO $ throwIO err404
+        Just _  -> pure key
+
+    parseRoomKey :: Text -> AppM ResourceId
+    parseRoomKey raw =
+      case fromPathPiece raw of
+        Nothing -> liftIO $ throwIO err400 { errBody = "Identificador de sala inválido." }
+        Just key -> do
+          mRoom <- get key
+          case mRoom of
+            Nothing -> liftIO $ throwIO err404
+            Just _  -> pure key
+
+    ensureRoomAllowed :: SubjectId -> ResourceId -> AppM ()
+    ensureRoomAllowed subjectKey roomKey = do
+      prefs <- selectList [SubjectRoomPreferenceSubjectId ==. subjectKey] []
+      case prefs of
+        [] -> pure () -- no restriction configured
+        _  -> do
+          let allowed = any (\(Entity _ pref) -> subjectRoomPreferenceRoomId pref == roomKey) prefs
+          unless allowed $
+            liftIO $ throwIO err422 { errBody = "Esta materia no se dicta en la sala seleccionada." }
+
+    ensureTeacherSubject :: PartyId -> SubjectId -> AppM ()
+    ensureTeacherSubject teacherKey subjectKey = do
+      linked <- recordExists [ TeacherSubjectTeacherId ==. teacherKey
+                             , TeacherSubjectSubjectId ==. subjectKey
+                             ]
+      unless linked $
+        liftIO $ throwIO err422 { errBody = "No estás asignado a esta materia." }
+
+    loadSubjectNames :: [SubjectId] -> AppM (Map.Map SubjectId Text)
+    loadSubjectNames ids =
+      if null ids
+        then pure Map.empty
+        else do
+          entities <- selectList [SubjectId <-. distinct ids] []
+          pure $ Map.fromList [ (entityKey e, Trials.subjectName (entityVal e)) | e <- entities ]
+
+    loadTeacherNames :: [PartyId] -> AppM (Map.Map PartyId Text)
+    loadTeacherNames ids =
+      if null ids
+        then pure Map.empty
+        else do
+          entities <- selectList [Models.PartyId <-. distinct ids] []
+          pure $ Map.fromList [ (entityKey e, partyDisplayName (entityVal e)) | e <- entities ]
+
+    loadRoomNames :: [ResourceId] -> AppM (Map.Map ResourceId Text)
+    loadRoomNames ids =
+      if null ids
+        then pure Map.empty
+        else do
+          entities <- selectList [Models.ResourceId <-. distinct ids] []
+          pure $ Map.fromList [ (entityKey e, Models.resourceName (entityVal e)) | e <- entities ]
+
+    availabilityEntityToDTO
+      :: Map.Map SubjectId Text
+      -> Map.Map PartyId Text
+      -> Map.Map ResourceId Text
+      -> Entity TeacherAvailability
+      -> TrialAvailabilitySlotDTO
+    availabilityEntityToDTO subjectMap teacherMap roomMap (Entity aid availability) =
+      TrialAvailabilitySlotDTO
+        { availabilityId = entityKeyInt aid
+        , subjectId      = entityKeyInt (Trials.teacherAvailabilitySubjectId availability)
+        , subjectName    = Map.lookup (Trials.teacherAvailabilitySubjectId availability) subjectMap
+        , teacherId      = entityKeyInt (Trials.teacherAvailabilityTeacherId availability)
+        , teacherName    = Map.lookup (Trials.teacherAvailabilityTeacherId availability) teacherMap
+        , roomId         = toPathPiece (Trials.teacherAvailabilityRoomId availability)
+        , roomName       = Map.lookup (Trials.teacherAvailabilityRoomId availability) roomMap
+        , startAt        = Trials.teacherAvailabilityStartAt availability
+        , endAt          = Trials.teacherAvailabilityEndAt availability
+        , notes          = Trials.teacherAvailabilityNotes availability
+        }
+
+    distinct :: (Ord a) => [a] -> [a]
+    distinct = Set.toList . Set.fromList
 
     packagesH :: Maybe Int -> AppM [PackageDTO]
     packagesH mSubject = do
@@ -388,4 +720,4 @@ trialsServer pool =
     nt x = liftIO (runSqlPool x pool)
 
     authedPrivateServer :: AuthedUser -> ServerT PrivateTrialsAPI AppM
-    authedPrivateServer _ = privateTrialsServer
+    authedPrivateServer user = privateTrialsServer user

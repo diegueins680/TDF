@@ -25,6 +25,7 @@ import           Web.PathPieces             (PathPiece, fromPathPiece, toPathPie
 
 import           TDF.API.Inventory          (InventoryAPI)
 import           TDF.API.Bands              (BandsAPI)
+import           TDF.API.Pipelines          (PipelinesAPI)
 import           TDF.API.Rooms              (RoomsAPI)
 import           TDF.API.Sessions           (SessionsAPI)
 import           TDF.API.Types
@@ -34,6 +35,7 @@ import           TDF.Models                 (Party(..))
 import qualified TDF.Models                 as M
 import           TDF.ModelsExtra
 import qualified TDF.ModelsExtra as ME
+import           TDF.Pipelines              (canonicalStage, defaultStage, pipelineStages, pipelineTypeSlug, parsePipelineType)
 
 inventoryServer
   :: ( MonadReader Env m
@@ -453,6 +455,140 @@ sessionsServer user =
     toBandChoice partyMap (Entity bandKey band) = BandChoiceDTO
       { bandId = toPathPiece bandKey
       , name   = maybe (bandName band) (partyDisplayName . entityVal) (Map.lookup (bandPartyId band) partyMap)
+      }
+
+pipelinesServer
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => AuthedUser
+  -> ServerT PipelinesAPI m
+pipelinesServer user rawType =
+  case parsePipelineType rawType of
+    Nothing   -> notFoundHandlers
+    Just kind ->
+      (     listCards kind
+       :<|> listStages kind
+       :<|> createCard kind
+       :<|> cardServer kind
+      )
+  where
+    throw404 = throwError err404 { errBody = "Unknown pipeline type" }
+
+    notFoundHandlers =
+          throw404
+      :<|> throw404
+      :<|> (\_ -> throw404)
+      :<|> (\_ ->
+            throw404
+        :<|> (\_ -> throw404)
+        :<|> throw404
+        )
+
+    listCards kind = do
+      ensureModule ModuleScheduling user
+      entities <- withPool $ selectList
+        [ ME.PipelineCardServiceKind ==. kind ]
+        [ Asc ME.PipelineCardSortOrder
+        , Asc ME.PipelineCardCreatedAt
+        ]
+      pure (map toPipelineDTO entities)
+
+    listStages kind = do
+      ensureModule ModuleScheduling user
+      pure (pipelineStages kind)
+
+    createCard kind req = do
+      ensureModule ModuleScheduling user
+      stageValue <- resolveStage kind (pccStage req)
+      now <- liftIO getCurrentTime
+      entity <- withPool $ do
+        newId <- insert ME.PipelineCard
+          { ME.pipelineCardServiceKind = kind
+          , ME.pipelineCardTitle       = pccTitle req
+          , ME.pipelineCardArtist      = pccArtist req
+          , ME.pipelineCardStage       = stageValue
+          , ME.pipelineCardSortOrder   = fromMaybe 0 (pccSortOrder req)
+          , ME.pipelineCardNotes       = pccNotes req
+          , ME.pipelineCardCreatedAt   = now
+          , ME.pipelineCardUpdatedAt   = now
+          }
+        getJustEntity newId
+      pure (toPipelineDTO entity)
+
+    cardServer kind rawId =
+          getCard kind rawId
+     :<|> updateCard kind rawId
+     :<|> deleteCard kind rawId
+
+    getCard kind rawId = do
+      ensureModule ModuleScheduling user
+      cardKey <- parseKey @ME.PipelineCard rawId
+      mEntity <- withPool $ getEntity cardKey
+      case mEntity of
+        Nothing -> throwError err404
+        Just ent ->
+          if ME.pipelineCardServiceKind (entityVal ent) /= kind
+            then throwError err404
+            else pure (toPipelineDTO ent)
+
+    updateCard kind rawId req = do
+      ensureModule ModuleScheduling user
+      cardKey <- parseKey @ME.PipelineCard rawId
+      stageUpdate <- case pcuStage req of
+        Nothing   -> pure Nothing
+        Just raw  -> Just <$> resolveStage kind (Just raw)
+      now <- liftIO getCurrentTime
+      result <- withPool $ do
+        mEntity <- getEntity cardKey
+        case mEntity of
+          Nothing -> pure Nothing
+          Just (Entity key card)
+            | ME.pipelineCardServiceKind card /= kind -> pure Nothing
+            | otherwise -> do
+                let updates = catMaybes
+                      [ fmap (ME.PipelineCardTitle =.) (pcuTitle req)
+                      , fmap (ME.PipelineCardArtist =.) (pcuArtist req)
+                      , fmap (ME.PipelineCardStage =.) stageUpdate
+                      , fmap (ME.PipelineCardSortOrder =.) (pcuSortOrder req)
+                      , fmap (ME.PipelineCardNotes =.) (pcuNotes req)
+                      ]
+                    updates' = if null updates
+                      then []
+                      else updates ++ [ME.PipelineCardUpdatedAt =. now]
+                unless (null updates') (update key updates')
+                getEntity key
+      maybe (throwError err404) (pure . toPipelineDTO) result
+
+    deleteCard kind rawId = do
+      ensureModule ModuleScheduling user
+      cardKey <- parseKey @ME.PipelineCard rawId
+      deleted <- withPool $ do
+        mCard <- get cardKey
+        case mCard of
+          Nothing -> pure False
+          Just card ->
+            if ME.pipelineCardServiceKind card /= kind
+              then pure False
+              else delete cardKey >> pure True
+      unless deleted (throwError err404)
+      pure NoContent
+
+    resolveStage kind Nothing  = pure (defaultStage kind)
+    resolveStage kind (Just raw) =
+      case canonicalStage kind raw of
+        Nothing   -> throwError err400 { errBody = "Invalid stage for pipeline" }
+        Just val  -> pure val
+
+    toPipelineDTO (Entity key card) = PipelineCardDTO
+      { pcId        = toPathPiece key
+      , pcTitle     = ME.pipelineCardTitle card
+      , pcArtist    = ME.pipelineCardArtist card
+      , pcType      = pipelineTypeSlug (ME.pipelineCardServiceKind card)
+      , pcStage     = ME.pipelineCardStage card
+      , pcSortOrder = ME.pipelineCardSortOrder card
+      , pcNotes     = ME.pipelineCardNotes card
       }
 
 roomsServer
