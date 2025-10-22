@@ -11,13 +11,32 @@ executable tdf-hq-exe
   main-is:          Main.hs
   hs-source-dirs:   app, src
   other-modules:
+    TDF.API.Admin
     TDF.API
+    TDF.API.Bands
+    TDF.API.Future
+    TDF.API.Inventory
+    TDF.API.Pipelines
+    TDF.API.Rooms
+    TDF.API.Sessions
+    TDF.API.Types
+    TDF.Auth
     TDF.Config
     TDF.DB
     TDF.DTO
     TDF.Models
+    TDF.ModelsExtra
+    TDF.Pipelines
     TDF.Seed
     TDF.Server
+    TDF.ServerAdmin
+    TDF.ServerExtra
+    TDF.ServerFuture
+    TDF.Trials.API
+    TDF.Trials.DTO
+    TDF.Trials.Models
+    TDF.Trials.Seed
+    TDF.Trials.Server
   default-language: Haskell2010
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:
@@ -37,6 +56,7 @@ executable tdf-hq-exe
     , servant              >=0.19
     , servant-server       >=0.19
     , http-types
+    , http-media
     , warp                 >=3.3
     , wai
     , wai-cors
@@ -50,3 +70,6 @@ executable tdf-hq-exe
     , safe-exceptions
     , base64-bytestring
     , directory
+    , bcrypt
+    , path-pieces
+    , uuid

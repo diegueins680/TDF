@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,108 +8,145 @@
 
 module TDF.Server where
 
-import           Control.Monad (unless)
+import           Control.Monad (void)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
-import qualified Data.ByteString.Lazy.Char8 as LBS
+import           Crypto.BCrypt (validatePassword)
 import           Data.Int (Int64)
-import           Data.Proxy (Proxy(..))
-import           Data.Time (getCurrentTime, UTCTime, Day, utctDay)
+import qualified Data.Set as Set
+import           Data.Maybe (fromMaybe)
+import           Data.Time (getCurrentTime, utctDay)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Data.UUID (toText)
+import           Data.UUID.V4 (nextRandom)
 import           Text.Read (readMaybe)
 
 import           Servant
-import           Servant.API.Experimental.Auth (AuthProtect)
-import           Servant.Server.Experimental.Auth (AuthHandler, AuthServerData, mkAuthHandler)
-import           Network.Wai (Application, Request, requestHeaders)
+import           Network.Wai (Request)
+import qualified Data.ByteString.Lazy as BL
+import           Servant.Server.Experimental.Auth (AuthHandler)
 
 import           Database.Persist
 import           Database.Persist.Sql
 import           Database.Persist.Postgresql ()
 
 import           TDF.API
+import           TDF.API.Types (RolePayload(..))
 import           TDF.DB
 import           TDF.Models
 import           TDF.DTO
-import           TDF.Seed (seedAll)
+import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.ServerAdmin (adminServer)
+import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
+import           TDF.ServerFuture (futureServer)
+import           TDF.Trials.API (TrialsAPI)
+import           TDF.Trials.Server (trialsServer)
 
 type AppM = ReaderT Env Handler
 
-data AuthenticatedUser = AuthenticatedUser
-  { auRole :: RoleEnum
-  }
-
-type instance AuthServerData (AuthProtect "role-auth") = AuthenticatedUser
+type CombinedAPI = TrialsAPI :<|> API
 
 mkApp :: Env -> Application
 mkApp env =
-  let ctx = authContext env
-      proxy = Proxy :: Proxy API
-      ctxProxy = Proxy :: Proxy '[AuthHandler Request AuthenticatedUser]
-  in serveWithContext proxy ctx (hoistServerWithContext proxy ctxProxy (nt env) server)
+  let apiProxy = Proxy :: Proxy API
+      combinedProxy = Proxy :: Proxy CombinedAPI
+      ctxProxy = Proxy :: Proxy '[AuthHandler Request AuthedUser]
+      ctx      = authContext env
+      trials   = trialsServer (envPool env)
+      apiSrv   = hoistServerWithContext apiProxy ctxProxy (nt env) server
+  in serveWithContext combinedProxy ctx (trials :<|> apiSrv)
 
 nt :: Env -> AppM a -> Handler a
 nt env x = runReaderT x env
 
-authContext :: Env -> Context '[AuthHandler Request AuthenticatedUser]
-authContext env = authHandler env :. EmptyContext
-
-authHandler :: Env -> AuthHandler Request AuthenticatedUser
-authHandler _ = mkAuthHandler $ \req -> do
-  roleHeader <- maybe (throwError err401 { errBody = "Missing X-Role header" }) pure (lookup "X-Role" (requestHeaders req))
-  roleText <- either (const (throwError err401 { errBody = "Invalid role encoding" })) pure (TE.decodeUtf8' roleHeader)
-  roleEnum <- maybe (throwError err401 { errBody = "Unknown role" }) pure (readMaybe (T.unpack roleText))
-  pure AuthenticatedUser { auRole = roleEnum }
-
-authorize :: [RoleEnum] -> AuthenticatedUser -> AppM ()
-authorize allowed user =
-  unless (auRole user `elem` allowed) $
-    throwError err403 { errBody = LBS.pack "Forbidden: insufficient role" }
-
 server :: ServerT API AppM
 server =
        health
-  :<|> partyServer
-  :<|> bookingServer
-  :<|> packageServer
-  :<|> invoiceServer
-  :<|> adminServer
+  :<|> login
+  :<|> protectedServer
+
+protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
+protectedServer user =
+       partyServer user
+  :<|> bookingServer user
+  :<|> packageServer user
+  :<|> invoiceServer user
+  :<|> adminServer user
+  :<|> inventoryServer user
+  :<|> bandsServer user
+  :<|> sessionsServer user
+  :<|> pipelinesServer user
+  :<|> roomsServer user
+  :<|> futureServer
 
 -- Health
 health :: AppM TDF.API.HealthStatus
 health = pure (HealthStatus "ok" "ok")
 
-partyServer :: ServerT PartyAPI AppM
-partyServer user =
-       listParties user
-  :<|> createParty user
-  :<|> partyById user
+login :: LoginRequest -> AppM LoginResponse
+login LoginRequest{..} = do
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool (runLogin username password)
+  case result of
+    Left msg  -> throwAuthError msg
+    Right res -> pure res
   where
-    partyById u pid =
-           getParty u pid
-      :<|> updateParty u pid
-      :<|> addRole u pid
+    throwAuthError msg = throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
 
-listParties :: AuthenticatedUser -> AppM [PartyDTO]
+runLogin :: Text -> Text -> SqlPersistT IO (Either Text LoginResponse)
+runLogin uname pwd = do
+  mCred <- getBy (UniqueCredentialUsername uname)
+  case mCred of
+    Nothing -> pure (Left invalidMsg)
+    Just (Entity _ cred)
+      | not (userCredentialActive cred) -> pure (Left "Account disabled")
+      | otherwise ->
+          if validatePassword (TE.encodeUtf8 (userCredentialPasswordHash cred)) (TE.encodeUtf8 pwd)
+            then do
+              token <- createSessionToken (userCredentialPartyId cred) uname
+              mUser  <- loadAuthedUser token
+              case mUser of
+                Nothing    -> pure (Left "Failed to load user profile")
+                Just user  -> pure (Right (toLoginResponse token user))
+            else pure (Left invalidMsg)
+  where
+    invalidMsg = "Invalid username or password"
+
+toLoginResponse :: Text -> AuthedUser -> LoginResponse
+toLoginResponse token AuthedUser{..} = LoginResponse
+  { token   = token
+  , partyId = fromSqlKey auPartyId
+  , roles   = auRoles
+  , modules = map moduleName (Set.toList auModules)
+  }
+
+createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
+createSessionToken pid uname = do
+  token <- liftIO (toText <$> nextRandom)
+  let label = Just ("password-login:" <> uname)
+  inserted <- insertUnique (ApiToken token pid label True)
+  case inserted of
+    Nothing -> createSessionToken pid uname
+    Just _  -> pure token
+
+-- Parties
+partyServer :: AuthedUser -> ServerT PartyAPI AppM
+partyServer user = listParties user :<|> createParty user :<|> partyById
+  where
+    partyById pid = getParty user pid :<|> updateParty user pid :<|> addRole user pid
+
+listParties :: AuthedUser -> AppM [PartyDTO]
 listParties user = do
-  authorize [Admin, Manager, Reception, ReadOnly] user
-  listPartiesAction
-
-listPartiesAction :: AppM [PartyDTO]
-listPartiesAction = do
+  requireModule user ModuleCRM
   Env pool _ <- ask
   entities <- liftIO $ flip runSqlPool pool $ selectList [] [Asc PartyId]
   pure (map toPartyDTO entities)
 
-createParty :: AuthenticatedUser -> PartyCreate -> AppM PartyDTO
+createParty :: AuthedUser -> PartyCreate -> AppM PartyDTO
 createParty user req = do
-  authorize [Admin, Manager, Reception] user
-  createPartyAction req
-
-createPartyAction :: PartyCreate -> AppM PartyDTO
-createPartyAction req = do
+  requireModule user ModuleCRM
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let p = Party
@@ -125,29 +163,26 @@ createPartyAction req = do
           , partyCreatedAt = now
           }
   pid <- liftIO $ flip runSqlPool pool $ insert p
+  liftIO $ flip runSqlPool pool $ mapM_ (\role -> upsert
+    (PartyRole pid role True)
+    [PartyRoleActive =. True]) (fromMaybe [] (cRoles req))
   pure $ toPartyDTO (Entity pid p)
 
-getParty :: AuthenticatedUser -> Int64 -> AppM PartyDTO
+getParty :: AuthedUser -> Int64 -> AppM PartyDTO
 getParty user pidI = do
-  authorize [Admin, Manager, Reception, ReadOnly] user
-  getPartyAction pidI
-
-getPartyAction :: Int64 -> AppM PartyDTO
-getPartyAction pidI = do
+  requireModule user ModuleCRM
   Env pool _ <- ask
   let pid = toSqlKey pidI :: Key Party
   mp <- liftIO $ flip runSqlPool pool $ getEntity pid
   case mp of
     Nothing -> throwError err404
-    Just ent -> pure (toPartyDTO ent)
+    Just ent -> do
+      bandDetails <- liftIO $ flip runSqlPool pool $ loadBandForParty (entityKey ent)
+      pure (toPartyDTOWithBand bandDetails ent)
 
-updateParty :: AuthenticatedUser -> Int64 -> PartyUpdate -> AppM PartyDTO
+updateParty :: AuthedUser -> Int64 -> PartyUpdate -> AppM PartyDTO
 updateParty user pidI req = do
-  authorize [Admin, Manager, Reception] user
-  updatePartyAction pidI req
-
-updatePartyAction :: Int64 -> PartyUpdate -> AppM PartyDTO
-updatePartyAction pidI req = do
+  requireModule user ModuleCRM
   Env pool _ <- ask
   let pid = toSqlKey pidI :: Key Party
   liftIO $ flip runSqlPool pool $ do
@@ -168,38 +203,31 @@ updatePartyAction pidI req = do
               , partyNotes            = maybe (partyNotes p) Just       (uNotes req)
               }
         replace pid p'
-  getPartyAction pidI
+  getParty user pidI
 
-addRole :: AuthenticatedUser -> Int64 -> Text -> AppM NoContent
-addRole user pidI roleTxt = do
-  authorize [Admin, Manager] user
-  addRoleAction pidI roleTxt
-
-addRoleAction :: Int64 -> Text -> AppM NoContent
-addRoleAction pidI roleTxt = do
+addRole :: AuthedUser -> Int64 -> RolePayload -> AppM NoContent
+addRole user pidI (RolePayload roleTxt) = do
+  requireModule user ModuleAdmin
   Env pool _ <- ask
   let pid  = toSqlKey pidI :: Key Party
       role = parseRole roleTxt
-  liftIO $ flip runSqlPool pool $ upsert
+  liftIO $ flip runSqlPool pool $ void $ upsert
     (PartyRole pid role True)
     [ PartyRoleActive =. True ]
   pure NoContent
   where
     parseRole t =
-      case readMaybe (T.unpack t) of
+      case readMaybe (T.unpack (T.strip t)) of
         Just r  -> r
         Nothing -> ReadOnly
 
-bookingServer :: ServerT BookingAPI AppM
+-- Bookings
+bookingServer :: AuthedUser -> ServerT BookingAPI AppM
 bookingServer user = listBookings user :<|> createBooking user
 
-listBookings :: AuthenticatedUser -> AppM [BookingDTO]
+listBookings :: AuthedUser -> AppM [BookingDTO]
 listBookings user = do
-  authorize [Admin, Manager, Reception] user
-  listBookingsAction
-
-listBookingsAction :: AppM [BookingDTO]
-listBookingsAction = do
+  requireModule user ModuleScheduling
   Env pool _ <- ask
   bs <- liftIO $ flip runSqlPool pool $ selectList [] [Desc BookingId]
   pure $ map toDTO bs
@@ -213,13 +241,9 @@ listBookingsAction = do
       , notes     = bookingNotes b
       }
 
-createBooking :: AuthenticatedUser -> CreateBookingReq -> AppM BookingDTO
+createBooking :: AuthedUser -> CreateBookingReq -> AppM BookingDTO
 createBooking user req = do
-  authorize [Admin, Manager, Reception] user
-  createBookingAction req
-
-createBookingAction :: CreateBookingReq -> AppM BookingDTO
-createBookingAction req = do
+  requireModule user ModuleScheduling
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let status' = parseStatus (cbStatus req)
@@ -248,16 +272,13 @@ createBookingAction req = do
         Just s  -> s
         Nothing -> Confirmed
 
-packageServer :: ServerT PackageAPI AppM
+-- Packages
+packageServer :: AuthedUser -> ServerT PackageAPI AppM
 packageServer user = listProducts user :<|> createPurchase user
 
-listProducts :: AuthenticatedUser -> AppM [PackageProductDTO]
+listProducts :: AuthedUser -> AppM [PackageProductDTO]
 listProducts user = do
-  authorize [Admin, Manager, Reception, Accounting] user
-  listProductsAction
-
-listProductsAction :: AppM [PackageProductDTO]
-listProductsAction = do
+  requireModule user ModulePackages
   Env pool _ <- ask
   ps <- liftIO $ flip runSqlPool pool $ selectList [PackageProductActive ==. True] [Asc PackageProductId]
   pure $ map toDTO ps
@@ -271,13 +292,9 @@ listProductsAction = do
       , ppPriceCents = packageProductPriceCents p
       }
 
-createPurchase :: AuthenticatedUser -> PackagePurchaseReq -> AppM NoContent
+createPurchase :: AuthedUser -> PackagePurchaseReq -> AppM NoContent
 createPurchase user req = do
-  authorize [Admin, Manager, Reception] user
-  createPurchaseAction req
-
-createPurchaseAction :: PackagePurchaseReq -> AppM NoContent
-createPurchaseAction req = do
+  requireModule user ModulePackages
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let buyer = toSqlKey (buyerId req)   :: Key Party
@@ -301,16 +318,13 @@ createPurchaseAction req = do
         pure ()
   pure NoContent
 
-invoiceServer :: ServerT InvoiceAPI AppM
+-- Invoices
+invoiceServer :: AuthedUser -> ServerT InvoiceAPI AppM
 invoiceServer user = listInvoices user :<|> createInvoice user
 
-listInvoices :: AuthenticatedUser -> AppM [InvoiceDTO]
+listInvoices :: AuthedUser -> AppM [InvoiceDTO]
 listInvoices user = do
-  authorize [Admin, Manager, Accounting] user
-  listInvoicesAction
-
-listInvoicesAction :: AppM [InvoiceDTO]
-listInvoicesAction = do
+  requireModule user ModuleInvoicing
   Env pool _ <- ask
   is <- liftIO $ flip runSqlPool pool $ selectList [] [Desc InvoiceId]
   pure $ map toDTO is
@@ -324,13 +338,9 @@ listInvoicesAction = do
       , totalC    = invoiceTotalCents i
       }
 
-createInvoice :: AuthenticatedUser -> CreateInvoiceReq -> AppM InvoiceDTO
+createInvoice :: AuthedUser -> CreateInvoiceReq -> AppM InvoiceDTO
 createInvoice user req = do
-  authorize [Admin, Accounting] user
-  createInvoiceAction req
-
-createInvoiceAction :: CreateInvoiceReq -> AppM InvoiceDTO
-createInvoiceAction req = do
+  requireModule user ModuleInvoicing
   Env pool _ <- ask
   now <- liftIO getCurrentTime
   let day = utctDay now
@@ -359,16 +369,10 @@ createInvoiceAction req = do
     , totalC    = invoiceTotalCents inv
     }
 
-adminServer :: ServerT AdminAPI AppM
-adminServer user = seedHandler user
-
-seedHandler :: AuthenticatedUser -> AppM NoContent
-seedHandler user = do
-  authorize [Admin] user
-  seedHandlerAction
-
-seedHandlerAction :: AppM NoContent
-seedHandlerAction = do
-  Env pool _ <- ask
-  liftIO $ flip runSqlPool pool seedAll
-  pure NoContent
+requireModule :: AuthedUser -> ModuleAccess -> AppM ()
+requireModule user moduleTag
+  | hasModuleAccess moduleTag user = pure ()
+  | otherwise = throwError err403
+      { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+  where
+    msg = "Missing access to module: " <> moduleName moduleTag

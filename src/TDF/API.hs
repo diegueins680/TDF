@@ -7,55 +7,64 @@
 module TDF.API where
 
 import           Servant
-import           Servant.API.Experimental.Auth (AuthProtect)
 import           Data.Int (Int64)
 import           Data.Text (Text)
-import           Data.Time (UTCTime, Day)
+import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
 import           Data.Aeson (ToJSON(..), FromJSON(..), object, (.=))
 
+import           TDF.API.Admin     (AdminAPI)
+import           TDF.API.Future    (FutureAPI)
+import           TDF.API.Bands     (BandsAPI)
+import           TDF.API.Inventory (InventoryAPI)
+import           TDF.API.Pipelines (PipelinesAPI)
+import           TDF.API.Rooms     (RoomsAPI)
+import           TDF.API.Sessions  (SessionsAPI)
+import           TDF.API.Types     (LooseJSON, RolePayload)
 import           TDF.DTO
 
-type Protected routes = AuthProtect "role-auth" :> routes
-
-type PartyAPI = Protected (
+type PartyAPI =
        Get '[JSON] [PartyDTO]
   :<|> ReqBody '[JSON] PartyCreate :> Post '[JSON] PartyDTO
-  :<|> Capture "partyId" Int64 :> (
+      :<|> Capture "partyId" Int64 :> (
            Get '[JSON] PartyDTO
       :<|> ReqBody '[JSON] PartyUpdate :> Put '[JSON] PartyDTO
-      :<|> "roles" :> ReqBody '[JSON] Text :> Post '[JSON] NoContent
+      :<|> "roles" :> ReqBody '[LooseJSON, PlainText, OctetStream] RolePayload :> Post '[JSON] NoContent
       )
-  )
 
-type BookingAPI = Protected (
+type BookingAPI =
        Get '[JSON] [BookingDTO]
   :<|> ReqBody '[JSON] CreateBookingReq :> Post '[JSON] BookingDTO
-  )
 
-type PackageAPI = Protected (
+type PackageAPI =
        "products" :> Get '[JSON] [PackageProductDTO]
   :<|> "purchases" :> ReqBody '[JSON] PackagePurchaseReq :> Post '[JSON] NoContent
-  )
 
-type InvoiceAPI = Protected (
+type InvoiceAPI =
        Get '[JSON] [InvoiceDTO]
   :<|> ReqBody '[JSON] CreateInvoiceReq :> Post '[JSON] InvoiceDTO
-  )
-
-type AdminAPI = Protected (
-       "seed" :> Post '[JSON] NoContent
-  )
 
 type HealthAPI = Get '[JSON] HealthStatus
 
-type API =
-       "health"  :> HealthAPI
-  :<|> "parties" :> PartyAPI
+type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
+
+type ProtectedAPI =
+       "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
   :<|> "admin"    :> AdminAPI
+  :<|> InventoryAPI
+  :<|> BandsAPI
+  :<|> SessionsAPI
+  :<|> PipelinesAPI
+  :<|> RoomsAPI
+  :<|> "stubs"    :> FutureAPI
+
+type API =
+       "health" :> HealthAPI
+  :<|> "login"  :> LoginAPI
+  :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
 
