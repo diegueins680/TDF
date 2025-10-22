@@ -22,7 +22,17 @@ type PrivateTrialsAPI =
        "trial-requests" :> QueryParam "subjectId" Int :> QueryParam "status" Text :> Get '[JSON] [TrialQueueItem]
   :<|> "trial-requests" :> Capture "id" Int :> "assign" :> ReqBody '[JSON] TrialAssignIn :> Post '[JSON] TrialRequestOut
   :<|> "trial-assignments" :> ReqBody '[JSON] TrialScheduleIn :> Post '[JSON] TrialRequestOut
-  :<|> "subjects" :> Get '[JSON] [SubjectDTO]
+  :<|> "trial-availability" :> "slots"
+        :> QueryParam "subjectId" Int
+        :> QueryParam "from" UTCTime
+        :> QueryParam "to" UTCTime
+        :> Get '[JSON] [TrialAvailabilitySlotDTO]
+  :<|> "trial-availability" :> ReqBody '[JSON] TrialAvailabilityUpsert :> Post '[JSON] TrialAvailabilitySlotDTO
+  :<|> "trial-availability" :> Capture "id" Int :> Delete '[JSON] NoContent
+  :<|> "subjects" :> QueryParam "includeInactive" Bool :> Get '[JSON] [SubjectDTO]
+  :<|> "subjects" :> ReqBody '[JSON] SubjectCreate :> PostCreated '[JSON] SubjectDTO
+  :<|> "subjects" :> Capture "id" Int :> ReqBody '[JSON] SubjectUpdate :> Patch '[JSON] SubjectDTO
+  :<|> "subjects" :> Capture "id" Int :> Delete '[JSON] NoContent
   :<|> "packages" :> QueryParam "subjectId" Int :> Get '[JSON] [PackageDTO]
   :<|> "purchases" :> ReqBody '[JSON] PurchaseIn :> PostCreated '[JSON] PurchaseOut
   :<|> "class-sessions" :> ReqBody '[JSON] ClassSessionIn :> Post '[JSON] ClassSessionOut
@@ -53,8 +63,25 @@ data TrialQueueItem = TrialQueueItem
   } deriving (Generic)
 instance ToJSON TrialQueueItem; instance FromJSON TrialQueueItem
 
-data SubjectDTO = SubjectDTO { subjectId :: Int, name :: Text } deriving (Generic)
+data SubjectDTO = SubjectDTO
+  { subjectId :: Int
+  , name      :: Text
+  , active    :: Bool
+  , roomIds   :: [Text]
+  } deriving (Generic)
 instance ToJSON SubjectDTO; instance FromJSON SubjectDTO
+
+data SubjectCreate = SubjectCreate
+  { name   :: Text
+  , active :: Maybe Bool
+  } deriving (Generic)
+instance ToJSON SubjectCreate; instance FromJSON SubjectCreate
+
+data SubjectUpdate = SubjectUpdate
+  { name   :: Maybe Text
+  , active :: Maybe Bool
+  } deriving (Generic)
+instance ToJSON SubjectUpdate; instance FromJSON SubjectUpdate
 
 data PackageDTO = PackageDTO { packageId :: Int, name :: Text, hoursQty :: Int, priceCents :: Int, expiresDays :: Int } deriving (Generic)
 instance ToJSON PackageDTO; instance FromJSON PackageDTO

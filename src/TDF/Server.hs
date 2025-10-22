@@ -39,7 +39,7 @@ import           TDF.Models
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.ServerAdmin (adminServer)
-import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, roomsServer, sessionsServer)
+import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
@@ -77,6 +77,7 @@ protectedServer user =
   :<|> inventoryServer user
   :<|> bandsServer user
   :<|> sessionsServer user
+  :<|> pipelinesServer user
   :<|> roomsServer user
   :<|> futureServer
 
