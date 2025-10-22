@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,17 +8,23 @@
 
 module TDF.Server where
 
+import           Control.Monad (void)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
+import           Crypto.BCrypt (validatePassword)
 import           Data.Int (Int64)
-import           Data.Time (getCurrentTime, UTCTime, Day, utctDay)
+import qualified Data.Set as Set
+import           Data.Maybe (fromMaybe)
+import           Data.Time (getCurrentTime, utctDay)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Data.UUID (toText)
+import           Data.UUID.V4 (nextRandom)
 import           Text.Read (readMaybe)
 
 import           Servant
-import           Network.Wai (Application, Request)
+import           Network.Wai (Request)
 import qualified Data.ByteString.Lazy as BL
 import           Servant.Server.Experimental.Auth (AuthHandler)
 
@@ -26,20 +33,30 @@ import           Database.Persist.Sql
 import           Database.Persist.Postgresql ()
 
 import           TDF.API
+import           TDF.API.Types (RolePayload(..))
 import           TDF.DB
 import           TDF.Models
 import           TDF.DTO
-import           TDF.Seed (seedAll)
-import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName)
+import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.ServerAdmin (adminServer)
+import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
+import           TDF.ServerFuture (futureServer)
+import           TDF.Trials.API (TrialsAPI)
+import           TDF.Trials.Server (trialsServer)
 
 type AppM = ReaderT Env Handler
+
+type CombinedAPI = TrialsAPI :<|> API
 
 mkApp :: Env -> Application
 mkApp env =
   let apiProxy = Proxy :: Proxy API
+      combinedProxy = Proxy :: Proxy CombinedAPI
       ctxProxy = Proxy :: Proxy '[AuthHandler Request AuthedUser]
       ctx      = authContext env
-  in serveWithContext apiProxy ctx (hoistServerWithContext apiProxy ctxProxy (nt env) server)
+      trials   = trialsServer (envPool env)
+      apiSrv   = hoistServerWithContext apiProxy ctxProxy (nt env) server
+  in serveWithContext combinedProxy ctx (trials :<|> apiSrv)
 
 nt :: Env -> AppM a -> Handler a
 nt env x = runReaderT x env
@@ -47,6 +64,7 @@ nt env x = runReaderT x env
 server :: ServerT API AppM
 server =
        health
+  :<|> login
   :<|> protectedServer
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
@@ -56,10 +74,62 @@ protectedServer user =
   :<|> packageServer user
   :<|> invoiceServer user
   :<|> adminServer user
+  :<|> inventoryServer user
+  :<|> bandsServer user
+  :<|> sessionsServer user
+  :<|> pipelinesServer user
+  :<|> roomsServer user
+  :<|> futureServer
 
 -- Health
 health :: AppM TDF.API.HealthStatus
 health = pure (HealthStatus "ok" "ok")
+
+login :: LoginRequest -> AppM LoginResponse
+login LoginRequest{..} = do
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool (runLogin username password)
+  case result of
+    Left msg  -> throwAuthError msg
+    Right res -> pure res
+  where
+    throwAuthError msg = throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+
+runLogin :: Text -> Text -> SqlPersistT IO (Either Text LoginResponse)
+runLogin uname pwd = do
+  mCred <- getBy (UniqueCredentialUsername uname)
+  case mCred of
+    Nothing -> pure (Left invalidMsg)
+    Just (Entity _ cred)
+      | not (userCredentialActive cred) -> pure (Left "Account disabled")
+      | otherwise ->
+          if validatePassword (TE.encodeUtf8 (userCredentialPasswordHash cred)) (TE.encodeUtf8 pwd)
+            then do
+              token <- createSessionToken (userCredentialPartyId cred) uname
+              mUser  <- loadAuthedUser token
+              case mUser of
+                Nothing    -> pure (Left "Failed to load user profile")
+                Just user  -> pure (Right (toLoginResponse token user))
+            else pure (Left invalidMsg)
+  where
+    invalidMsg = "Invalid username or password"
+
+toLoginResponse :: Text -> AuthedUser -> LoginResponse
+toLoginResponse token AuthedUser{..} = LoginResponse
+  { token   = token
+  , partyId = fromSqlKey auPartyId
+  , roles   = auRoles
+  , modules = map moduleName (Set.toList auModules)
+  }
+
+createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
+createSessionToken pid uname = do
+  token <- liftIO (toText <$> nextRandom)
+  let label = Just ("password-login:" <> uname)
+  inserted <- insertUnique (ApiToken token pid label True)
+  case inserted of
+    Nothing -> createSessionToken pid uname
+    Just _  -> pure token
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
@@ -93,6 +163,9 @@ createParty user req = do
           , partyCreatedAt = now
           }
   pid <- liftIO $ flip runSqlPool pool $ insert p
+  liftIO $ flip runSqlPool pool $ mapM_ (\role -> upsert
+    (PartyRole pid role True)
+    [PartyRoleActive =. True]) (fromMaybe [] (cRoles req))
   pure $ toPartyDTO (Entity pid p)
 
 getParty :: AuthedUser -> Int64 -> AppM PartyDTO
@@ -103,7 +176,9 @@ getParty user pidI = do
   mp <- liftIO $ flip runSqlPool pool $ getEntity pid
   case mp of
     Nothing -> throwError err404
-    Just ent -> pure (toPartyDTO ent)
+    Just ent -> do
+      bandDetails <- liftIO $ flip runSqlPool pool $ loadBandForParty (entityKey ent)
+      pure (toPartyDTOWithBand bandDetails ent)
 
 updateParty :: AuthedUser -> Int64 -> PartyUpdate -> AppM PartyDTO
 updateParty user pidI req = do
@@ -130,19 +205,19 @@ updateParty user pidI req = do
         replace pid p'
   getParty user pidI
 
-addRole :: AuthedUser -> Int64 -> Text -> AppM NoContent
-addRole user pidI roleTxt = do
+addRole :: AuthedUser -> Int64 -> RolePayload -> AppM NoContent
+addRole user pidI (RolePayload roleTxt) = do
   requireModule user ModuleAdmin
   Env pool _ <- ask
   let pid  = toSqlKey pidI :: Key Party
       role = parseRole roleTxt
-  liftIO $ flip runSqlPool pool $ upsert
+  liftIO $ flip runSqlPool pool $ void $ upsert
     (PartyRole pid role True)
     [ PartyRoleActive =. True ]
   pure NoContent
   where
     parseRole t =
-      case readMaybe (T.unpack t) of
+      case readMaybe (T.unpack (T.strip t)) of
         Just r  -> r
         Nothing -> ReadOnly
 
@@ -293,17 +368,6 @@ createInvoice user req = do
     , taxC      = invoiceTaxCents inv
     , totalC    = invoiceTotalCents inv
     }
-
--- Admin (temporary)
-adminServer :: AuthedUser -> ServerT AdminAPI AppM
-adminServer user = seedHandler user
-
-seedHandler :: AuthedUser -> AppM NoContent
-seedHandler user = do
-  requireModule user ModuleAdmin
-  Env pool _ <- ask
-  liftIO $ flip runSqlPool pool seedAll
-  pure NoContent
 
 requireModule :: AuthedUser -> ModuleAccess -> AppM ()
 requireModule user moduleTag

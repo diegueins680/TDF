@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -7,6 +8,8 @@ module TDF.Auth
   , authContext
   , hasModuleAccess
   , moduleName
+  , modulesForRoles
+  , loadAuthedUser
   ) where
 
 import           Control.Monad.IO.Class     (liftIO)
@@ -21,7 +24,7 @@ import           Database.Persist           (Entity(..), getBy, selectList, (==.
 import           Database.Persist.Sql       (SqlPersistT, runSqlPool)
 import           Network.Wai                (Request, requestHeaders)
 import           Servant
-import           Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler)
+import           Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler, AuthServerData)
 import           Servant.API.Experimental.Auth    (AuthProtect)
 
 import           TDF.DB                     (Env(..))
@@ -63,15 +66,16 @@ hasModuleAccess moduleTag AuthedUser{..} = moduleTag `Set.member` auModules
 authWithToken :: Env -> Request -> Handler AuthedUser
 authWithToken env req = do
   token <- either throw401 pure (extractToken req)
-  mUser <- liftIO . flip runSqlPool (envPool env) $ fetchUser token
+  mUser <- liftIO . flip runSqlPool (envPool env) $ loadAuthedUser token
   case mUser of
     Nothing   -> throw401 "Invalid or inactive token"
     Just user -> pure user
   where
+    throw401 :: Text -> Handler a
     throw401 msg = throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
 
-fetchUser :: Text -> SqlPersistT IO (Maybe AuthedUser)
-fetchUser token = do
+loadAuthedUser :: Text -> SqlPersistT IO (Maybe AuthedUser)
+loadAuthedUser token = do
   mToken <- getBy (UniqueApiToken token)
   case mToken of
     Nothing -> pure Nothing

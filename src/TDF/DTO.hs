@@ -15,6 +15,7 @@ import           Database.Persist (Entity(..))
 import           Database.Persist.Sql (fromSqlKey)
 
 import           TDF.Models
+import           TDF.API.Types (BandDTO)
 
 -- Parties
 data PartyDTO = PartyDTO
@@ -29,6 +30,7 @@ data PartyDTO = PartyDTO
   , instagram        :: Maybe Text
   , emergencyContact :: Maybe Text
   , notes            :: Maybe Text
+  , band             :: Maybe BandDTO
   } deriving (Show, Generic)
 
 instance ToJSON PartyDTO
@@ -45,6 +47,7 @@ data PartyCreate = PartyCreate
   , cInstagram        :: Maybe Text
   , cEmergencyContact :: Maybe Text
   , cNotes            :: Maybe Text
+  , cRoles            :: Maybe [RoleEnum]
   } deriving (Show, Generic)
 instance FromJSON PartyCreate
 
@@ -63,7 +66,10 @@ data PartyUpdate = PartyUpdate
 instance FromJSON PartyUpdate
 
 toPartyDTO :: Entity Party -> PartyDTO
-toPartyDTO (Entity pid p) = PartyDTO
+toPartyDTO = toPartyDTOWithBand Nothing
+
+toPartyDTOWithBand :: Maybe BandDTO -> Entity Party -> PartyDTO
+toPartyDTOWithBand mBand (Entity pid p) = PartyDTO
   { partyId          = fromSqlKey pid
   , legalName        = partyLegalName p
   , displayName      = partyDisplayName p
@@ -75,6 +81,7 @@ toPartyDTO (Entity pid p) = PartyDTO
   , instagram        = partyInstagram p
   , emergencyContact = partyEmergencyContact p
   , notes            = partyNotes p
+  , band             = mBand
   }
 
 -- Helper
@@ -119,3 +126,18 @@ data InvoiceDTO = InvoiceDTO
   , totalC       :: Int
   } deriving (Show, Generic)
 instance ToJSON InvoiceDTO
+
+-- Auth
+data LoginRequest = LoginRequest
+  { username :: Text
+  , password :: Text
+  } deriving (Show, Generic)
+instance FromJSON LoginRequest
+
+data LoginResponse = LoginResponse
+  { token   :: Text
+  , partyId :: Int64
+  , roles   :: [RoleEnum]
+  , modules :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON LoginResponse
