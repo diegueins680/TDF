@@ -15,16 +15,18 @@ import           Control.Monad.Reader (ReaderT, runReaderT, ask)
 import           Crypto.BCrypt (validatePassword)
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
-import qualified Data.Set as Set
+import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
-import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
+import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import qualified Data.Map.Strict as Map
-import           Text.Printf (printf)
+import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
+import           Data.Version (showVersion)
+import           System.Environment (lookupEnv)
+import           Text.Printf (printf)
 import           Text.Read (readMaybe)
 
 import           Web.PathPieces (fromPathPiece, toPathPiece)
@@ -50,6 +52,7 @@ import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty
 import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
+import qualified Paths_tdf_hq as BuildInfo
 
 type AppM = ReaderT Env Handler
 
@@ -72,6 +75,7 @@ server :: ServerT API AppM
 server =
        health
   :<|> login
+  :<|> metaServer
   :<|> protectedServer
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
@@ -138,6 +142,12 @@ createSessionToken pid uname = do
   case inserted of
     Nothing -> createSessionToken pid uname
     Just _  -> pure token
+
+metaServer :: AppM VersionJSON
+metaServer = do
+  gitSha <- liftIO (lookupEnv "GIT_SHA")
+  let pkgVersion = showVersion BuildInfo.version
+  pure VersionJSON { version = pkgVersion, git = gitSha }
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM

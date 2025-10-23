@@ -49,8 +49,9 @@ type ReceiptAPI =
   :<|> ReqBody '[JSON] CreateReceiptReq :> Post '[JSON] ReceiptDTO
   :<|> Capture "receiptId" Int64 :> Get '[JSON] ReceiptDTO
 
-
 type HealthAPI = Get '[JSON] HealthStatus
+
+type MetaAPI = "version" :> Get '[JSON] VersionJSON
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
@@ -71,6 +72,7 @@ type ProtectedAPI =
 type API =
        "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
+  :<|> MetaAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
@@ -90,3 +92,8 @@ data CreateBookingReq = CreateBookingReq
   } deriving (Show, Generic)
 instance FromJSON CreateBookingReq
 
+data VersionJSON = VersionJSON
+  { version :: String
+  , git     :: Maybe String
+  } deriving (Show, Generic)
+instance ToJSON VersionJSON
