@@ -173,6 +173,8 @@ Resource
 Booking
     title            Text
     serviceOrderId   ServiceOrderId Maybe
+    partyId          PartyId Maybe
+    serviceType      Text Maybe
     startsAt         UTCTime
     endsAt           UTCTime
     status           BookingStatus
@@ -243,6 +245,30 @@ InvoiceLine
     quantity         Int
     unitCents        Int
     taxBps           Int
+    totalCents       Int
+    deriving Show Generic
+Receipt
+    invoiceId        InvoiceId
+    number           Text
+    issueDate        Day
+    issuedAt         UTCTime
+    buyerPartyId     PartyId Maybe
+    buyerName        Text
+    buyerEmail       Text Maybe
+    currency         Text
+    subtotalCents    Int
+    taxCents         Int
+    totalCents       Int
+    notes            Text Maybe
+    createdAt        UTCTime
+    UniqueReceiptNumber number !force
+    deriving Show Generic
+ReceiptLine
+    receiptId        ReceiptId
+    description      Text
+    quantity         Int
+    unitCents        Int
+    taxBps           Int Maybe
     totalCents       Int
     deriving Show Generic
 Payment

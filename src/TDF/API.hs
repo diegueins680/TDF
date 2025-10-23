@@ -44,6 +44,12 @@ type InvoiceAPI =
        Get '[JSON] [InvoiceDTO]
   :<|> ReqBody '[JSON] CreateInvoiceReq :> Post '[JSON] InvoiceDTO
 
+type ReceiptAPI =
+      Get '[JSON] [ReceiptDTO]
+  :<|> ReqBody '[JSON] CreateReceiptReq :> Post '[JSON] ReceiptDTO
+  :<|> Capture "receiptId" Int64 :> Get '[JSON] ReceiptDTO
+
+
 type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
@@ -53,6 +59,7 @@ type ProtectedAPI =
   :<|> "bookings" :> BookingAPI
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
+  :<|> "receipts" :> ReceiptAPI
   :<|> "admin"    :> AdminAPI
   :<|> InventoryAPI
   :<|> BandsAPI
@@ -72,19 +79,14 @@ instance ToJSON HealthStatus where
   toJSON (HealthStatus s d) = object ["status" .= s, "db" .= d]
 
 data CreateBookingReq = CreateBookingReq
-  { cbTitle    :: Text
-  , cbStartsAt :: UTCTime
-  , cbEndsAt   :: UTCTime
-  , cbStatus   :: Text
-  , cbNotes    :: Maybe Text
+  { cbTitle       :: Text
+  , cbStartsAt    :: UTCTime
+  , cbEndsAt      :: UTCTime
+  , cbStatus      :: Text
+  , cbNotes       :: Maybe Text
+  , cbPartyId     :: Maybe Int64
+  , cbServiceType :: Maybe Text
+  , cbResourceIds :: Maybe [Text]
   } deriving (Show, Generic)
 instance FromJSON CreateBookingReq
 
-data CreateInvoiceReq = CreateInvoiceReq
-  { ciCustomerId    :: Int64
-  , ciSubtotalCents :: Int
-  , ciTaxCents      :: Int
-  , ciTotalCents    :: Int
-  , ciNumber        :: Maybe Text
-  } deriving (Show, Generic)
-instance FromJSON CreateInvoiceReq

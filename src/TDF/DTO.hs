@@ -9,7 +9,7 @@ import           Data.Aeson (ToJSON, FromJSON)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Int (Int64)
-import           Data.Time (UTCTime)
+import           Data.Time (UTCTime, Day)
 
 import           Database.Persist (Entity(..))
 import           Database.Persist.Sql (fromSqlKey)
@@ -89,6 +89,13 @@ tshow :: Show a => a -> Text
 tshow = T.pack . show
 
 -- Bookings
+data BookingResourceDTO = BookingResourceDTO
+  { brRoomId   :: Text
+  , brRoomName :: Text
+  , brRole     :: Text
+  } deriving (Show, Generic)
+instance ToJSON BookingResourceDTO
+
 data BookingDTO = BookingDTO
   { bookingId   :: Int64
   , title       :: Text
@@ -96,6 +103,9 @@ data BookingDTO = BookingDTO
   , endsAt      :: UTCTime
   , status      :: Text
   , notes       :: Maybe Text
+  , partyId     :: Maybe Int64
+  , serviceType :: Maybe Text
+  , resources   :: [BookingResourceDTO]
   } deriving (Show, Generic)
 instance ToJSON BookingDTO
 
@@ -117,6 +127,18 @@ data PackagePurchaseReq = PackagePurchaseReq
 instance FromJSON PackagePurchaseReq
 
 -- Invoices
+data InvoiceLineDTO = InvoiceLineDTO
+  { lineId             :: Int64
+  , description        :: Text
+  , quantity           :: Int
+  , unitCents          :: Int
+  , taxBps             :: Int
+  , totalCents         :: Int
+  , serviceOrderId     :: Maybe Int64
+  , packagePurchaseId  :: Maybe Int64
+  } deriving (Show, Generic)
+instance ToJSON InvoiceLineDTO
+
 data InvoiceDTO = InvoiceDTO
   { invId        :: Int64
   , number       :: Maybe Text
@@ -124,8 +146,70 @@ data InvoiceDTO = InvoiceDTO
   , subtotalC    :: Int
   , taxC         :: Int
   , totalC       :: Int
+  , currency     :: Text
+  , customerId   :: Maybe Int64
+  , notes        :: Maybe Text
+  , receiptId    :: Maybe Int64
+  , lineItems    :: [InvoiceLineDTO]
   } deriving (Show, Generic)
 instance ToJSON InvoiceDTO
+
+data CreateInvoiceLineReq = CreateInvoiceLineReq
+  { cilDescription       :: Text
+  , cilQuantity          :: Int
+  , cilUnitCents         :: Int
+  , cilTaxBps            :: Maybe Int
+  , cilServiceOrderId    :: Maybe Int64
+  , cilPackagePurchaseId :: Maybe Int64
+  } deriving (Show, Generic)
+instance FromJSON CreateInvoiceLineReq
+
+data CreateInvoiceReq = CreateInvoiceReq
+  { ciCustomerId      :: Int64
+  , ciCurrency        :: Maybe Text
+  , ciNumber          :: Maybe Text
+  , ciNotes           :: Maybe Text
+  , ciLineItems       :: [CreateInvoiceLineReq]
+  , ciGenerateReceipt :: Maybe Bool
+  } deriving (Show, Generic)
+instance FromJSON CreateInvoiceReq
+
+-- Receipts
+data ReceiptLineDTO = ReceiptLineDTO
+  { receiptLineId :: Int64
+  , rlDescription :: Text
+  , rlQuantity    :: Int
+  , rlUnitCents   :: Int
+  , rlTaxBps      :: Maybe Int
+  , rlTotalCents  :: Int
+  } deriving (Show, Generic)
+instance ToJSON ReceiptLineDTO
+
+data ReceiptDTO = ReceiptDTO
+  { receiptId    :: Int64
+  , receiptNumber :: Text
+  , issuedAt     :: UTCTime
+  , issueDate    :: Day
+  , buyerName    :: Text
+  , buyerEmail   :: Maybe Text
+  , currency     :: Text
+  , subtotalCents :: Int
+  , taxCents     :: Int
+  , totalCents   :: Int
+  , notes        :: Maybe Text
+  , invoiceId    :: Int64
+  , lineItems    :: [ReceiptLineDTO]
+  } deriving (Show, Generic)
+instance ToJSON ReceiptDTO
+
+data CreateReceiptReq = CreateReceiptReq
+  { crInvoiceId  :: Int64
+  , crBuyerName  :: Maybe Text
+  , crBuyerEmail :: Maybe Text
+  , crNotes      :: Maybe Text
+  , crCurrency   :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON CreateReceiptReq
 
 -- Auth
 data LoginRequest = LoginRequest
