@@ -5,6 +5,7 @@ import qualified Network.Wai.Handler.Warp as Warp
 import           Control.Monad            (when)
 import           Data.ByteString.Char8    (pack)
 import           Database.Persist.Sql     (SqlPersistT, rawExecute, runMigration, runSqlPool)
+import           System.Environment       (lookupEnv)
 
 import           Network.Wai.Middleware.Cors
                  ( cors
@@ -38,7 +39,7 @@ main = do
     runSqlPool seedAll pool
   putStrLn ("Starting server on port " <> show (appPort cfg))
 
-  let allowedOrigins =
+  let allowedOriginsBase =
         [ "http://localhost:5173"
         , "http://127.0.0.1:5173"
         , "http://localhost:4173"
@@ -50,6 +51,8 @@ main = do
         , "https://tdf-ui.onrender.com"
         , "https://tdf-7t2qa.onrender.com"
         ]
+  envOrigin <- lookupEnv "ALLOW_ORIGIN"
+  let allowedOrigins = maybe allowedOriginsBase (\origin -> pack origin : allowedOriginsBase) envOrigin
       allowedHeaders =
         "Authorization"
         : "Content-Type"
