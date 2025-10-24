@@ -47,6 +47,7 @@ executable tdf-hq-exe
     , text
     , time
     , containers
+    , gitrev
     , persistent           >=2.14
     , persistent-template  >=2.12
     , persistent-postgresql >=2.13

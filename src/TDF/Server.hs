@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module TDF.Server where
 
@@ -53,6 +54,7 @@ import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified Paths_tdf_hq as BuildInfo
+import           Development.GitRev (gitHash)
 
 type AppM = ReaderT Env Handler
 
@@ -147,7 +149,11 @@ metaServer :: AppM VersionJSON
 metaServer = do
   gitSha <- liftIO (lookupEnv "GIT_SHA")
   let pkgVersion = showVersion BuildInfo.version
-  pure VersionJSON { version = pkgVersion, git = gitSha }
+      gitValue   = gitSha <|> buildGitSha
+  pure VersionJSON { version = pkgVersion, git = gitValue }
+
+buildGitSha :: Maybe String
+buildGitSha = Just $(gitHash)
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
