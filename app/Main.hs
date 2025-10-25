@@ -4,6 +4,8 @@ module Main where
 import qualified Network.Wai.Handler.Warp as Warp
 import           Control.Monad            (when)
 import           Data.ByteString.Char8    (pack)
+import           Data.Char                (isSpace)
+import           Data.List                (dropWhileEnd)
 import           Database.Persist.Sql     (SqlPersistT, rawExecute, runMigration, runSqlPool)
 import           System.Environment       (lookupEnv)
 
@@ -50,9 +52,15 @@ main = do
         , "http://127.0.0.1:5174"
         , "https://tdf-ui.onrender.com"
         , "https://tdf-7t2qa.onrender.com"
+        , "https://tdfui.pages.dev"
         ]
-  envOrigin <- lookupEnv "ALLOW_ORIGIN"
-  let allowedOrigins = maybe allowedOriginsBase (\origin -> pack origin : allowedOriginsBase) envOrigin
+  envOrigins <- lookupEnv "ALLOW_ORIGINS"
+  envOrigin  <- lookupEnv "ALLOW_ORIGIN"
+  let fromListEnv =
+        maybe [] (map pack . splitComma) envOrigins
+      fromOneEnv =
+        maybe [] (\origin -> [pack origin]) envOrigin
+      allowedOrigins = allowedOriginsBase <> fromListEnv <> fromOneEnv
       allowedHeaders =
         "Authorization"
         : "Content-Type"
@@ -67,6 +75,19 @@ main = do
       app = mkApp Env{ envPool = pool, envConfig = cfg }
 
   Warp.run (appPort cfg) (cors (const $ Just corsPolicy) app)
+
+-- | Split a comma-separated list into trimmed entries.
+splitComma :: String -> [String]
+splitComma = go . dropWhile isSpace
+  where
+    go [] = []
+    go s =
+      let (h, t) = break (== ',') s
+          h'     = trim h
+      in if null t
+           then [h']
+           else h' : go (drop 1 t)
+    trim = dropWhileEnd isSpace . dropWhile isSpace
 
 resetSchema :: SqlPersistT IO ()
 resetSchema = do
