@@ -24,7 +24,7 @@ RUN stack --no-terminal --install-ghc setup && \
 COPY app app
 COPY src src
 COPY config config
-COPY .git .git
+
 
 # Build and export the binary
 RUN stack --no-terminal --install-ghc build --copy-bins --local-bin-path /out
@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+ARG SOURCE_COMMIT=UNKNOWN
+ENV GIT_SHA=${SOURCE_COMMIT}
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 
 # Render provides PORT; map it to the app's APP_PORT
