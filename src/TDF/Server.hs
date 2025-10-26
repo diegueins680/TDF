@@ -14,8 +14,9 @@ import           Control.Monad (void, forM, forM_, when)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
 import           Crypto.BCrypt (validatePassword)
+import           Data.Char (isSpace)
 import           Data.Int (Int64)
-import           Data.List (find, foldl', nub)
+import           Data.List (find, foldl', nub, dropWhileEnd)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import qualified Data.Set as Set
@@ -147,13 +148,46 @@ createSessionToken pid uname = do
 
 metaServer :: AppM VersionJSON
 metaServer = do
-  gitSha <- liftIO (lookupEnv "GIT_SHA")
+  gitSha <- liftIO (firstJustM lookupNormalized commitEnvVars)
   let pkgVersion = showVersion BuildInfo.version
       gitValue   = gitSha <|> buildGitSha
   pure VersionJSON { version = pkgVersion, git = gitValue }
 
 buildGitSha :: Maybe String
-buildGitSha = Just $(gitHash)
+buildGitSha = normalizeValue $(gitHash)
+
+commitEnvVars :: [String]
+commitEnvVars =
+  [ "GIT_SHA"
+  , "SOURCE_COMMIT"
+  , "KOYEB_GIT_COMMIT"
+  , "RENDER_GIT_COMMIT"
+  , "VERCEL_GIT_COMMIT_SHA"
+  , "RAILWAY_GIT_COMMIT_HASH"
+  ]
+
+lookupNormalized :: String -> IO (Maybe String)
+lookupNormalized key = do
+  val <- lookupEnv key
+  pure (val >>= normalizeValue)
+
+normalizeValue :: String -> Maybe String
+normalizeValue =
+  nonEmpty . trim
+  where
+    trim = dropWhileEnd isSpace . dropWhile isSpace
+    nonEmpty str
+      | null str = Nothing
+      | str == "UNKNOWN" = Nothing
+      | otherwise = Just str
+
+firstJustM :: Monad m => (a -> m (Maybe b)) -> [a] -> m (Maybe b)
+firstJustM _ [] = pure Nothing
+firstJustM f (x:xs) = do
+  res <- f x
+  case res of
+    Nothing -> firstJustM f xs
+    Just _  -> pure res
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
