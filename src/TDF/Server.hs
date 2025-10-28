@@ -49,6 +49,7 @@ import           TDF.Models
 import qualified TDF.Models as M
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
@@ -79,6 +80,7 @@ server =
        health
   :<|> login
   :<|> metaServer
+  :<|> seedTrigger
   :<|> protectedServer
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
@@ -152,6 +154,20 @@ metaServer = do
   let pkgVersion = showVersion BuildInfo.version
       gitValue   = gitSha <|> buildGitSha
   pure VersionJSON { version = pkgVersion, git = gitValue }
+
+seedTrigger :: Maybe Text -> AppM NoContent
+seedTrigger rawToken = do
+  Env{..} <- ask
+  let encode = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  secret <- maybe disabled pure (seedTriggerToken envConfig)
+  token  <- maybe missingHeader (pure . T.strip) rawToken
+  when (T.null token) missingHeader
+  when (token /= secret) invalid
+  liftIO $ flip runSqlPool envPool seedAll
+  pure NoContent
 
 buildGitSha :: Maybe String
 buildGitSha = normalizeValue $(gitHash)
