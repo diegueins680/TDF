@@ -417,6 +417,7 @@ resolveResourcesForBooking service requested start end = do
 resolveRequestedResources :: [Text] -> SqlPersistT IO [Key Resource]
 resolveRequestedResources ids = fmap catMaybes $ mapM lookupResource ids
   where
+    lookupResource :: Text -> SqlPersistT IO (Maybe (Key Resource))
     lookupResource rid =
       case fromPathPiece rid of
         Nothing  -> pure Nothing
