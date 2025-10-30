@@ -24,6 +24,7 @@ executable tdf-hq-exe
     TDF.Config
     TDF.DB
     TDF.DTO
+    TDF.Meta
     TDF.Models
     TDF.ModelsExtra
     TDF.Pipelines

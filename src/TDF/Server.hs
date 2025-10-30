@@ -14,9 +14,8 @@ import           Control.Monad (void, forM, forM_, when)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, runReaderT, ask)
 import           Crypto.BCrypt (validatePassword)
-import           Data.Char (isSpace)
 import           Data.Int (Int64)
-import           Data.List (find, foldl', nub, dropWhileEnd)
+import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import qualified Data.Set as Set
@@ -26,8 +25,6 @@ import qualified Data.Text.Encoding as TE
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
-import           Data.Version (showVersion)
-import           System.Environment (lookupEnv)
 import           Text.Printf (printf)
 import           Text.Read (readMaybe)
 
@@ -37,6 +34,7 @@ import           Servant
 import           Network.Wai (Request)
 import qualified Data.ByteString.Lazy as BL
 import           Servant.Server.Experimental.Auth (AuthHandler)
+import           Control.Monad.Trans.Class (lift)
 
 import           Database.Persist
 import           Database.Persist.Sql
@@ -54,8 +52,7 @@ import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty
 import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
-import qualified Paths_tdf_hq as BuildInfo
-import           Development.GitRev (gitHash)
+import qualified TDF.Meta as Meta
 
 type AppM = ReaderT Env Handler
 
@@ -146,48 +143,10 @@ createSessionToken pid uname = do
     Nothing -> createSessionToken pid uname
     Just _  -> pure token
 
-metaServer :: AppM VersionJSON
-metaServer = do
-  gitSha <- liftIO (firstJustM lookupNormalized commitEnvVars)
-  let pkgVersion = showVersion BuildInfo.version
-      gitValue   = gitSha <|> buildGitSha
-  pure VersionJSON { version = pkgVersion, git = gitValue }
-
-buildGitSha :: Maybe String
-buildGitSha = normalizeValue $(gitHash)
-
-commitEnvVars :: [String]
-commitEnvVars =
-  [ "GIT_SHA"
-  , "SOURCE_COMMIT"
-  , "KOYEB_GIT_COMMIT"
-  , "RENDER_GIT_COMMIT"
-  , "VERCEL_GIT_COMMIT_SHA"
-  , "RAILWAY_GIT_COMMIT_HASH"
-  ]
-
-lookupNormalized :: String -> IO (Maybe String)
-lookupNormalized key = do
-  val <- lookupEnv key
-  pure (val >>= normalizeValue)
-
-normalizeValue :: String -> Maybe String
-normalizeValue =
-  nonEmpty . trim
+metaServer :: ServerT Meta.MetaAPI AppM
+metaServer = hoistServer metaProxy lift Meta.metaServer
   where
-    trim = dropWhileEnd isSpace . dropWhile isSpace
-    nonEmpty str
-      | null str = Nothing
-      | str == "UNKNOWN" = Nothing
-      | otherwise = Just str
-
-firstJustM :: Monad m => (a -> m (Maybe b)) -> [a] -> m (Maybe b)
-firstJustM _ [] = pure Nothing
-firstJustM f (x:xs) = do
-  res <- f x
-  case res of
-    Nothing -> firstJustM f xs
-    Just _  -> pure res
+    metaProxy = Proxy :: Proxy Meta.MetaAPI
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM

@@ -22,6 +22,7 @@ import           TDF.API.Rooms     (RoomsAPI)
 import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload)
 import           TDF.DTO
+import           TDF.Meta         (MetaAPI)
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
@@ -50,8 +51,6 @@ type ReceiptAPI =
   :<|> Capture "receiptId" Int64 :> Get '[JSON] ReceiptDTO
 
 type HealthAPI = Get '[JSON] HealthStatus
-
-type MetaAPI = "version" :> Get '[JSON] VersionJSON
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
@@ -91,9 +90,3 @@ data CreateBookingReq = CreateBookingReq
   , cbResourceIds :: Maybe [Text]
   } deriving (Show, Generic)
 instance FromJSON CreateBookingReq
-
-data VersionJSON = VersionJSON
-  { version :: String
-  , git     :: Maybe String
-  } deriving (Show, Generic)
-instance ToJSON VersionJSON
