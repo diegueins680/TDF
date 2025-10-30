@@ -42,11 +42,13 @@ import           Database.Persist.Postgresql ()
 
 import           TDF.API
 import           TDF.API.Types (RolePayload(..))
+import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
@@ -76,6 +78,7 @@ server =
        health
   :<|> login
   :<|> metaServer
+  :<|> seedTrigger
   :<|> protectedServer
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
@@ -143,8 +146,48 @@ createSessionToken pid uname = do
     Nothing -> createSessionToken pid uname
     Just _  -> pure token
 
-metaServer :: ServerT Meta.MetaAPI AppM
-metaServer = hoistServer metaProxy lift Meta.metaServer
+metaServer :: AppM VersionJSON
+metaServer = do
+  gitSha <- liftIO (firstJustM lookupNormalized commitEnvVars)
+  let pkgVersion = showVersion BuildInfo.version
+      gitValue   = gitSha <|> buildGitSha
+  pure VersionJSON { version = pkgVersion, git = gitValue }
+
+seedTrigger :: Maybe Text -> AppM NoContent
+seedTrigger rawToken = do
+  Env{..} <- ask
+  let encode = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  secret <- maybe disabled pure (seedTriggerToken envConfig)
+  token  <- maybe missingHeader (pure . T.strip) rawToken
+  when (T.null token) missingHeader
+  when (token /= secret) invalid
+  liftIO $ flip runSqlPool envPool seedAll
+  pure NoContent
+
+buildGitSha :: Maybe String
+buildGitSha = normalizeValue $(gitHash)
+
+commitEnvVars :: [String]
+commitEnvVars =
+  [ "GIT_SHA"
+  , "SOURCE_COMMIT"
+  , "KOYEB_GIT_COMMIT"
+  , "RENDER_GIT_COMMIT"
+  , "VERCEL_GIT_COMMIT_SHA"
+  , "RAILWAY_GIT_COMMIT_HASH"
+  ]
+
+lookupNormalized :: String -> IO (Maybe String)
+lookupNormalized key = do
+  val <- lookupEnv key
+  pure (val >>= normalizeValue)
+
+normalizeValue :: String -> Maybe String
+normalizeValue =
+  nonEmpty . trim
   where
     metaProxy = Proxy :: Proxy Meta.MetaAPI
 
@@ -359,6 +402,7 @@ resolveResourcesForBooking service requested start end = do
 resolveRequestedResources :: [Text] -> SqlPersistT IO [Key Resource]
 resolveRequestedResources ids = fmap catMaybes $ mapM lookupResource ids
   where
+    lookupResource :: Text -> SqlPersistT IO (Maybe (Key Resource))
     lookupResource rid =
       case fromPathPiece rid of
         Nothing  -> pure Nothing

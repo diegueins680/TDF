@@ -48,6 +48,16 @@ make clean    # stop and remove volumes
 
 Compose sets DB env for the app; the server listens on `localhost:8080`.
 
+To trigger the seed job without an admin session (e.g., for a remote staging
+deployment), send:
+
+```bash
+curl -X POST "$APP_BASE_URL/seed" -H "X-Seed-Token: ${SEED_TRIGGER_TOKEN:-tdf-bootstrap-seed}"
+```
+
+Set `SEED_TRIGGER_TOKEN` to a custom value to keep the endpoint protected. An
+empty value disables the unauthenticated seed route entirely.
+
 
 ---
 
