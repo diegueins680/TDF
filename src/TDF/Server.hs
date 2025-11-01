@@ -22,6 +22,7 @@ import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.ByteString.Lazy as BL
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
@@ -32,7 +33,6 @@ import           Web.PathPieces (fromPathPiece, toPathPiece)
 
 import           Servant
 import           Network.Wai (Request)
-import qualified Data.ByteString.Lazy as BL
 import           Servant.Server.Experimental.Auth (AuthHandler)
 import           Control.Monad.Trans.Class (lift)
 
@@ -45,6 +45,7 @@ import           TDF.API.Types (RolePayload(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
+import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.ServerAdmin (adminServer)
@@ -53,6 +54,7 @@ import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Meta as Meta
+import qualified TDF.Handlers.InputList as InputList
 
 type AppM = ReaderT Env Handler
 
@@ -76,7 +78,16 @@ server =
        health
   :<|> login
   :<|> metaServer
+  :<|> inputListServer
   :<|> protectedServer
+
+inputListServer :: ServerT InputListPublicAPI AppM
+inputListServer =
+       listInventory
+  :<|> seedInventory
+  :<|> getSessionInputList
+  :<|> seedHQ
+  :<|> getSessionInputListPdf
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
@@ -147,6 +158,49 @@ metaServer :: ServerT Meta.MetaAPI AppM
 metaServer = hoistServer metaProxy lift Meta.metaServer
   where
     metaProxy = Proxy :: Proxy Meta.MetaAPI
+
+runDB :: SqlPersistT IO a -> AppM a
+runDB action = do
+  Env pool _ <- ask
+  liftIO (runSqlPool action pool)
+
+listInventory :: AppM [Entity InventoryItem]
+listInventory = runDB InputList.listInventoryDB
+
+seedInventory :: AppM NoContent
+seedInventory = runDB InputList.seedInventoryDB >> pure NoContent
+
+getSessionInputList :: Int -> AppM [Entity InputListEntry]
+getSessionInputList sid = do
+  mResult <- runDB (InputList.fetchSessionInputRowsByIndex sid)
+  case mResult of
+    Nothing             -> throwError err404
+    Just (_session, xs) -> pure xs
+
+seedHQ :: AppM NoContent
+seedHQ = do
+  now <- liftIO getCurrentTime
+  runDB (InputList.seedHQDB now)
+  pure NoContent
+
+getSessionInputListPdf
+  :: Int
+  -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+getSessionInputListPdf sid = do
+  mResult <- runDB (InputList.fetchSessionInputRowsByIndex sid)
+  case mResult of
+    Nothing -> throwError err404
+    Just (Entity _ session, rows) -> do
+      let title = fromMaybe (ME.sessionService session <> " session") (ME.sessionClientPartyRef session)
+          latex = InputList.renderInputListLatex title rows
+      pdfResult <- liftIO (InputList.generateInputListPdf latex)
+      case pdfResult of
+        Left errMsg ->
+          throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 errMsg) }
+        Right pdfBytes ->
+          let fileName   = InputList.sanitizeFileName title <> ".pdf"
+              disposition = T.concat ["attachment; filename=\"", fileName, "\""]
+          in pure (addHeader disposition pdfBytes)
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
