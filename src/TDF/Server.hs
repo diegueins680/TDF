@@ -5,15 +5,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TemplateHaskell #-}
 
 module TDF.Server where
 
 import           Control.Applicative ((<|>))
-import           Control.Monad (void, forM, forM_, when)
+import           Control.Monad (forM, forM_, void, when)
 import           Control.Monad.IO.Class (liftIO)
-import           Control.Monad.Reader (ReaderT, runReaderT, ask)
-import           Crypto.BCrypt (validatePassword)
+import           Control.Monad.Reader (ReaderT, ask, runReaderT)
+import           Control.Monad.Trans.Class (lift)
+import qualified Data.ByteString.Lazy as BL
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
@@ -26,15 +26,14 @@ import qualified Data.ByteString.Lazy as BL
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
+import           Crypto.BCrypt (validatePassword)
+import           Network.Wai (Request)
+import           Servant
+import           Servant.Server.Experimental.Auth (AuthHandler)
 import           Text.Printf (printf)
 import           Text.Read (readMaybe)
-
 import           Web.PathPieces (fromPathPiece, toPathPiece)
-
-import           Servant
-import           Network.Wai (Request)
-import           Servant.Server.Experimental.Auth (AuthHandler)
-import           Control.Monad.Trans.Class (lift)
+import           Data.Proxy (Proxy (..))
 
 import           Database.Persist
 import           Database.Persist.Sql
@@ -42,12 +41,14 @@ import           Database.Persist.Postgresql ()
 
 import           TDF.API
 import           TDF.API.Types (RolePayload(..))
+import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
 import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
@@ -78,7 +79,7 @@ server =
        health
   :<|> login
   :<|> metaServer
-  :<|> inputListServer
+  :<|> seedTrigger
   :<|> protectedServer
 
 inputListServer :: ServerT InputListPublicAPI AppM
@@ -159,48 +160,19 @@ metaServer = hoistServer metaProxy lift Meta.metaServer
   where
     metaProxy = Proxy :: Proxy Meta.MetaAPI
 
-runDB :: SqlPersistT IO a -> AppM a
-runDB action = do
-  Env pool _ <- ask
-  liftIO (runSqlPool action pool)
-
-listInventory :: AppM [Entity InventoryItem]
-listInventory = runDB InputList.listInventoryDB
-
-seedInventory :: AppM NoContent
-seedInventory = runDB InputList.seedInventoryDB >> pure NoContent
-
-getSessionInputList :: Int -> AppM [Entity InputListEntry]
-getSessionInputList sid = do
-  mResult <- runDB (InputList.fetchSessionInputRowsByIndex sid)
-  case mResult of
-    Nothing             -> throwError err404
-    Just (_session, xs) -> pure xs
-
-seedHQ :: AppM NoContent
-seedHQ = do
-  now <- liftIO getCurrentTime
-  runDB (InputList.seedHQDB now)
+seedTrigger :: Maybe Text -> AppM NoContent
+seedTrigger rawToken = do
+  Env{..} <- ask
+  let encode = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  secret <- maybe disabled pure (seedTriggerToken envConfig)
+  token  <- maybe missingHeader (pure . T.strip) rawToken
+  when (T.null token) missingHeader
+  when (token /= secret) invalid
+  liftIO $ flip runSqlPool envPool seedAll
   pure NoContent
-
-getSessionInputListPdf
-  :: Int
-  -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
-getSessionInputListPdf sid = do
-  mResult <- runDB (InputList.fetchSessionInputRowsByIndex sid)
-  case mResult of
-    Nothing -> throwError err404
-    Just (Entity _ session, rows) -> do
-      let title = fromMaybe (ME.sessionService session <> " session") (ME.sessionClientPartyRef session)
-          latex = InputList.renderInputListLatex title rows
-      pdfResult <- liftIO (InputList.generateInputListPdf latex)
-      case pdfResult of
-        Left errMsg ->
-          throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 errMsg) }
-        Right pdfBytes ->
-          let fileName   = InputList.sanitizeFileName title <> ".pdf"
-              disposition = T.concat ["attachment; filename=\"", fileName, "\""]
-          in pure (addHeader disposition pdfBytes)
 
 -- Parties
 partyServer :: AuthedUser -> ServerT PartyAPI AppM
@@ -413,6 +385,7 @@ resolveResourcesForBooking service requested start end = do
 resolveRequestedResources :: [Text] -> SqlPersistT IO [Key Resource]
 resolveRequestedResources ids = fmap catMaybes $ mapM lookupResource ids
   where
+    lookupResource :: Text -> SqlPersistT IO (Maybe (Key Resource))
     lookupResource rid =
       case fromPathPiece rid of
         Nothing  -> pure Nothing

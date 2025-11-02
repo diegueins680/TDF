@@ -60,12 +60,7 @@ type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
-type InputListPublicAPI =
-       "inventory" :> Get '[JSON] [Entity InventoryItem]
-  :<|> "inventory" :> "seed" :> PostNoContent
-  :<|> "sessions"  :> Capture "id" Int  :> "input-list"     :> Get '[JSON] [Entity InputListEntry]
-  :<|> "sessions"  :> "seed-hq"        :> PostNoContent
-  :<|> "sessions"  :> Capture "id" Int  :> "input-list.pdf" :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 
 type ProtectedAPI =
        "parties"  :> PartyAPI
@@ -85,7 +80,7 @@ type API =
        "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
   :<|> MetaAPI
-  :<|> InputListPublicAPI
+  :<|> "seed"   :> SeedAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }

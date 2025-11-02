@@ -63,6 +63,9 @@ seedAll = do
         , (Mastering, "Skanka Fe - LP", Just "Skanka Fe", Just "v1", 10)
         , (Mastering, "El Bloque - Single", Just "El Bloque", Just "Approved", 20)
         ]
+      ensurePipelineCard
+        :: (ServiceKind, Text, Maybe Text, Maybe Text, Int)
+        -> SqlPersistT IO ()
       ensurePipelineCard (kind, titleTxt, artistTxt, stageTxt, sortOrder) = do
         existing <- selectFirst
           [ ME.PipelineCardServiceKind ==. kind
