@@ -31,7 +31,14 @@ import qualified TDF.ModelsExtra  as ME
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
 
-type VersionAPI = "meta" :> "version" :> Get '[JSON] VersionInfo
+type VersionAPI = "version" :> Get '[JSON] VersionInfo
+
+type InputListPublicAPI =
+       "inventory" :> Get '[JSON] [Entity InventoryItem]
+  :<|> "inventory" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
+  :<|> "sessions" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[JSON] [Entity InputListEntry]
+  :<|> "sessions" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
+  :<|> "sessions" :> "pdf" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
@@ -63,12 +70,7 @@ type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
-type InputListPublicAPI =
-       "inventory" :> Get '[JSON] [Entity InventoryItem]
-  :<|> "inventory" :> "seed" :> PostNoContent
-  :<|> "sessions"  :> Capture "id" Int  :> "input-list"     :> Get '[JSON] [Entity InputListEntry]
-  :<|> "sessions"  :> "seed-hq"        :> PostNoContent
-  :<|> "sessions"  :> Capture "id" Int  :> "input-list.pdf" :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 
 type ProtectedAPI =
        "parties"  :> PartyAPI
@@ -89,7 +91,8 @@ type API =
   :<|> "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
   :<|> MetaAPI
-  :<|> InputListPublicAPI
+  :<|> "seed"   :> SeedAPI
+  :<|> "input-list" :> InputListPublicAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
