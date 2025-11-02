@@ -25,10 +25,13 @@ import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload)
 import           TDF.DTO
 import           TDF.Meta         (MetaAPI)
+import           TDF.Version      (VersionInfo)
 import qualified TDF.ModelsExtra  as ME
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
+
+type VersionAPI = "version" :> Get '[JSON] VersionInfo
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
@@ -77,7 +80,8 @@ type ProtectedAPI =
   :<|> "stubs"    :> FutureAPI
 
 type API =
-       "health" :> HealthAPI
+       VersionAPI
+  :<|> "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
   :<|> MetaAPI
   :<|> "seed"   :> SeedAPI
