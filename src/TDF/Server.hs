@@ -143,7 +143,7 @@ getSessionInputListPdf
   -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
 getSessionInputListPdf mIndex mSessionId = do
   (Entity _ session, rows) <- resolveSessionInputData mIndex mSessionId
-  let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+  let title = fromMaybe (ME.sessionService session <> " session") (ME.sessionClientPartyRef session)
       latex = InputList.renderInputListLatex title rows
   pdfResult <- liftIO (InputList.generateInputListPdf latex)
   case pdfResult of
