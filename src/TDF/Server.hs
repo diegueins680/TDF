@@ -100,18 +100,33 @@ listInventory = do
   Env{..} <- ask
   liftIO $ flip runSqlPool envPool InputList.listInventoryDB
 
-seedInventory :: AppM NoContent
-seedInventory = do
+seedInventory :: Maybe Text -> AppM NoContent
+seedInventory rawToken = do
+  requireSeedToken rawToken
   Env{..} <- ask
   liftIO $ flip runSqlPool envPool InputList.seedInventoryDB
   pure NoContent
 
-seedHQ :: AppM NoContent
-seedHQ = do
+seedHQ :: Maybe Text -> AppM NoContent
+seedHQ rawToken = do
+  requireSeedToken rawToken
   Env{..} <- ask
   now <- liftIO getCurrentTime
   liftIO $ flip runSqlPool envPool (InputList.seedHQDB now)
   pure NoContent
+
+requireSeedToken :: Maybe Text -> AppM ()
+requireSeedToken rawToken = do
+  Env{..} <- ask
+  let encode = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  secret <- maybe disabled pure (seedTriggerToken envConfig)
+  token  <- maybe missingHeader (pure . T.strip) rawToken
+  when (T.null token) missingHeader
+  when (token /= secret) invalid
+  pure ()
 
 getSessionInputList :: Maybe Int -> Maybe Text -> AppM [Entity InputList.InputListEntry]
 getSessionInputList mIndex mSessionId = do
@@ -227,15 +242,8 @@ metaServer = hoistServer metaProxy lift Meta.metaServer
 
 seedTrigger :: Maybe Text -> AppM NoContent
 seedTrigger rawToken = do
+  requireSeedToken rawToken
   Env{..} <- ask
-  let encode = BL.fromStrict . TE.encodeUtf8
-      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
-      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
-      invalid = throwError err403 { errBody = encode "Invalid seed token" }
-  secret <- maybe disabled pure (seedTriggerToken envConfig)
-  token  <- maybe missingHeader (pure . T.strip) rawToken
-  when (T.null token) missingHeader
-  when (token /= secret) invalid
   liftIO $ flip runSqlPool envPool seedAll
   pure NoContent
 
