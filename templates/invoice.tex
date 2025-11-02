@@ -1,0 +1,75 @@
+%========================================================
+% TDF Records - Factura PDF Template
+%========================================================
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{xcolor,graphicx,booktabs,lastpage,fancyhdr}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage{titlesec}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+\definecolor{TDFBlack}{RGB}{0,0,0}
+\definecolor{TDFGray}{RGB}{240,240,240}
+\definecolor{TDFAqua}{RGB}{0,180,170}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\includegraphics[height=16mm]{./tdf-logo.pdf}}
+\lhead{\textbf{TDF Records S.A.S.}}
+\cfoot{\textcolor{gray}{Página \thepage\ de \pageref{LastPage}}}
+
+\begin{document}
+
+\vspace*{10mm}
+
+{\Huge\bfseries Factura} \hfill {\Large \#{{invoice.number}}}
+
+\vspace{2mm}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{3mm}
+
+\begin{tabular}{p{0.45\linewidth} p{0.5\linewidth}}
+\textbf{Emitido por:} & \textbf{Cliente:}\\
+TDF Records S.A.S. & {{client.name}}\\
+RUC: 1716535511 & ID/RUC: {{client.taxId}}\\
+Dirección: Félix Oralabal N45-55, Quito & {{client.address}}\\
+Email: info@tdfrecords.net & {{client.email}}\\
+Fecha: {{invoice.date}} &  \ \ 
+\end{tabular}
+
+\vspace{6mm}
+
+\rowcolors{2}{white}{TDFGray}
+\begin{tabular}{p{8.5cm} S[table-format=2.2] S[table-format=2.2] S[table-format=2.2]}
+\toprule
+\textbf{Descripción} & \textbf{Cant.} & \textbf{Unit.} & \textbf{Total}\\
+\midrule
+{{#items}}
+{{desc}} & {{qty}} & {{unit_price}} & {{total}}\\
+{{/items}}
+\bottomrule
+\end{tabular}
+
+\vspace{3mm}
+\noindent\rule{\textwidth}{0.4pt}
+
+\begin{flushright}
+\begin{tabular}{lr}
+Subtotal: & \textbf{\$ {{summary.subtotal}}}\\
+IVA ({{summary.tax_rate}}): & \textbf{\$ {{summary.tax}}}\\
+\textbf{Total:} & \textbf{\$ {{summary.total}}}\\
+\end{tabular}
+\end{flushright}
+
+\vspace{10mm}
+\textbf{Condiciones de pago:} {{payment.terms}}\\
+\textbf{Instrucciones:} {{payment.instructions}}
+
+\vfill
+\textcolor{gray}{Gracias por confiar en TDF Records.}
+
+\end{document}
