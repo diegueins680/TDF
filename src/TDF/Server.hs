@@ -87,13 +87,17 @@ server =
 versionServer :: ServerT VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT InputListPublicAPI AppM
-inputListServer =
-       listInventory
-  :<|> seedInventory
-  :<|> getSessionInputList
-  :<|> seedHQ
-  :<|> getSessionInputListPdf
+inputListServer :: ServerT InputListAPI AppM
+inputListServer = inputListPublicServer :<|> inputListSeedServer
+  where
+    inputListPublicServer =
+           listInventory
+      :<|> getSessionInputList
+      :<|> getSessionInputListPdf
+
+    inputListSeedServer =
+           seedInventory
+      :<|> seedHQ
 
 listInventory :: AppM [Entity InputList.InventoryItem]
 listInventory = do
