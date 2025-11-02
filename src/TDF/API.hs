@@ -33,6 +33,13 @@ type InputListEntry = ME.InputRow
 
 type VersionAPI = "version" :> Get '[JSON] VersionInfo
 
+type InputListPublicAPI =
+       "inventory" :> Get '[JSON] [Entity InventoryItem]
+  :<|> "inventory" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
+  :<|> "sessions" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[JSON] [Entity InputListEntry]
+  :<|> "sessions" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
+  :<|> "sessions" :> "pdf" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+
 type PartyAPI =
        Get '[JSON] [PartyDTO]
   :<|> ReqBody '[JSON] PartyCreate :> Post '[JSON] PartyDTO
@@ -85,6 +92,7 @@ type API =
   :<|> "login"  :> LoginAPI
   :<|> MetaAPI
   :<|> "seed"   :> SeedAPI
+  :<|> "input-list" :> InputListPublicAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }

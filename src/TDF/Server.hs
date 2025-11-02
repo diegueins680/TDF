@@ -13,7 +13,6 @@ import           Control.Monad (forM, forM_, void, when)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, ask, runReaderT)
 import           Control.Monad.Trans.Class (lift)
-import qualified Data.ByteString.Lazy as BL
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
@@ -82,18 +81,94 @@ server =
   :<|> login
   :<|> metaServer
   :<|> seedTrigger
+  :<|> inputListServer
   :<|> protectedServer
 
-versionServer :: ServerT Api.VersionAPI AppM
+versionServer :: ServerT VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT Api.InputListPublicAPI AppM
+inputListServer :: ServerT InputListPublicAPI AppM
 inputListServer =
        listInventory
   :<|> seedInventory
   :<|> getSessionInputList
   :<|> seedHQ
   :<|> getSessionInputListPdf
+
+listInventory :: AppM [Entity InputList.InventoryItem]
+listInventory = do
+  Env{..} <- ask
+  liftIO $ flip runSqlPool envPool InputList.listInventoryDB
+
+seedInventory :: Maybe Text -> AppM NoContent
+seedInventory rawToken = do
+  requireSeedToken rawToken
+  Env{..} <- ask
+  liftIO $ flip runSqlPool envPool InputList.seedInventoryDB
+  pure NoContent
+
+seedHQ :: Maybe Text -> AppM NoContent
+seedHQ rawToken = do
+  requireSeedToken rawToken
+  Env{..} <- ask
+  now <- liftIO getCurrentTime
+  liftIO $ flip runSqlPool envPool (InputList.seedHQDB now)
+  pure NoContent
+
+requireSeedToken :: Maybe Text -> AppM ()
+requireSeedToken rawToken = do
+  Env{..} <- ask
+  let encode = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  secret <- maybe disabled pure (seedTriggerToken envConfig)
+  token  <- maybe missingHeader (pure . T.strip) rawToken
+  when (T.null token) missingHeader
+  when (token /= secret) invalid
+  pure ()
+
+getSessionInputList :: Maybe Int -> Maybe Text -> AppM [Entity InputList.InputListEntry]
+getSessionInputList mIndex mSessionId = do
+  (_session, rows) <- resolveSessionInputData mIndex mSessionId
+  pure rows
+
+getSessionInputListPdf
+  :: Maybe Int
+  -> Maybe Text
+  -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+getSessionInputListPdf mIndex mSessionId = do
+  (Entity _ session, rows) <- resolveSessionInputData mIndex mSessionId
+  let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+      latex = InputList.renderInputListLatex title rows
+  pdfResult <- liftIO (InputList.generateInputListPdf latex)
+  case pdfResult of
+    Left errMsg -> throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 errMsg) }
+    Right pdf -> do
+      let fileName    = InputList.sanitizeFileName title <> ".pdf"
+          disposition = T.concat ["attachment; filename=\"", fileName, "\""]
+      pure (addHeader disposition pdf)
+
+resolveSessionInputData
+  :: Maybe Int
+  -> Maybe Text
+  -> AppM (Entity ME.Session, [Entity InputList.InputListEntry])
+resolveSessionInputData mIndex mSessionId = do
+  Env{..} <- ask
+  action <- case mSessionId of
+    Just rawId ->
+      case fromPathPiece rawId of
+        Nothing     -> throwBadRequest "Invalid sessionId"
+        Just keyVal -> pure (InputList.fetchSessionInputRowsByKey keyVal)
+    Nothing -> do
+      idx <- case mIndex of
+        Nothing     -> pure 1
+        Just n
+          | n >= 1    -> pure n
+          | otherwise -> throwBadRequest "index must be greater than or equal to 1"
+      pure (InputList.fetchSessionInputRowsByIndex idx)
+  result <- liftIO $ flip runSqlPool envPool action
+  maybe (throwError err404) pure result
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
@@ -167,15 +242,8 @@ metaServer = hoistServer metaProxy lift Meta.metaServer
 
 seedTrigger :: Maybe Text -> AppM NoContent
 seedTrigger rawToken = do
+  requireSeedToken rawToken
   Env{..} <- ask
-  let encode = BL.fromStrict . TE.encodeUtf8
-      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
-      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
-      invalid = throwError err403 { errBody = encode "Invalid seed token" }
-  secret <- maybe disabled pure (seedTriggerToken envConfig)
-  token  <- maybe missingHeader (pure . T.strip) rawToken
-  when (T.null token) missingHeader
-  when (token /= secret) invalid
   liftIO $ flip runSqlPool envPool seedAll
   pure NoContent
 
