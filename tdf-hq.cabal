@@ -24,6 +24,7 @@ executable tdf-hq-exe
     TDF.Config
     TDF.DB
     TDF.DTO
+    TDF.Handlers.InputList
     TDF.Meta
     TDF.Models
     TDF.ModelsExtra
@@ -73,6 +74,7 @@ executable tdf-hq-exe
     , safe-exceptions
     , base64-bytestring
     , directory
+    , process
     , bcrypt
     , path-pieces
     , uuid

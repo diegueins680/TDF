@@ -4,6 +4,7 @@
 module TDF.API.Sessions where
 
 import           Data.Text (Text)
+import qualified Data.ByteString.Lazy as BL
 import           Servant
 
 import           TDF.API.Types
@@ -17,4 +18,7 @@ type SessionsAPI =
   :<|> "options" :> Get '[JSON] SessionOptionsDTO
   :<|> Capture "id" Text :> Get '[JSON] SessionDTO
   :<|> Capture "id" Text :> ReqBody '[JSON] SessionUpdate :> Patch '[JSON] SessionDTO
+  :<|> Capture "id" Text :> "input-list" :> Get '[JSON] [SessionInputRow]
+  :<|> Capture "id" Text :> "input-list.pdf"
+        :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
     )

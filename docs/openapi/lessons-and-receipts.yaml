@@ -4,6 +4,8 @@ info:
   version: 1.0.0
 servers:
   - url: http://localhost:8080
+security:
+  - bearerAuth: []
 paths:
   /api/teachers:
     get:
@@ -81,7 +83,21 @@ paths:
       responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Enrollment' } } } } }
   /api/enrollments/{id}:
     get: { summary: Get enrollment, parameters: [ { $ref: '#/components/parameters/Id' } ], responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Enrollment' } } } } } }
-    patch: { summary: Update enrollment (e.g., notes/status), parameters: [ { $ref: '#/components/parameters/Id' } ], requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentUpdate' } } } }, responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Enrollment' } } } } } }
+    patch:
+      summary: "Update enrollment (e.g., notes/status)"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollmentUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrollment' }
     delete: { summary: Cancel enrollment, parameters: [ { $ref: '#/components/parameters/Id' } ], responses: { '204': { description: No Content } } }
 
   /api/lessons:
@@ -92,7 +108,21 @@ paths:
       responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Lesson' } } } } }
   /api/lessons/{id}:
     get: { summary: Get a lesson, parameters: [ { $ref: '#/components/parameters/Id' } ], responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Lesson' } } } } } }
-    patch: { summary: Update a lesson (status, times, notes), parameters: [ { $ref: '#/components/parameters/Id' } ], requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LessonUpdate' } } } }, responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Lesson' } } } } } }
+    patch:
+      summary: "Update a lesson (status, times, notes)"
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LessonUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lesson' }
     delete: { summary: Cancel lesson, parameters: [ { $ref: '#/components/parameters/Id' } ], responses: { '204': { description: No Content } } }
 
   /api/lessons/{id}/materials:
@@ -126,6 +156,11 @@ paths:
     get: { summary: Get a PDF for a receipt (client-side can also render), parameters: [ { $ref: '#/components/parameters/Id' } ], responses: { '200': { description: PDF, content: { application/pdf: { schema: { type: string, format: binary } } } } } }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   parameters:
     Id:
       name: id
@@ -359,4 +394,3 @@ components:
             required: [description, qty, unit_price_cents]
         tax_cents: { type: integer }
       required: [payment_id, buyer_name, line_items]
-

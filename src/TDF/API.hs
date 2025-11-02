@@ -7,11 +7,13 @@
 module TDF.API where
 
 import           Servant
+import           Database.Persist          (Entity)
 import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
 import           Data.Aeson (ToJSON(..), FromJSON(..), object, (.=))
+import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
 import           TDF.API.Future    (FutureAPI)
@@ -23,6 +25,10 @@ import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload)
 import           TDF.DTO
 import           TDF.Meta         (MetaAPI)
+import qualified TDF.ModelsExtra  as ME
+
+type InventoryItem = ME.Asset
+type InputListEntry = ME.InputRow
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]

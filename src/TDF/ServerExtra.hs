@@ -17,6 +17,8 @@ import           Data.Maybe                 (catMaybes, fromMaybe, isJust, isNot
 import qualified Data.Set                   as Set
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
+import qualified Data.Text.Encoding         as TE
+import qualified Data.ByteString.Lazy       as BL
 import           Data.Time                  (getCurrentTime)
 import           Database.Persist        hiding (Active)
 import           Database.Persist.Sql       (SqlPersistT, fromSqlKey, runSqlPool, toSqlKey)
@@ -36,6 +38,7 @@ import qualified TDF.Models                 as M
 import           TDF.ModelsExtra
 import qualified TDF.ModelsExtra as ME
 import           TDF.Pipelines              (canonicalStage, defaultStage, pipelineStages, pipelineTypeSlug, parsePipelineType)
+import qualified TDF.Handlers.InputList     as InputList
 
 inventoryServer
   :: ( MonadReader Env m
@@ -302,6 +305,8 @@ sessionsServer user =
   :<|> sessionOptionsH
   :<|> getSessionH
   :<|> patchSessionH
+  :<|> sessionInputListH
+  :<|> sessionInputListPdfH
   where
     listSessions mp mps = do
       ensureModule ModuleScheduling user
@@ -417,6 +422,49 @@ sessionsServer user =
             rooms <- selectList [SessionRoomSessionId ==. sessionKey] [Asc SessionRoomId]
             pure (Just (ent, rooms))
       maybe (throwError err404) (\(ent, rooms) -> pure (toSessionDTO ent rooms)) result
+
+    sessionInputListH rawId = do
+      ensureModule ModuleScheduling user
+      sessionKey <- parseKey @Session rawId
+      result <- withPool (InputList.fetchSessionInputRowsByKey sessionKey)
+      case result of
+        Nothing                -> throwError err404
+        Just (_session, rows)  -> pure (map toSessionInputRowDTO rows)
+
+    sessionInputListPdfH rawId = do
+      ensureModule ModuleScheduling user
+      sessionKey <- parseKey @Session rawId
+      result <- withPool (InputList.fetchSessionInputRowsByKey sessionKey)
+      case result of
+        Nothing -> throwError err404
+        Just (Entity _ session, rows) -> do
+          let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+              latex = InputList.renderInputListLatex title rows
+          pdfResult <- liftIO (InputList.generateInputListPdf latex)
+          case pdfResult of
+            Left errMsg ->
+              throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 errMsg) }
+            Right pdf -> do
+              let fileName   = InputList.sanitizeFileName title <> ".pdf"
+                  disposition = T.concat ["attachment; filename=\"", fileName, "\""]
+              pure (addHeader disposition pdf)
+
+    toSessionInputRowDTO (Entity _ row) = SessionInputRow
+      { channelNumber    = ME.inputRowChannelNumber row
+      , trackName        = ME.inputRowTrackName row
+      , instrument       = ME.inputRowInstrument row
+      , micId            = fmap toPathPiece (ME.inputRowMicId row)
+      , standId          = fmap toPathPiece (ME.inputRowStandId row)
+      , cableId          = fmap toPathPiece (ME.inputRowCableId row)
+      , preampId         = fmap toPathPiece (ME.inputRowPreampId row)
+      , insertOutboardId = fmap toPathPiece (ME.inputRowInsertOutboardId row)
+      , converterChannel = ME.inputRowConverterChannel row
+      , phantom          = ME.inputRowPhantom row
+      , polarity         = ME.inputRowPolarity row
+      , hpf              = ME.inputRowHpf row
+      , pad              = ME.inputRowPad row
+      , notes            = ME.inputRowNotes row
+      }
 
     sessionOptionsH = do
       ensureModule ModuleScheduling user

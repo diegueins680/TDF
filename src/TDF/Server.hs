@@ -22,6 +22,7 @@ import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.ByteString.Lazy as BL
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
@@ -44,6 +45,7 @@ import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
+import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.Seed       (seedAll)
@@ -53,6 +55,7 @@ import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Meta as Meta
+import qualified TDF.Handlers.InputList as InputList
 
 type AppM = ReaderT Env Handler
 
@@ -78,6 +81,14 @@ server =
   :<|> metaServer
   :<|> seedTrigger
   :<|> protectedServer
+
+inputListServer :: ServerT InputListPublicAPI AppM
+inputListServer =
+       listInventory
+  :<|> seedInventory
+  :<|> getSessionInputList
+  :<|> seedHQ
+  :<|> getSessionInputListPdf
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
