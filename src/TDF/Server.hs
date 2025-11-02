@@ -5,6 +5,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module TDF.Server where
 
@@ -40,6 +42,7 @@ import           Database.Persist.Postgresql ()
 
 import           TDF.API
 import           TDF.API.Types (RolePayload(..))
+import qualified TDF.API      as Api
 import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
@@ -84,10 +87,10 @@ server =
   :<|> inputListServer
   :<|> protectedServer
 
-versionServer :: ServerT VersionAPI AppM
+versionServer :: ServerT Api.VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT InputListPublicAPI AppM
+inputListServer :: ServerT Api.InputListPublicAPI AppM
 inputListServer =
        listInventory
   :<|> seedInventory
@@ -139,7 +142,7 @@ getSessionInputListPdf
   -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
 getSessionInputListPdf mIndex mSessionId = do
   (Entity _ session, rows) <- resolveSessionInputData mIndex mSessionId
-  let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+  let title = fromMaybe (ME.sessionService session <> " session") (ME.sessionClientPartyRef session)
       latex = InputList.renderInputListLatex title rows
   pdfResult <- liftIO (InputList.generateInputListPdf latex)
   case pdfResult of
