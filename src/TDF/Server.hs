@@ -90,13 +90,31 @@ server =
 versionServer :: ServerT Api.VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT Api.InputListPublicAPI AppM
-inputListServer =
-       listInventory
-  :<|> seedInventory
-  :<|> getSessionInputList
-  :<|> seedHQ
-  :<|> getSessionInputListPdf
+<<<<<<< HEAD
+inputListServer :: ServerT Api.InputListAPI AppM
+inputListServer = publicRoutes :<|> seedRoutes
+  where
+    publicRoutes =
+           listInventory
+      :<|> getSessionInputList
+      :<|> getSessionInputListPdf
+
+    seedRoutes =
+           seedInventory
+      :<|> seedHQ
+=======
+inputListServer :: ServerT InputListAPI AppM
+inputListServer = inputListPublicServer :<|> inputListSeedServer
+  where
+    inputListPublicServer =
+           listInventory
+      :<|> getSessionInputList
+      :<|> getSessionInputListPdf
+
+    inputListSeedServer =
+           seedInventory
+      :<|> seedHQ
+>>>>>>> codex/fix-orphan-instance-and-import-warnings
 
 listInventory :: AppM [Entity InputList.InventoryItem]
 listInventory = do
