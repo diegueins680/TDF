@@ -79,3 +79,4 @@ executable tdf-hq-exe
     , bcrypt
     , path-pieces
     , uuid
+    , template-haskell
