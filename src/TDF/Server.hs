@@ -42,6 +42,7 @@ import           Database.Persist.Postgresql ()
 
 import           TDF.API
 import           TDF.API.Types (RolePayload(..))
+import qualified TDF.API      as Api
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
@@ -54,6 +55,7 @@ import           TDF.ServerFuture (futureServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Meta as Meta
+import           TDF.Version      (getVersionInfo)
 import qualified TDF.Handlers.InputList as InputList
 
 type AppM = ReaderT Env Handler
@@ -75,13 +77,17 @@ nt env x = runReaderT x env
 
 server :: ServerT API AppM
 server =
-       health
+       versionServer
+  :<|> health
   :<|> login
   :<|> metaServer
   :<|> inputListServer
   :<|> protectedServer
 
-inputListServer :: ServerT InputListPublicAPI AppM
+versionServer :: ServerT Api.VersionAPI AppM
+versionServer = liftIO getVersionInfo
+
+inputListServer :: ServerT Api.InputListPublicAPI AppM
 inputListServer =
        listInventory
   :<|> seedInventory
