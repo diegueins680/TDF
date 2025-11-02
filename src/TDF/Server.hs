@@ -13,7 +13,6 @@ import           Control.Monad (forM, forM_, void, when)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, ask, runReaderT)
 import           Control.Monad.Trans.Class (lift)
-import qualified Data.ByteString.Lazy as BL
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
@@ -82,18 +81,79 @@ server =
   :<|> login
   :<|> metaServer
   :<|> seedTrigger
+  :<|> inputListServer
   :<|> protectedServer
 
-versionServer :: ServerT Api.VersionAPI AppM
+versionServer :: ServerT VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT Api.InputListPublicAPI AppM
+inputListServer :: ServerT InputListPublicAPI AppM
 inputListServer =
        listInventory
   :<|> seedInventory
   :<|> getSessionInputList
   :<|> seedHQ
   :<|> getSessionInputListPdf
+
+listInventory :: AppM [Entity InputList.InventoryItem]
+listInventory = do
+  Env{..} <- ask
+  liftIO $ flip runSqlPool envPool InputList.listInventoryDB
+
+seedInventory :: AppM NoContent
+seedInventory = do
+  Env{..} <- ask
+  liftIO $ flip runSqlPool envPool InputList.seedInventoryDB
+  pure NoContent
+
+seedHQ :: AppM NoContent
+seedHQ = do
+  Env{..} <- ask
+  now <- liftIO getCurrentTime
+  liftIO $ flip runSqlPool envPool (InputList.seedHQDB now)
+  pure NoContent
+
+getSessionInputList :: Maybe Int -> Maybe Text -> AppM [Entity InputList.InputListEntry]
+getSessionInputList mIndex mSessionId = do
+  (_session, rows) <- resolveSessionInputData mIndex mSessionId
+  pure rows
+
+getSessionInputListPdf
+  :: Maybe Int
+  -> Maybe Text
+  -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+getSessionInputListPdf mIndex mSessionId = do
+  (Entity _ session, rows) <- resolveSessionInputData mIndex mSessionId
+  let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+      latex = InputList.renderInputListLatex title rows
+  pdfResult <- liftIO (InputList.generateInputListPdf latex)
+  case pdfResult of
+    Left errMsg -> throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 errMsg) }
+    Right pdf -> do
+      let fileName    = InputList.sanitizeFileName title <> ".pdf"
+          disposition = T.concat ["attachment; filename=\"", fileName, "\""]
+      pure (addHeader disposition pdf)
+
+resolveSessionInputData
+  :: Maybe Int
+  -> Maybe Text
+  -> AppM (Entity ME.Session, [Entity InputList.InputListEntry])
+resolveSessionInputData mIndex mSessionId = do
+  Env{..} <- ask
+  action <- case mSessionId of
+    Just rawId ->
+      case fromPathPiece rawId of
+        Nothing     -> throwBadRequest "Invalid sessionId"
+        Just keyVal -> pure (InputList.fetchSessionInputRowsByKey keyVal)
+    Nothing -> do
+      idx <- case mIndex of
+        Nothing     -> pure 1
+        Just n
+          | n >= 1    -> pure n
+          | otherwise -> throwBadRequest "index must be greater than or equal to 1"
+      pure (InputList.fetchSessionInputRowsByIndex idx)
+  result <- liftIO $ flip runSqlPool envPool action
+  maybe (throwError err404) pure result
 
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
