@@ -22,7 +22,7 @@ health:
 	@curl -s http://localhost:8080/health | jq . || curl -s http://localhost:8080/health
 
 version:
-	@curl -fsS "$(APP_BASE_URL)/version" | jq .
+	@curl -fsS "$(APP_BASE_URL)/meta/version" | jq .
 
 clean:
 	@docker compose down -v

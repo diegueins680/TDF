@@ -31,7 +31,7 @@ import qualified TDF.ModelsExtra  as ME
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
 
-type VersionAPI = "version" :> Get '[JSON] VersionInfo
+type VersionAPI = "meta" :> "version" :> Get '[JSON] VersionInfo
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
