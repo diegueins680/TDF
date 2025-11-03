@@ -2,7 +2,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
-
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs #-}
@@ -20,9 +19,7 @@ import           Data.Aeson (ToJSON, FromJSON)
 import           GHC.Generics (Generic)
 import           Data.Text (Text)
 import           Data.Time (UTCTime, Day)
-import           Database.Persist
 import           Database.Persist.TH
-import           Database.Persist.Sql (SqlBackend)
 
 -- Enums
 data ServiceKind = Recording | Mixing | Mastering | Rehearsal | Classes | EventProduction
