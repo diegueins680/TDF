@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 
-module Routes.Invoices where
+module Routes.Invoices (InvoiceAPI, DemoAPI, invoiceServer, demoServer) where
 
 import Servant
 import Servant.Server (throwError, err500, errBody)
@@ -23,16 +23,37 @@ data InvoiceReq = InvoiceReq
 instance FromJSON InvoiceReq
 instance ToJSON InvoiceReq
 
-
+-- Public APIs
 type InvoiceAPI = 
   "invoices" :> Capture "sessionId" String
              :> "generate"
              :> ReqBody '[JSON] InvoiceReq
              :> Post '[JSON] FilePath
 
+-- Demo endpoint without body
+type DemoAPI = 
+  "invoices" :> "demo" :> "generate" :> Post '[JSON] FilePath
+
 
 invoiceServer :: Server InvoiceAPI
-invoiceServer sid req = do
+invoiceServer sid req = generateInvoice sid req
+
+
+demoServer :: Server DemoAPI
+demoServer = generateInvoice "demo" defaultReq
+  where
+    defaultReq = InvoiceReq
+      { sessionId = "demo"
+      , client = object [ "name" .= String "Cliente Demo", "taxId" .= String "0000000000" ]
+      , items = toJSON [ object [ "desc" .= String "Hora de estudio", "qty" .= Number 2, "unit_price" .= Number 25, "total" .= Number 50 ] ]
+      , summary = object [ "subtotal" .= Number 50, "tax_rate" .= String "12%", "tax" .= Number 6, "total" .= Number 56 ]
+      , payment = object [ "terms" .= String "50% anticipo / 50% previo a entrega", "instructions" .= String "Transferencia a TDF Records S.A.S." ]
+      }
+
+
+-- Impl
+generateInvoice :: String -> InvoiceReq -> Handler FilePath
+generateInvoice sid req = do
   let texFile = "/app/templates/invoice.tex"
   let logoFile = "/app/templates/tdf-logo.pdf"
   let outDir  = "/app/public/invoices"
