@@ -20,6 +20,7 @@ import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import qualified Data.Set as Set
+import           Data.Aeson (Value, object, (.=))
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -580,7 +581,27 @@ createPurchase user req = do
 
 -- Invoices
 invoiceServer :: AuthedUser -> ServerT InvoiceAPI AppM
-invoiceServer user = listInvoices user :<|> createInvoice user
+invoiceServer user =
+       listInvoices user
+  :<|> createInvoice user
+  :<|> generateInvoiceForSession user
+  :<|> getInvoicesBySession user
+  :<|> getInvoiceById user
+
+generateInvoiceForSession :: AuthedUser -> Text -> Value -> AppM Value
+generateInvoiceForSession user sessionId _payload = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "sessionId" .= sessionId])
+
+getInvoicesBySession :: AuthedUser -> Text -> AppM Value
+getInvoicesBySession user sessionId = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "sessionId" .= sessionId])
+
+getInvoiceById :: AuthedUser -> Int64 -> AppM Value
+getInvoiceById user invoiceId = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "invoiceId" .= invoiceId])
 
 listInvoices :: AuthedUser -> AppM [InvoiceDTO]
 listInvoices user = do

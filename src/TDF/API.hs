@@ -12,7 +12,7 @@ import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
-import           Data.Aeson (ToJSON(..), FromJSON(..), object, (.=))
+import           Data.Aeson (ToJSON(..), FromJSON(..), Value, object, (.=))
 import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
@@ -64,6 +64,9 @@ type PackageAPI =
 type InvoiceAPI =
        Get '[JSON] [InvoiceDTO]
   :<|> ReqBody '[JSON] CreateInvoiceReq :> Post '[JSON] InvoiceDTO
+  :<|> Capture "sessionId" Text :> "generate" :> ReqBody '[JSON] Value :> Post '[JSON] Value
+  :<|> "by-session" :> Capture "sessionId" Text :> Get '[JSON] Value
+  :<|> Capture "invoiceId" Int64 :> Get '[JSON] Value
 
 type ReceiptAPI =
       Get '[JSON] [ReceiptDTO]
