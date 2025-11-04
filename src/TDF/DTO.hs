@@ -236,6 +236,17 @@ data ChangePasswordRequest = ChangePasswordRequest
   } deriving (Show, Generic)
 instance FromJSON ChangePasswordRequest
 
+data PasswordResetRequest = PasswordResetRequest
+  { email :: Text
+  } deriving (Show, Generic)
+instance FromJSON PasswordResetRequest
+
+data PasswordResetConfirmRequest = PasswordResetConfirmRequest
+  { token       :: Text
+  , newPassword :: Text
+  } deriving (Show, Generic)
+instance FromJSON PasswordResetConfirmRequest
+
 data LoginResponse = LoginResponse
   { token   :: Text
   , partyId :: Int64

@@ -79,7 +79,17 @@ type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
 type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] LoginResponse
 
+type PasswordResetAPI = ReqBody '[JSON] PasswordResetRequest :> Post '[JSON] NoContent
+
+type PasswordResetConfirmAPI = ReqBody '[JSON] PasswordResetConfirmRequest :> Post '[JSON] LoginResponse
+
 type PasswordAPI = "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
+
+type AuthV1API =
+       "signup" :> SignupAPI
+  :<|> "password-reset" :> PasswordResetAPI
+  :<|> "password-reset" :> "confirm" :> PasswordResetConfirmAPI
+  :<|> "password" :> PasswordAPI
 
 type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 
@@ -103,6 +113,7 @@ type API =
   :<|> "login"  :> LoginAPI
   :<|> "signup" :> SignupAPI
   :<|> "password" :> PasswordAPI
+  :<|> "v1" :> AuthV1API
   :<|> MetaAPI
   :<|> "seed"   :> SeedAPI
   :<|> "input-list" :> InputListAPI
