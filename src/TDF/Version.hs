@@ -13,6 +13,7 @@ import qualified Data.Text                    as T
 import           Data.Version                 (showVersion)
 import qualified Data.Time                    as Time
 import           Development.GitRev           (gitHash)
+import           Data.Maybe                   (fromMaybe)
 import           GHC.Generics                 (Generic)
 import           Language.Haskell.TH.Syntax   (runIO)
 import           Paths_tdf_hq                 (version)
@@ -47,15 +48,19 @@ getVersionInfo = do
 resolveCommit :: IO Text
 resolveCommit = do
   mEnv <- firstJustM lookupEnv commitEnvVars
-  let fallback = canonCommit compiledCommit
-  pure $ maybe fallback (canonCommit . T.pack) mEnv
+  let envCommit       = mEnv >>= canonCommit . T.pack
+      fallbackCommit  = fromMaybe "dev" compiledCommit
+  pure (fromMaybe fallbackCommit envCommit)
   where
-    compiledCommit = T.pack $(gitHash)
-    canonCommit txt =
-      let trimmed = T.strip txt
-      in if T.null trimmed || T.toUpper trimmed == "UNKNOWN"
-           then "dev"
-           else trimmed
+    compiledCommit = canonCommit (T.pack $(gitHash))
+
+canonCommit :: Text -> Maybe Text
+canonCommit txt =
+  let trimmed = T.strip txt
+      upper   = T.toUpper trimmed
+  in if T.null trimmed || upper == "UNKNOWN" || upper == "DEV"
+       then Nothing
+       else Just trimmed
 
 resolveBuildTime :: IO Text
 resolveBuildTime = do
