@@ -21,6 +21,7 @@ RUN stack --no-terminal --install-ghc setup && \
     stack --no-terminal --install-ghc build --only-dependencies
 
 # Copy sources
+COPY .git .git
 COPY app app
 COPY src src
 COPY config config
