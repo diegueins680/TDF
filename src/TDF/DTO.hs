@@ -218,6 +218,24 @@ data LoginRequest = LoginRequest
   } deriving (Show, Generic)
 instance FromJSON LoginRequest
 
+data SignupRequest = SignupRequest
+  { firstName       :: Text
+  , lastName        :: Text
+  , email           :: Text
+  , phone           :: Maybe Text
+  , password        :: Text
+  , googleIdToken   :: Maybe Text
+  , marketingOptIn  :: Maybe Bool
+  } deriving (Show, Generic)
+instance FromJSON SignupRequest
+
+data ChangePasswordRequest = ChangePasswordRequest
+  { username        :: Text
+  , currentPassword :: Text
+  , newPassword     :: Text
+  } deriving (Show, Generic)
+instance FromJSON ChangePasswordRequest
+
 data LoginResponse = LoginResponse
   { token   :: Text
   , partyId :: Int64

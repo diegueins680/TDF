@@ -28,7 +28,7 @@ import qualified Data.ByteString.Lazy as BL
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
-import           Crypto.BCrypt (validatePassword)
+import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy, validatePassword)
 import           Network.Wai (Request)
 import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler)
@@ -83,6 +83,8 @@ server =
        versionServer
   :<|> health
   :<|> login
+  :<|> signup
+  :<|> changePassword
   :<|> metaServer
   :<|> seedTrigger
   :<|> inputListServer
@@ -226,6 +228,135 @@ runLogin uname pwd = do
   where
     invalidMsg = "Invalid username or password"
 
+data SignupDbError
+  = SignupEmailExists
+  | SignupProfileError
+  deriving (Eq, Show)
+
+signup :: SignupRequest -> AppM LoginResponse
+signup SignupRequest
+  { firstName = rawFirst
+  , lastName = rawLast
+  , email = rawEmail
+  , phone = rawPhone
+  , password = rawPassword
+  } = do
+  let emailClean    = T.strip rawEmail
+      passwordClean = T.strip rawPassword
+      firstClean    = T.strip rawFirst
+      lastClean     = T.strip rawLast
+      phoneClean    = fmap T.strip rawPhone
+  when (T.null emailClean) $ throwBadRequest "Email is required"
+  when (T.null passwordClean) $ throwBadRequest "Password is required"
+  when (T.length passwordClean < 8) $ throwBadRequest "Password must be at least 8 characters"
+  when (T.null firstClean && T.null lastClean) $ throwBadRequest "First or last name is required"
+  now <- liftIO getCurrentTime
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool $
+    runSignupDb emailClean passwordClean firstClean lastClean phoneClean now
+  case result of
+    Left SignupEmailExists ->
+      throwError err409 { errBody = BL.fromStrict (TE.encodeUtf8 "Account already exists for this email") }
+    Left SignupProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runSignupDb
+      :: Text
+      -> Text
+      -> Text
+      -> Text
+      -> Maybe Text
+      -> UTCTime
+      -> SqlPersistT IO (Either SignupDbError LoginResponse)
+    runSignupDb emailVal passwordVal firstVal lastVal phoneVal nowVal = do
+      existing <- getBy (UniqueCredentialUsername emailVal)
+      case existing of
+        Just _  -> pure (Left SignupEmailExists)
+        Nothing -> do
+          let displayName =
+                case filter (not . T.null) [firstVal, lastVal] of
+                  [] -> emailVal
+                  xs -> T.unwords xs
+              partyRecord = Party
+                { partyLegalName        = Nothing
+                , partyDisplayName      = displayName
+                , partyIsOrg            = False
+                , partyTaxId            = Nothing
+                , partyPrimaryEmail     = Just emailVal
+                , partyPrimaryPhone     = phoneVal
+                , partyWhatsapp         = Nothing
+                , partyInstagram        = Nothing
+                , partyEmergencyContact = Nothing
+                , partyNotes            = Nothing
+                , partyCreatedAt        = nowVal
+                }
+          pid <- insert partyRecord
+          _ <- upsert (PartyRole pid Customer True) [PartyRoleActive =. True]
+          hashed <- liftIO (hashPasswordText passwordVal)
+          _ <- insert UserCredential
+            { userCredentialPartyId      = pid
+            , userCredentialUsername     = emailVal
+            , userCredentialPasswordHash = hashed
+            , userCredentialActive       = True
+            }
+          token <- createSessionToken pid emailVal
+          mUser <- loadAuthedUser token
+          case mUser of
+            Nothing   -> pure (Left SignupProfileError)
+            Just user -> pure (Right (toLoginResponse token user))
+
+data PasswordChangeError
+  = PasswordInvalid
+  | PasswordAccountDisabled
+  | PasswordProfileError
+  deriving (Eq, Show)
+
+changePassword :: ChangePasswordRequest -> AppM LoginResponse
+changePassword ChangePasswordRequest{..} = do
+  let usernameClean        = T.strip username
+      currentPasswordClean = T.strip currentPassword
+      newPasswordClean     = T.strip newPassword
+  when (T.null usernameClean) $ throwBadRequest "Username is required"
+  when (T.null currentPasswordClean) $ throwBadRequest "Current password is required"
+  when (T.null newPasswordClean) $ throwBadRequest "New password is required"
+  when (T.length newPasswordClean < 8) $
+    throwBadRequest "New password must be at least 8 characters"
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool $
+    runChangePassword usernameClean currentPasswordClean newPasswordClean
+  case result of
+    Left PasswordInvalid ->
+      throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid username or password") }
+    Left PasswordAccountDisabled ->
+      throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "Account disabled") }
+    Left PasswordProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runChangePassword
+      :: Text
+      -> Text
+      -> Text
+      -> SqlPersistT IO (Either PasswordChangeError LoginResponse)
+    runChangePassword uname currentPwd newPwd = do
+      mCred <- getBy (UniqueCredentialUsername uname)
+      case mCred of
+        Nothing -> pure (Left PasswordInvalid)
+        Just (Entity credId cred)
+          | not (userCredentialActive cred) -> pure (Left PasswordAccountDisabled)
+          | not (validatePassword (TE.encodeUtf8 (userCredentialPasswordHash cred)) (TE.encodeUtf8 currentPwd)) ->
+              pure (Left PasswordInvalid)
+          | otherwise -> do
+              hashed <- liftIO (hashPasswordText newPwd)
+              update credId [UserCredentialPasswordHash =. hashed]
+              deactivatePasswordTokens (userCredentialPartyId cred)
+              token <- createSessionToken (userCredentialPartyId cred) uname
+              mUser <- loadAuthedUser token
+              case mUser of
+                Nothing   -> pure (Left PasswordProfileError)
+                Just user -> pure (Right (toLoginResponse token user))
+
 toLoginResponse :: Text -> AuthedUser -> LoginResponse
 toLoginResponse token AuthedUser{..} = LoginResponse
   { token   = token
@@ -242,6 +373,23 @@ createSessionToken pid uname = do
   case inserted of
     Nothing -> createSessionToken pid uname
     Just _  -> pure token
+
+deactivatePasswordTokens :: PartyId -> SqlPersistT IO ()
+deactivatePasswordTokens pid = do
+  tokens <- selectList [ApiTokenPartyId ==. pid, ApiTokenActive ==. True] []
+  forM_ tokens $ \(Entity tokenId tok) ->
+    case apiTokenLabel tok of
+      Just lbl | "password-login:" `T.isPrefixOf` lbl ->
+        update tokenId [ApiTokenActive =. False]
+      _ -> pure ()
+
+hashPasswordText :: Text -> IO Text
+hashPasswordText pwd = do
+  let raw = TE.encodeUtf8 pwd
+  mHash <- hashPasswordUsingPolicy slowerBcryptHashingPolicy raw
+  case mHash of
+    Nothing   -> fail "Failed to hash password"
+    Just hash -> pure (TE.decodeUtf8 hash)
 
 metaServer :: ServerT Meta.MetaAPI AppM
 metaServer = hoistServer metaProxy lift Meta.metaServer
