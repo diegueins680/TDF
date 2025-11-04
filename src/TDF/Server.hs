@@ -418,26 +418,44 @@ passwordResetConfirm PasswordResetConfirmRequest{..} = do
           | not (apiTokenActive apiToken) -> pure (Left PasswordResetInvalidToken)
           | not (isResetToken (apiTokenLabel apiToken)) -> pure (Left PasswordResetInvalidToken)
           | otherwise -> do
-              mCred <- selectFirst [UserCredentialPartyId ==. apiTokenPartyId apiToken] []
-              case mCred of
+              let mResetUsername = do
+                    labelText <- apiTokenLabel apiToken
+                    resetTokenUsername labelText
+              case mResetUsername of
                 Nothing -> pure (Left PasswordResetInvalidToken)
-                Just (Entity credId cred)
-                  | not (userCredentialActive cred) -> pure (Left PasswordResetAccountDisabled)
-                  | otherwise -> do
-                      hashed <- liftIO (hashPasswordText passwordVal)
-                      update credId [UserCredentialPasswordHash =. hashed]
-                      update tokenId [ApiTokenActive =. False]
-                      deactivatePasswordTokens (userCredentialPartyId cred)
-                      deactivatePasswordResetTokens (userCredentialPartyId cred)
-                      sessionToken <- createSessionToken (userCredentialPartyId cred) (userCredentialUsername cred)
-                      mUser <- loadAuthedUser sessionToken
-                      case mUser of
-                        Nothing   -> pure (Left PasswordResetProfileError)
-                        Just user -> pure (Right (toLoginResponse sessionToken user))
+                Just resetUsername -> do
+                  mCred <- getBy (UniqueCredentialUsername resetUsername)
+                  case mCred of
+                    Nothing -> pure (Left PasswordResetInvalidToken)
+                    Just (Entity credId cred)
+                      | userCredentialPartyId cred /= apiTokenPartyId apiToken ->
+                          pure (Left PasswordResetInvalidToken)
+                      | not (userCredentialActive cred) -> pure (Left PasswordResetAccountDisabled)
+                      | otherwise -> do
+                          hashed <- liftIO (hashPasswordText passwordVal)
+                          update credId [UserCredentialPasswordHash =. hashed]
+                          update tokenId [ApiTokenActive =. False]
+                          deactivatePasswordTokens (userCredentialPartyId cred)
+                          deactivatePasswordResetTokens (userCredentialPartyId cred)
+                          sessionToken <- createSessionToken (userCredentialPartyId cred) (userCredentialUsername cred)
+                          mUser <- loadAuthedUser sessionToken
+                          case mUser of
+                            Nothing   -> pure (Left PasswordResetProfileError)
+                            Just user -> pure (Right (toLoginResponse sessionToken user))
 
     isResetToken :: Maybe Text -> Bool
     isResetToken Nothing = False
     isResetToken (Just lbl) = "password-reset:" `T.isPrefixOf` lbl
+
+    resetTokenUsername :: Text -> Maybe Text
+    resetTokenUsername lbl =
+      let prefix = "password-reset:"
+      in T.stripPrefix prefix lbl >>= nonEmptyText
+
+    nonEmptyText :: Text -> Maybe Text
+    nonEmptyText txt
+      | T.null (T.strip txt) = Nothing
+      | otherwise = Just (T.strip txt)
 
 toLoginResponse :: Text -> AuthedUser -> LoginResponse
 toLoginResponse token AuthedUser{..} = LoginResponse
