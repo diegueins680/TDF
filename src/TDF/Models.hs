@@ -1,28 +1,25 @@
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module TDF.Models where
 
-import           Data.Aeson (ToJSON, FromJSON)
-import           GHC.Generics (Generic)
+import           Data.Aeson (FromJSON, ToJSON)
 import           Data.Text (Text)
-import           Data.Time (UTCTime, Day)
-import           Database.Persist
+import           Data.Time (Day, UTCTime)
 import           Database.Persist.TH
-import           Database.Persist.Sql (SqlBackend)
+import           GHC.Generics (Generic)
 
 -- Enums
 data ServiceKind = Recording | Mixing | Mastering | Rehearsal | Classes | EventProduction
