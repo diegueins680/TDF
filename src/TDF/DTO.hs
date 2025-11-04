@@ -230,7 +230,7 @@ data SignupRequest = SignupRequest
 instance FromJSON SignupRequest
 
 data ChangePasswordRequest = ChangePasswordRequest
-  { username        :: Text
+  { username        :: Maybe Text
   , currentPassword :: Text
   , newPassword     :: Text
   } deriving (Show, Generic)

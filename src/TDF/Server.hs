@@ -316,17 +316,18 @@ data PasswordChangeError
   | PasswordProfileError
   deriving (Eq, Show)
 
-changePassword :: ChangePasswordRequest -> AppM LoginResponse
-changePassword ChangePasswordRequest{..} = do
-  let usernameClean        = T.strip username
-      currentPasswordClean = T.strip currentPassword
+changePassword :: Maybe Text -> ChangePasswordRequest -> AppM LoginResponse
+changePassword mAuthHeader ChangePasswordRequest{..} = do
+  let currentPasswordClean = T.strip currentPassword
       newPasswordClean     = T.strip newPassword
-  when (T.null usernameClean) $ throwBadRequest "Username is required"
+      maybeUsernameClean   = T.strip <$> username
   when (T.null currentPasswordClean) $ throwBadRequest "Current password is required"
   when (T.null newPasswordClean) $ throwBadRequest "New password is required"
   when (T.length newPasswordClean < 8) $
     throwBadRequest "New password must be at least 8 characters"
   Env pool _ <- ask
+  usernameClean <- resolveUsername pool maybeUsernameClean mAuthHeader
+  when (T.null usernameClean) $ throwBadRequest "Username is required"
   result <- liftIO $ flip runSqlPool pool $
     runChangePassword usernameClean currentPasswordClean newPasswordClean
   case result of
@@ -338,6 +339,33 @@ changePassword ChangePasswordRequest{..} = do
       throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
     Right resp -> pure resp
   where
+    resolveUsername pool mUsername header =
+      case mUsername of
+        Just uname | not (T.null uname) -> pure uname
+        _ -> do
+          token <- case header >>= parseBearer . T.strip of
+            Nothing  -> throwBadRequest "Username is required"
+            Just tok -> pure tok
+          mResolved <- liftIO $ flip runSqlPool pool (lookupUsernameFromToken tok)
+          case fmap T.strip mResolved of
+            Nothing     -> throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid or inactive session token") }
+            Just uname' -> pure uname'
+
+    parseBearer headerText =
+      case T.words headerText of
+        [scheme, value]
+          | T.toLower scheme == "bearer" -> Just value
+        [value] -> Just value
+        _       -> Nothing
+
+    lookupUsernameFromToken token = do
+      mUser <- loadAuthedUser token
+      case mUser of
+        Nothing -> pure Nothing
+        Just AuthedUser{..} -> do
+          mCred <- selectFirst [UserCredentialPartyId ==. auPartyId, UserCredentialActive ==. True] []
+          pure (fmap (userCredentialUsername . entityVal) mCred)
+
     runChangePassword
       :: Text
       -> Text

@@ -83,7 +83,7 @@ type PasswordResetAPI = ReqBody '[JSON] PasswordResetRequest :> Post '[JSON] NoC
 
 type PasswordResetConfirmAPI = ReqBody '[JSON] PasswordResetConfirmRequest :> Post '[JSON] LoginResponse
 
-type PasswordAPI = "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
+type PasswordAPI = Header "Authorization" Text :> "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
 
 type AuthV1API =
        "signup" :> SignupAPI
