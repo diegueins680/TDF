@@ -85,10 +85,14 @@ server =
   :<|> login
   :<|> signup
   :<|> changePassword
+  :<|> authV1Server
   :<|> metaServer
   :<|> seedTrigger
   :<|> inputListServer
   :<|> protectedServer
+
+authV1Server :: ServerT Api.AuthV1API AppM
+authV1Server = signup :<|> passwordReset :<|> passwordResetConfirm :<|> changePassword
 
 versionServer :: ServerT Api.VersionAPI AppM
 versionServer = liftIO getVersionInfo
@@ -357,6 +361,84 @@ changePassword ChangePasswordRequest{..} = do
                 Nothing   -> pure (Left PasswordProfileError)
                 Just user -> pure (Right (toLoginResponse token user))
 
+data PasswordResetError
+  = PasswordResetInvalidToken
+  | PasswordResetAccountDisabled
+  | PasswordResetProfileError
+  deriving (Eq, Show)
+
+passwordReset :: PasswordResetRequest -> AppM NoContent
+passwordReset PasswordResetRequest{..} = do
+  let emailClean = T.strip email
+  when (T.null emailClean) $ throwBadRequest "Email is required"
+  Env pool _ <- ask
+  _ <- liftIO $ flip runSqlPool pool (runPasswordReset emailClean)
+  pure NoContent
+  where
+    runPasswordReset :: Text -> SqlPersistT IO (Maybe Text)
+    runPasswordReset emailVal = do
+      mCred <- getBy (UniqueCredentialUsername emailVal)
+      case mCred of
+        Nothing -> pure Nothing
+        Just (Entity _ cred)
+          | not (userCredentialActive cred) -> pure Nothing
+          | otherwise -> do
+              deactivatePasswordResetTokens (userCredentialPartyId cred)
+              token <- createPasswordResetToken (userCredentialPartyId cred) emailVal
+              pure (Just token)
+
+passwordResetConfirm :: PasswordResetConfirmRequest -> AppM LoginResponse
+passwordResetConfirm PasswordResetConfirmRequest{..} = do
+  let tokenClean       = T.strip token
+      newPasswordClean = T.strip newPassword
+  when (T.null tokenClean) $ throwBadRequest "Token is required"
+  when (T.null newPasswordClean) $ throwBadRequest "New password is required"
+  when (T.length newPasswordClean < 8) $
+    throwBadRequest "New password must be at least 8 characters"
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool (runPasswordResetConfirm tokenClean newPasswordClean)
+  case result of
+    Left PasswordResetInvalidToken ->
+      throwError err400 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid or expired token") }
+    Left PasswordResetAccountDisabled ->
+      throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "Account disabled") }
+    Left PasswordResetProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runPasswordResetConfirm
+      :: Text
+      -> Text
+      -> SqlPersistT IO (Either PasswordResetError LoginResponse)
+    runPasswordResetConfirm tokenVal passwordVal = do
+      mToken <- getBy (UniqueApiToken tokenVal)
+      case mToken of
+        Nothing -> pure (Left PasswordResetInvalidToken)
+        Just (Entity tokenId apiToken)
+          | not (apiTokenActive apiToken) -> pure (Left PasswordResetInvalidToken)
+          | not (isResetToken (apiTokenLabel apiToken)) -> pure (Left PasswordResetInvalidToken)
+          | otherwise -> do
+              mCred <- selectFirst [UserCredentialPartyId ==. apiTokenPartyId apiToken] []
+              case mCred of
+                Nothing -> pure (Left PasswordResetInvalidToken)
+                Just (Entity credId cred)
+                  | not (userCredentialActive cred) -> pure (Left PasswordResetAccountDisabled)
+                  | otherwise -> do
+                      hashed <- liftIO (hashPasswordText passwordVal)
+                      update credId [UserCredentialPasswordHash =. hashed]
+                      update tokenId [ApiTokenActive =. False]
+                      deactivatePasswordTokens (userCredentialPartyId cred)
+                      deactivatePasswordResetTokens (userCredentialPartyId cred)
+                      sessionToken <- createSessionToken (userCredentialPartyId cred) (userCredentialUsername cred)
+                      mUser <- loadAuthedUser sessionToken
+                      case mUser of
+                        Nothing   -> pure (Left PasswordResetProfileError)
+                        Just user -> pure (Right (toLoginResponse sessionToken user))
+
+    isResetToken :: Maybe Text -> Bool
+    isResetToken Nothing = False
+    isResetToken (Just lbl) = "password-reset:" `T.isPrefixOf` lbl
+
 toLoginResponse :: Text -> AuthedUser -> LoginResponse
 toLoginResponse token AuthedUser{..} = LoginResponse
   { token   = token
@@ -366,12 +448,19 @@ toLoginResponse token AuthedUser{..} = LoginResponse
   }
 
 createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
-createSessionToken pid uname = do
+createSessionToken pid uname =
+  createTokenWithLabel pid (Just ("password-login:" <> uname))
+
+createPasswordResetToken :: PartyId -> Text -> SqlPersistT IO Text
+createPasswordResetToken pid emailVal =
+  createTokenWithLabel pid (Just ("password-reset:" <> emailVal))
+
+createTokenWithLabel :: PartyId -> Maybe Text -> SqlPersistT IO Text
+createTokenWithLabel pid label = do
   token <- liftIO (toText <$> nextRandom)
-  let label = Just ("password-login:" <> uname)
   inserted <- insertUnique (ApiToken token pid label True)
   case inserted of
-    Nothing -> createSessionToken pid uname
+    Nothing -> createTokenWithLabel pid label
     Just _  -> pure token
 
 deactivatePasswordTokens :: PartyId -> SqlPersistT IO ()
@@ -380,6 +469,15 @@ deactivatePasswordTokens pid = do
   forM_ tokens $ \(Entity tokenId tok) ->
     case apiTokenLabel tok of
       Just lbl | "password-login:" `T.isPrefixOf` lbl ->
+        update tokenId [ApiTokenActive =. False]
+      _ -> pure ()
+
+deactivatePasswordResetTokens :: PartyId -> SqlPersistT IO ()
+deactivatePasswordResetTokens pid = do
+  tokens <- selectList [ApiTokenPartyId ==. pid, ApiTokenActive ==. True] []
+  forM_ tokens $ \(Entity tokenId tok) ->
+    case apiTokenLabel tok of
+      Just lbl | "password-reset:" `T.isPrefixOf` lbl ->
         update tokenId [ApiTokenActive =. False]
       _ -> pure ()
 

@@ -102,4 +102,4 @@ instance ToJSON AttendIn; instance FromJSON AttendIn
 data CommissionDTO = CommissionDTO { teacherId :: Int, amountCents :: Int, basisCents :: Int, percent :: Double } deriving (Generic)
 instance ToJSON CommissionDTO; instance FromJSON CommissionDTO
 
-type TrialsAPI = "v1" :> (PublicTrialsAPI :<|> AuthProtect "bearer-token" :> PrivateTrialsAPI)
+type TrialsAPI = "trials" :> "v1" :> (PublicTrialsAPI :<|> AuthProtect "bearer-token" :> PrivateTrialsAPI)
