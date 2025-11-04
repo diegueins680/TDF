@@ -77,6 +77,10 @@ type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 
+type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] LoginResponse
+
+type PasswordAPI = "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
+
 type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 
 type ProtectedAPI =
@@ -97,6 +101,8 @@ type API =
        VersionAPI
   :<|> "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
+  :<|> "signup" :> SignupAPI
+  :<|> "password" :> PasswordAPI
   :<|> MetaAPI
   :<|> "seed"   :> SeedAPI
   :<|> "input-list" :> InputListAPI
