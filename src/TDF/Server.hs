@@ -346,7 +346,7 @@ changePassword mAuthHeader ChangePasswordRequest{..} = do
           token <- case header >>= parseBearer . T.strip of
             Nothing  -> throwBadRequest "Username is required"
             Just tok -> pure tok
-          mResolved <- liftIO $ flip runSqlPool pool (lookupUsernameFromToken tok)
+          mResolved <- liftIO $ flip runSqlPool pool (lookupUsernameFromToken token)
           case fmap T.strip mResolved of
             Nothing     -> throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid or inactive session token") }
             Just uname' -> pure uname'
