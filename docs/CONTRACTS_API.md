@@ -1,12 +1,14 @@
-# Contracts API (proposal)
+# Contracts API
 
-**POST /contracts**: create from schema+payload -> stores row in contracts table.
-**GET /contracts/{id}/pdf**: render LaTeX template -> PDF.
-**POST /contracts/{id}/send**: email with PDF attachment.
+## Endpoints
+POST /contracts — body: JSON payload conforme a schema.
+GET /contracts/{id}/pdf — devuelve application/pdf.
+POST /contracts/{id}/send — body: { email } envía PDF.
 
-DB: contracts(id, kind, json_payload, pdf_url, created_at).
+## Infra
+- Render: script `scripts/latex/render.sh` (tectonic).
+- Storage: S3/GCS (env `PDF_BUCKET`).
+- Email: SendGrid/SMTP.
 
-Implementation notes (Haskell/Servant):
-- Endpoint stubs, use Pandoc or tectonic for LaTeX compile.
-- S3/GCS upload for PDFs.
-- Email via SendGrid or SMTP.
+## DB
+See migration in db/migrations/2025-11-03_create_contracts.sql
