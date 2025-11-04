@@ -16,7 +16,7 @@ import           Control.Monad.Trans.Class (lift)
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
-import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import           Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -95,10 +95,30 @@ inputListServer =
   :<|> seedHQ
   :<|> getSessionInputListPdf
 
-listInventory :: AppM [Entity InputList.InventoryItem]
-listInventory = do
+listInventory
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe Int
+  -> AppM [Entity InputList.InventoryItem]
+listInventory mFieldParam mSessionParam mChannelParam = do
+  parsedField <- case mFieldParam of
+    Nothing -> pure Nothing
+    Just rawField ->
+      case InputList.parseAssetField rawField of
+        Nothing    -> throwBadRequest "Unsupported field"
+        Just field -> pure (Just field)
+  sessionKey <- case mSessionParam of
+    Nothing   -> pure Nothing
+    Just raw  ->
+      case fromPathPiece raw of
+        Nothing -> throwBadRequest "Invalid sessionId"
+        Just k  -> pure (Just k)
+  when (isJust mChannelParam && isNothing sessionKey) $
+    throwBadRequest "channel requires sessionId"
+  when (maybe False (< 1) mChannelParam) $
+    throwBadRequest "channel must be greater than or equal to 1"
   Env{..} <- ask
-  liftIO $ flip runSqlPool envPool InputList.listInventoryDB
+  liftIO $ flip runSqlPool envPool (InputList.listInventoryDB parsedField sessionKey mChannelParam)
 
 seedInventory :: Maybe Text -> AppM NoContent
 seedInventory rawToken = do

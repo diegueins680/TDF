@@ -34,7 +34,11 @@ type InputListEntry = ME.InputRow
 type VersionAPI = "version" :> Get '[JSON] VersionInfo
 
 type InputListPublicAPI =
-       "inventory" :> Get '[JSON] [Entity InventoryItem]
+       "inventory"
+         :> QueryParam "field" Text
+         :> QueryParam "sessionId" Text
+         :> QueryParam "channel" Int
+         :> Get '[JSON] [Entity InventoryItem]
   :<|> "inventory" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
   :<|> "sessions" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[JSON] [Entity InputListEntry]
   :<|> "sessions" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
