@@ -20,8 +20,7 @@ COPY stack.yaml tdf-hq.cabal ./
 RUN stack --no-terminal --install-ghc setup && \
     stack --no-terminal --install-ghc build --only-dependencies
 
-# Copy sources
-COPY .git .git
+# Copy sources (git metadata is provided via build args when available)
 COPY app app
 COPY src src
 COPY config config
