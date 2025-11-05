@@ -22,6 +22,7 @@ executable tdf-hq-exe
     TDF.API.Types
     TDF.Auth
     TDF.Config
+    TDF.Cors
     TDF.DB
     TDF.DTO
     TDF.Handlers.InputList
@@ -29,6 +30,7 @@ executable tdf-hq-exe
     TDF.Models
     TDF.ModelsExtra
     TDF.Pipelines
+    TDF.Routes.Academy
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin

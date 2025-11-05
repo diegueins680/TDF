@@ -23,6 +23,8 @@ import           TDF.ModelsExtra (migrateExtra)
 import           TDF.Trials.Models (migrateTrials)
 import           TDF.Server     (mkApp)
 import           TDF.Seed       (seedAll)
+import qualified TDF.Cors as C
+import qualified TDF.Routes.Academy as Academy
 
 main :: IO ()
 main = do
