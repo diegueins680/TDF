@@ -1,6 +1,12 @@
-# TDF HQ
+# TDF HQ - Backend API
+
+[![GitHub](https://img.shields.io/badge/GitHub-tdf--app-blue)](https://github.com/diegueins680/tdf-app)
+[![Haskell](https://img.shields.io/badge/Haskell-Stack-purple)](https://docs.haskellstack.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue)](https://www.postgresql.org/)
 
 A Haskell (Servant + Persistent) backend that powers TDF's internal HQ app for CRM, scheduling, lesson packages, invoicing, inventory, and trial management. The service exposes a JSON API secured with bearer tokens, generates PDFs for operational checklists, and boots with opinionated seeds so the UI can be exercised immediately.
+
+**Part of the [TDF Records Management Platform](https://github.com/diegueins680/tdf-app)** - See the main repository for complete project documentation.
 
 ## Architecture at a Glance
 
@@ -26,44 +32,103 @@ A Haskell (Servant + Persistent) backend that powers TDF's internal HQ app for C
 
 ## Getting Started
 
+> **Note:** This is the backend service. For complete setup including frontend and mobile apps, see the [main repository README](https://github.com/diegueins680/tdf-app#readme).
+
 ### Prerequisites
 
-- GHC toolchain via [Stack](https://docs.haskellstack.org/).
-- PostgreSQL 16 accessible at the host/port configured in `config/default.env` (or run via Docker Compose).
-- `make`, `curl`, and `jq` for convenience targets.
-- (Optional) A LaTeX toolchain if you plan to regenerate the PDF template assets locally (`scripts/latex`).
+- **Haskell Stack**: GHC toolchain via [Stack](https://docs.haskellstack.org/)
+  ```bash
+  curl -sSL https://get.haskellstack.org/ | sh
+  ```
+- **PostgreSQL 16**: Either local installation or Docker
+  ```bash
+  # macOS
+  brew install postgresql@16
+  
+  # Or use Docker Compose (see below)
+  ```
+- **Development tools**: `make`, `curl`, `jq`
+- **Optional**: LaTeX toolchain for PDF generation (`scripts/latex`)
 
-### Configure environment
+### Quick Start
 
-Copy `config/default.env` to `.env` (or export the variables in your shell):
+1. **Configure environment**
+   
+   Copy the default configuration to `.env`:
+   ```bash
+   cp config/default.env .env
+   ```
+   
+   Edit `.env` with your settings:
+   ```env
+   DB_HOST=127.0.0.1
+   DB_PORT=5432
+   DB_USER=postgres
+   DB_PASS=your_secure_password
+   DB_NAME=tdf_hq
+   APP_PORT=8080
+   RESET_DB=false
+   SEED_DB=true
+   SEED_TRIGGER_TOKEN=tdf-bootstrap-seed
+   ```
 
-```env
-DB_HOST=127.0.0.1
-DB_PORT=5432
-DB_USER=postgres
-DB_PASS=postgres
-DB_NAME=tdf_hq
-APP_PORT=8080
-RESET_DB=false
-SEED_DB=true
-SEED_TRIGGER_TOKEN=tdf-bootstrap-seed
-```
+2. **Create database**
+   ```bash
+   createdb tdf_hq
+   # Or use psql: CREATE DATABASE tdf_hq;
+   ```
 
-`RESET_DB=true` will drop and recreate the `public` schema on boot; `SEED_DB=false` skips automatic seed data. Setting `SEED_TRIGGER_TOKEN` to a non-empty value enables the unauthenticated `/seed` endpoint; leaving it blank disables it entirely.
+3. **Build and run**
+   ```bash
+   stack setup    # First run only
+   stack build    # Compile
+   stack run      # Start server
+   ```
 
-## Running the application
+   The API will be available at `http://localhost:8080`
 
-### Stack workflow
+**Environment Variables:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DB_HOST` | PostgreSQL host | `127.0.0.1` |
+| `DB_PORT` | PostgreSQL port | `5432` |
+| `DB_USER` | Database user | `postgres` |
+| `DB_PASS` | Database password | - |
+| `DB_NAME` | Database name | `tdf_hq` |
+| `APP_PORT` | Server port | `8080` |
+| `RESET_DB` | Drop/recreate schema on startup | `false` |
+| `SEED_DB` | Load seed data on startup | `true` |
+| `SEED_TRIGGER_TOKEN` | Token for `/seed` endpoint | - |
+| `ALLOW_ORIGINS` | CORS allowed origins (comma-separated) | - |
+
+## Running the Application
+
+### Development Mode
 
 ```bash
-# from project root
-set -a; source config/default.env; set +a
-stack setup         # first run only
-stack build
-stack run           # runs migrations and optional seeds
+# Load environment and run
+source .env
+stack run
+
+# Or use the dev script
+./scripts/dev_run.sh
 ```
 
-The API will listen on `http://localhost:8080`. Migrations include the base schema, extra entities, and the trial lesson tables.
+The API will listen on `http://localhost:8080`. On startup:
+- Migrations run automatically (base schema, extra entities, trial lessons)
+- Seed data loads if `SEED_DB=true`
+- CORS is configured for development
+
+### Production Build
+
+```bash
+# Build optimized binary
+stack build --copy-bins
+
+# The binary will be in ~/.local/bin/
+~/.local/bin/tdf-hq-exe
+```
 
 ### Docker Compose
 
@@ -116,9 +181,83 @@ Override `APP_BASE_URL` when using the `version` Make target, or export environm
 - `scripts/smoke.sh`: lightweight curl-based smoke tests against local or remote deployments.
 - `scripts/latex/*`: build artifacts required for LaTeX/PDF generation if the template changes.
 
+## API Endpoints
+
+### Health & Metadata
+
+```bash
+GET  /health                    # Health check
+GET  /version                   # API version
+GET  /meta/roles                # Available roles
+GET  /meta/modules              # Available modules
+```
+
+### Authentication Required
+
+All other endpoints require `Authorization: Bearer <token>` header.
+
+### Core Resources
+
+```bash
+# Parties (CRM)
+GET    /parties                 # List parties
+POST   /parties                 # Create party
+GET    /parties/:id             # Get party
+PUT    /parties/:id             # Update party
+DELETE /parties/:id             # Delete party
+
+# Bookings
+GET    /bookings                # List bookings
+POST   /bookings                # Create booking
+GET    /bookings/:id            # Get booking
+PUT    /bookings/:id            # Update booking
+
+# Sessions
+GET    /sessions                # List sessions
+POST   /sessions                # Create session
+GET    /input-list/sessions     # Get sessions input list (PDF)
+
+# Packages
+GET    /packages                # List packages
+POST   /packages                # Create package
+GET    /packages/:id            # Get package
+
+# Invoices & Receipts
+GET    /invoices                # List invoices
+POST   /invoices                # Create invoice
+GET    /receipts                # List receipts
+POST   /receipts                # Create receipt
+
+# See docs/openapi/ for complete API specification
+```
+
 ## Testing
 
-A formal test suite is not yet wired up. Add Hspec specs under `test/`, update `tdf-hq.cabal` with a `test-suite`, and run via `stack test` when you start adding automated coverage.
+### Smoke Tests
+
+```bash
+# Test local server
+./scripts/smoke.sh http://localhost:8080
+
+# Test remote deployment
+./scripts/smoke.sh https://api.tdfrecords.com
+```
+
+### Unit Tests (TODO)
+
+A formal test suite is not yet implemented. To add:
+
+1. Create `test/` directory
+2. Add Hspec specs
+3. Update `tdf-hq.cabal`:
+   ```haskell
+   test-suite tdf-hq-test
+     type:             exitcode-stdio-1.0
+     main-is:          Spec.hs
+     hs-source-dirs:   test
+     build-depends:    base, hspec, tdf-hq
+   ```
+4. Run with `stack test`
 
 ## Troubleshooting
 
@@ -126,6 +265,31 @@ A formal test suite is not yet wired up. Add Hspec specs under `test/`, update `
 - To regenerate seeds from scratch, set `RESET_DB=true` and `SEED_DB=true` for a single `stack run` invocation, then revert to defaults.
 - CORS origins can be extended via `ALLOW_ORIGINS` (comma-separated list) or `ALLOW_ORIGIN` environment variables without code changes.
 
+## Contributing
+
+See the main repository's [CONTRIBUTING.md](https://github.com/diegueins680/tdf-app/blob/main/CONTRIBUTING.md) for contribution guidelines.
+
+### Adding New Endpoints
+
+1. Define route in `src/TDF/API.hs`
+2. Implement handler in `src/TDF/Server*.hs`
+3. Add database models in `src/TDF/Models*.hs` if needed
+4. Update OpenAPI spec in `docs/openapi/`
+5. Wire into `src/TDF/Server.hs`
+6. Update this README if it's a major feature
+
+## Related Projects
+
+- **[tdf-hq-ui](../tdf-hq-ui/)** - React web interface
+- **[tdf-mobile](../tdf-mobile/)** - Expo mobile app
+- **[Main Repository](https://github.com/diegueins680/tdf-app)** - Complete platform
+
+## License
+
+MIT License - See [LICENSE](../LICENSE) for details
+
 ---
 
-Happy hacking! If you add new modules or endpoints, remember to update `TDF.API`, wire handlers in `TDF.Server`, extend DTOs as needed, and document contract changes under `docs/` so the frontend stays in sync.
+**TDF Records** - Built with ❤️ using Haskell, Servant, and PostgreSQL
+
+For questions or issues, please open an issue in the [main repository](https://github.com/diegueins680/tdf-app/issues).
