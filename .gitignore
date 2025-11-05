@@ -4,3 +4,6 @@
 *.dyn_o
 .stack-work/
 *.patch
+.stack-root/
+.env
+.DS_Store
