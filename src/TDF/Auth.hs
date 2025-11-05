@@ -10,8 +10,12 @@ module TDF.Auth
   , moduleName
   , modulesForRoles
   , loadAuthedUser
+  , lookupUsernameFromToken
+  , resolveUsernameFromLabel
   ) where
 
+import           Control.Applicative        ((<|>))
+import           Control.Monad              (guard)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy       as BL
 import           Data.List                  (foldl')
@@ -90,6 +94,25 @@ loadAuthedUser token = do
             , auRoles   = roleList
             , auModules = modules
             }
+
+lookupUsernameFromToken :: Text -> SqlPersistT IO (Maybe Text)
+lookupUsernameFromToken token = do
+  mToken <- getBy (UniqueApiToken token)
+  pure $ do
+    Entity _ tok <- mToken
+    guard (apiTokenActive tok)
+    label <- apiTokenLabel tok
+    resolveUsernameFromLabel label
+
+resolveUsernameFromLabel :: Text -> Maybe Text
+resolveUsernameFromLabel rawLabel =
+  let trimmed = T.strip rawLabel
+      attempt prefix = T.strip <$> T.stripPrefix prefix trimmed
+      resolved = attempt "password-login:" <|> attempt "password-reset:"
+      nonEmpty txt =
+        let stripped = T.strip txt
+        in if T.null stripped then Nothing else Just stripped
+  in resolved >>= nonEmpty
 
 modulesForRoles :: [RoleEnum] -> Set ModuleAccess
 modulesForRoles = foldl' (flip (Set.union . modulesForRole)) Set.empty

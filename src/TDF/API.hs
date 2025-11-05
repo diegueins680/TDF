@@ -12,7 +12,7 @@ import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
-import           Data.Aeson (ToJSON(..), FromJSON(..), object, (.=))
+import           Data.Aeson (ToJSON(..), FromJSON(..), Value, object, (.=))
 import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
@@ -39,10 +39,14 @@ type InputListPublicAPI =
          :> QueryParam "sessionId" Text
          :> QueryParam "channel" Int
          :> Get '[JSON] [Entity InventoryItem]
-  :<|> "inventory" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
   :<|> "sessions" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[JSON] [Entity InputListEntry]
-  :<|> "sessions" :> "seed" :> Header "X-Seed-Token" Text :> Post '[JSON] NoContent
   :<|> "sessions" :> "pdf" :> QueryParam "index" Int :> QueryParam "sessionId" Text :> Get '[OctetStream] (Headers '[Header "Content-Disposition" Text] BL.ByteString)
+
+type InputListSeedAPI =
+       "inventory" :> "seed" :> SeedAPI
+  :<|> "sessions" :> "seed" :> SeedAPI
+
+type InputListAPI = InputListPublicAPI :<|> InputListSeedAPI
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
@@ -64,6 +68,9 @@ type PackageAPI =
 type InvoiceAPI =
        Get '[JSON] [InvoiceDTO]
   :<|> ReqBody '[JSON] CreateInvoiceReq :> Post '[JSON] InvoiceDTO
+  :<|> Capture "sessionId" Text :> "generate" :> ReqBody '[JSON] Value :> Post '[JSON] Value
+  :<|> "by-session" :> Capture "sessionId" Text :> Get '[JSON] Value
+  :<|> Capture "invoiceId" Int64 :> Get '[JSON] Value
 
 type ReceiptAPI =
       Get '[JSON] [ReceiptDTO]
@@ -73,6 +80,20 @@ type ReceiptAPI =
 type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
+
+type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] LoginResponse
+
+type PasswordResetAPI = ReqBody '[JSON] PasswordResetRequest :> Post '[JSON] NoContent
+
+type PasswordResetConfirmAPI = ReqBody '[JSON] PasswordResetConfirmRequest :> Post '[JSON] LoginResponse
+
+type PasswordAPI = "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
+
+type AuthV1API =
+       "signup" :> SignupAPI
+  :<|> "password-reset" :> PasswordResetAPI
+  :<|> "password-reset" :> "confirm" :> PasswordResetConfirmAPI
+  :<|> "password" :> PasswordAPI
 
 type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 
@@ -94,9 +115,12 @@ type API =
        VersionAPI
   :<|> "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
+  :<|> "signup" :> SignupAPI
+  :<|> "password" :> PasswordAPI
+  :<|> "v1" :> AuthV1API
   :<|> MetaAPI
   :<|> "seed"   :> SeedAPI
-  :<|> "input-list" :> InputListPublicAPI
+  :<|> "input-list" :> InputListAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }

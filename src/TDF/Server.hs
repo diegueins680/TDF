@@ -5,6 +5,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module TDF.Server where
 
@@ -18,6 +20,7 @@ import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set as Set
+import           Data.Aeson (Value, object, (.=))
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -25,7 +28,7 @@ import qualified Data.ByteString.Lazy as BL
 import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
-import           Crypto.BCrypt (validatePassword)
+import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy, validatePassword)
 import           Network.Wai (Request)
 import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler)
@@ -40,13 +43,14 @@ import           Database.Persist.Postgresql ()
 
 import           TDF.API
 import           TDF.API.Types (RolePayload(..))
+import qualified TDF.API      as Api
 import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
 import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
-import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, lookupUsernameFromToken, moduleName, loadAuthedUser)
 import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
@@ -79,21 +83,31 @@ server =
        versionServer
   :<|> health
   :<|> login
+  :<|> signup
+  :<|> changePassword
+  :<|> authV1Server
   :<|> metaServer
   :<|> seedTrigger
   :<|> inputListServer
   :<|> protectedServer
 
-versionServer :: ServerT VersionAPI AppM
+authV1Server :: ServerT Api.AuthV1API AppM
+authV1Server = signup :<|> passwordReset :<|> passwordResetConfirm :<|> changePassword
+
+versionServer :: ServerT Api.VersionAPI AppM
 versionServer = liftIO getVersionInfo
 
-inputListServer :: ServerT InputListPublicAPI AppM
-inputListServer =
-       listInventory
-  :<|> seedInventory
-  :<|> getSessionInputList
-  :<|> seedHQ
-  :<|> getSessionInputListPdf
+inputListServer :: ServerT Api.InputListAPI AppM
+inputListServer = publicRoutes :<|> seedRoutes
+  where
+    publicRoutes =
+           listInventory
+      :<|> getSessionInputList
+      :<|> getSessionInputListPdf
+
+    seedRoutes =
+           seedInventory
+      :<|> seedHQ
 
 listInventory
   :: Maybe Text
@@ -159,7 +173,7 @@ getSessionInputListPdf
   -> AppM (Headers '[Header "Content-Disposition" Text] BL.ByteString)
 getSessionInputListPdf mIndex mSessionId = do
   (Entity _ session, rows) <- resolveSessionInputData mIndex mSessionId
-  let title = fromMaybe (sessionService session <> " session") (sessionClientPartyRef session)
+  let title = fromMaybe (ME.sessionService session <> " session") (ME.sessionClientPartyRef session)
       latex = InputList.renderInputListLatex title rows
   pdfResult <- liftIO (InputList.generateInputListPdf latex)
   case pdfResult of
@@ -238,6 +252,235 @@ runLogin uname pwd = do
   where
     invalidMsg = "Invalid username or password"
 
+data SignupDbError
+  = SignupEmailExists
+  | SignupProfileError
+  deriving (Eq, Show)
+
+signup :: SignupRequest -> AppM LoginResponse
+signup SignupRequest
+  { firstName = rawFirst
+  , lastName = rawLast
+  , email = rawEmail
+  , phone = rawPhone
+  , password = rawPassword
+  } = do
+  let emailClean    = T.strip rawEmail
+      passwordClean = T.strip rawPassword
+      firstClean    = T.strip rawFirst
+      lastClean     = T.strip rawLast
+      phoneClean    = fmap T.strip rawPhone
+  when (T.null emailClean) $ throwBadRequest "Email is required"
+  when (T.null passwordClean) $ throwBadRequest "Password is required"
+  when (T.length passwordClean < 8) $ throwBadRequest "Password must be at least 8 characters"
+  when (T.null firstClean && T.null lastClean) $ throwBadRequest "First or last name is required"
+  now <- liftIO getCurrentTime
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool $
+    runSignupDb emailClean passwordClean firstClean lastClean phoneClean now
+  case result of
+    Left SignupEmailExists ->
+      throwError err409 { errBody = BL.fromStrict (TE.encodeUtf8 "Account already exists for this email") }
+    Left SignupProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runSignupDb
+      :: Text
+      -> Text
+      -> Text
+      -> Text
+      -> Maybe Text
+      -> UTCTime
+      -> SqlPersistT IO (Either SignupDbError LoginResponse)
+    runSignupDb emailVal passwordVal firstVal lastVal phoneVal nowVal = do
+      existing <- getBy (UniqueCredentialUsername emailVal)
+      case existing of
+        Just _  -> pure (Left SignupEmailExists)
+        Nothing -> do
+          let displayName =
+                case filter (not . T.null) [firstVal, lastVal] of
+                  [] -> emailVal
+                  xs -> T.unwords xs
+              partyRecord = Party
+                { partyLegalName        = Nothing
+                , partyDisplayName      = displayName
+                , partyIsOrg            = False
+                , partyTaxId            = Nothing
+                , partyPrimaryEmail     = Just emailVal
+                , partyPrimaryPhone     = phoneVal
+                , partyWhatsapp         = Nothing
+                , partyInstagram        = Nothing
+                , partyEmergencyContact = Nothing
+                , partyNotes            = Nothing
+                , partyCreatedAt        = nowVal
+                }
+          pid <- insert partyRecord
+          _ <- upsert (PartyRole pid Customer True) [PartyRoleActive =. True]
+          hashed <- liftIO (hashPasswordText passwordVal)
+          _ <- insert UserCredential
+            { userCredentialPartyId      = pid
+            , userCredentialUsername     = emailVal
+            , userCredentialPasswordHash = hashed
+            , userCredentialActive       = True
+            }
+          token <- createSessionToken pid emailVal
+          mUser <- loadAuthedUser token
+          case mUser of
+            Nothing   -> pure (Left SignupProfileError)
+            Just user -> pure (Right (toLoginResponse token user))
+
+data PasswordChangeError
+  = PasswordInvalid
+  | PasswordAccountDisabled
+  | PasswordProfileError
+  deriving (Eq, Show)
+
+changePassword :: ChangePasswordRequest -> AppM LoginResponse
+changePassword ChangePasswordRequest{..} = do
+  let usernameClean        = T.strip username
+      currentPasswordClean = T.strip currentPassword
+      newPasswordClean     = T.strip newPassword
+  when (T.null usernameClean) $ throwBadRequest "Username is required"
+  when (T.null currentPasswordClean) $ throwBadRequest "Current password is required"
+  when (T.null newPasswordClean) $ throwBadRequest "New password is required"
+  when (T.length newPasswordClean < 8) $
+    throwBadRequest "New password must be at least 8 characters"
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool $
+    runChangePassword usernameClean currentPasswordClean newPasswordClean
+  case result of
+    Left PasswordInvalid ->
+      throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid username or password") }
+    Left PasswordAccountDisabled ->
+      throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "Account disabled") }
+    Left PasswordProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runChangePassword
+      :: Text
+      -> Text
+      -> Text
+      -> SqlPersistT IO (Either PasswordChangeError LoginResponse)
+    runChangePassword uname currentPwd newPwd = do
+      mCred <- getBy (UniqueCredentialUsername uname)
+      case mCred of
+        Nothing -> pure (Left PasswordInvalid)
+        Just (Entity credId cred)
+          | not (userCredentialActive cred) -> pure (Left PasswordAccountDisabled)
+          | not (validatePassword (TE.encodeUtf8 (userCredentialPasswordHash cred)) (TE.encodeUtf8 currentPwd)) ->
+              pure (Left PasswordInvalid)
+          | otherwise -> do
+              hashed <- liftIO (hashPasswordText newPwd)
+              update credId [UserCredentialPasswordHash =. hashed]
+              deactivatePasswordTokens (userCredentialPartyId cred)
+              token <- createSessionToken (userCredentialPartyId cred) uname
+              mResolved <- lookupUsernameFromToken token
+              case mResolved of
+                Nothing -> pure (Left PasswordProfileError)
+                Just _  -> do
+                  mUser <- loadAuthedUser token
+                  case mUser of
+                    Nothing   -> pure (Left PasswordProfileError)
+                    Just user -> pure (Right (toLoginResponse token user))
+
+data PasswordResetError
+  = PasswordResetInvalidToken
+  | PasswordResetAccountDisabled
+  | PasswordResetProfileError
+  deriving (Eq, Show)
+
+passwordReset :: PasswordResetRequest -> AppM NoContent
+passwordReset PasswordResetRequest{..} = do
+  let emailClean = T.strip email
+  when (T.null emailClean) $ throwBadRequest "Email is required"
+  Env pool _ <- ask
+  _ <- liftIO $ flip runSqlPool pool (runPasswordReset emailClean)
+  pure NoContent
+  where
+    runPasswordReset :: Text -> SqlPersistT IO (Maybe Text)
+    runPasswordReset emailVal = do
+      mCred <- getBy (UniqueCredentialUsername emailVal)
+      case mCred of
+        Nothing -> pure Nothing
+        Just (Entity _ cred)
+          | not (userCredentialActive cred) -> pure Nothing
+          | otherwise -> do
+              deactivatePasswordResetTokens (userCredentialPartyId cred)
+              token <- createPasswordResetToken (userCredentialPartyId cred) emailVal
+              pure (Just token)
+
+passwordResetConfirm :: PasswordResetConfirmRequest -> AppM LoginResponse
+passwordResetConfirm PasswordResetConfirmRequest{..} = do
+  let tokenClean       = T.strip token
+      newPasswordClean = T.strip newPassword
+  when (T.null tokenClean) $ throwBadRequest "Token is required"
+  when (T.null newPasswordClean) $ throwBadRequest "New password is required"
+  when (T.length newPasswordClean < 8) $
+    throwBadRequest "New password must be at least 8 characters"
+  Env pool _ <- ask
+  result <- liftIO $ flip runSqlPool pool (runPasswordResetConfirm tokenClean newPasswordClean)
+  case result of
+    Left PasswordResetInvalidToken ->
+      throwError err400 { errBody = BL.fromStrict (TE.encodeUtf8 "Invalid or expired token") }
+    Left PasswordResetAccountDisabled ->
+      throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "Account disabled") }
+    Left PasswordResetProfileError ->
+      throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
+    Right resp -> pure resp
+  where
+    runPasswordResetConfirm
+      :: Text
+      -> Text
+      -> SqlPersistT IO (Either PasswordResetError LoginResponse)
+    runPasswordResetConfirm tokenVal passwordVal = do
+      mToken <- getBy (UniqueApiToken tokenVal)
+      case mToken of
+        Nothing -> pure (Left PasswordResetInvalidToken)
+        Just (Entity tokenId apiToken)
+          | not (apiTokenActive apiToken) -> pure (Left PasswordResetInvalidToken)
+          | not (isResetToken (apiTokenLabel apiToken)) -> pure (Left PasswordResetInvalidToken)
+          | otherwise -> do
+              let mResetUsername = do
+                    labelText <- apiTokenLabel apiToken
+                    resetTokenUsername labelText
+              case mResetUsername of
+                Nothing -> pure (Left PasswordResetInvalidToken)
+                Just resetUsername -> do
+                  mCred <- getBy (UniqueCredentialUsername resetUsername)
+                  case mCred of
+                    Nothing -> pure (Left PasswordResetInvalidToken)
+                    Just (Entity credId cred)
+                      | userCredentialPartyId cred /= apiTokenPartyId apiToken ->
+                          pure (Left PasswordResetInvalidToken)
+                      | not (userCredentialActive cred) -> pure (Left PasswordResetAccountDisabled)
+                      | otherwise -> do
+                          hashed <- liftIO (hashPasswordText passwordVal)
+                          update credId [UserCredentialPasswordHash =. hashed]
+                          update tokenId [ApiTokenActive =. False]
+                          deactivatePasswordTokens (userCredentialPartyId cred)
+                          deactivatePasswordResetTokens (userCredentialPartyId cred)
+                          sessionToken <- createSessionToken (userCredentialPartyId cred) (userCredentialUsername cred)
+                          mUser <- loadAuthedUser sessionToken
+                          case mUser of
+                            Nothing   -> pure (Left PasswordResetProfileError)
+                            Just user -> pure (Right (toLoginResponse sessionToken user))
+
+    isResetToken :: Maybe Text -> Bool
+    isResetToken Nothing = False
+    isResetToken (Just lbl) = "password-reset:" `T.isPrefixOf` lbl
+
+    resetTokenUsername :: Text -> Maybe Text
+    resetTokenUsername lbl =
+      let prefix = "password-reset:"
+      in T.stripPrefix prefix lbl >>= nonEmptyText
+
+    nonEmptyText :: Text -> Maybe Text
+    nonEmptyText txt
+      | T.null (T.strip txt) = Nothing
+      | otherwise = Just (T.strip txt)
+
 toLoginResponse :: Text -> AuthedUser -> LoginResponse
 toLoginResponse token AuthedUser{..} = LoginResponse
   { token   = token
@@ -247,13 +490,46 @@ toLoginResponse token AuthedUser{..} = LoginResponse
   }
 
 createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
-createSessionToken pid uname = do
+createSessionToken pid uname =
+  createTokenWithLabel pid (Just ("password-login:" <> uname))
+
+createPasswordResetToken :: PartyId -> Text -> SqlPersistT IO Text
+createPasswordResetToken pid emailVal =
+  createTokenWithLabel pid (Just ("password-reset:" <> emailVal))
+
+createTokenWithLabel :: PartyId -> Maybe Text -> SqlPersistT IO Text
+createTokenWithLabel pid label = do
   token <- liftIO (toText <$> nextRandom)
-  let label = Just ("password-login:" <> uname)
   inserted <- insertUnique (ApiToken token pid label True)
   case inserted of
-    Nothing -> createSessionToken pid uname
+    Nothing -> createTokenWithLabel pid label
     Just _  -> pure token
+
+deactivatePasswordTokens :: PartyId -> SqlPersistT IO ()
+deactivatePasswordTokens pid = do
+  tokens <- selectList [ApiTokenPartyId ==. pid, ApiTokenActive ==. True] []
+  forM_ tokens $ \(Entity tokenId tok) ->
+    case apiTokenLabel tok of
+      Just lbl | "password-login:" `T.isPrefixOf` lbl ->
+        update tokenId [ApiTokenActive =. False]
+      _ -> pure ()
+
+deactivatePasswordResetTokens :: PartyId -> SqlPersistT IO ()
+deactivatePasswordResetTokens pid = do
+  tokens <- selectList [ApiTokenPartyId ==. pid, ApiTokenActive ==. True] []
+  forM_ tokens $ \(Entity tokenId tok) ->
+    case apiTokenLabel tok of
+      Just lbl | "password-reset:" `T.isPrefixOf` lbl ->
+        update tokenId [ApiTokenActive =. False]
+      _ -> pure ()
+
+hashPasswordText :: Text -> IO Text
+hashPasswordText pwd = do
+  let raw = TE.encodeUtf8 pwd
+  mHash <- hashPasswordUsingPolicy slowerBcryptHashingPolicy raw
+  case mHash of
+    Nothing   -> fail "Failed to hash password"
+    Just hash -> pure (TE.decodeUtf8 hash)
 
 metaServer :: ServerT Meta.MetaAPI AppM
 metaServer = hoistServer metaProxy lift Meta.metaServer
@@ -593,7 +869,27 @@ createPurchase user req = do
 
 -- Invoices
 invoiceServer :: AuthedUser -> ServerT InvoiceAPI AppM
-invoiceServer user = listInvoices user :<|> createInvoice user
+invoiceServer user =
+       listInvoices user
+  :<|> createInvoice user
+  :<|> generateInvoiceForSession user
+  :<|> getInvoicesBySession user
+  :<|> getInvoiceById user
+
+generateInvoiceForSession :: AuthedUser -> Text -> Value -> AppM Value
+generateInvoiceForSession user sessionId _payload = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "sessionId" .= sessionId])
+
+getInvoicesBySession :: AuthedUser -> Text -> AppM Value
+getInvoicesBySession user sessionId = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "sessionId" .= sessionId])
+
+getInvoiceById :: AuthedUser -> Int64 -> AppM Value
+getInvoiceById user invoiceId = do
+  requireModule user ModuleInvoicing
+  pure (object ["ok" .= True, "invoiceId" .= invoiceId])
 
 listInvoices :: AuthedUser -> AppM [InvoiceDTO]
 listInvoices user = do

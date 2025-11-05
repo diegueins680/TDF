@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -14,6 +15,8 @@
 {-# LANGUAGE TypeOperators #-}
 
 module TDF.ModelsExtra where
+
+-- Relax orphan warnings; we need Persist instances for UUID from an external package.
 
 import           Data.Text          (Text, pack)
 import           Data.Time          (Day, UTCTime)
