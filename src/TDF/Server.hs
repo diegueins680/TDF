@@ -18,7 +18,7 @@ import           Control.Monad.Trans.Class (lift)
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import qualified Data.Map.Strict as Map
-import           Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import           Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set as Set
 import           Data.Aeson (Value, object, (.=))
 import           Data.Text (Text)
@@ -50,7 +50,7 @@ import           TDF.Models
 import qualified TDF.Models as M
 import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
-import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
+import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, lookupUsernameFromToken, moduleName, loadAuthedUser)
 import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
@@ -109,10 +109,30 @@ inputListServer = publicRoutes :<|> seedRoutes
            seedInventory
       :<|> seedHQ
 
-listInventory :: AppM [Entity InputList.InventoryItem]
-listInventory = do
+listInventory
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe Int
+  -> AppM [Entity InputList.InventoryItem]
+listInventory mFieldParam mSessionParam mChannelParam = do
+  parsedField <- case mFieldParam of
+    Nothing -> pure Nothing
+    Just rawField ->
+      case InputList.parseAssetField rawField of
+        Nothing    -> throwBadRequest "Unsupported field"
+        Just field -> pure (Just field)
+  sessionKey <- case mSessionParam of
+    Nothing   -> pure Nothing
+    Just raw  ->
+      case fromPathPiece raw of
+        Nothing -> throwBadRequest "Invalid sessionId"
+        Just k  -> pure (Just k)
+  when (isJust mChannelParam && isNothing sessionKey) $
+    throwBadRequest "channel requires sessionId"
+  when (maybe False (< 1) mChannelParam) $
+    throwBadRequest "channel must be greater than or equal to 1"
   Env{..} <- ask
-  liftIO $ flip runSqlPool envPool InputList.listInventoryDB
+  liftIO $ flip runSqlPool envPool (InputList.listInventoryDB parsedField sessionKey mChannelParam)
 
 seedInventory :: Maybe Text -> AppM NoContent
 seedInventory rawToken = do
@@ -384,10 +404,14 @@ changePassword mAuthHeader ChangePasswordRequest{..} = do
               update credId [UserCredentialPasswordHash =. hashed]
               deactivatePasswordTokens (userCredentialPartyId cred)
               token <- createSessionToken (userCredentialPartyId cred) uname
-              mUser <- loadAuthedUser token
-              case mUser of
-                Nothing   -> pure (Left PasswordProfileError)
-                Just user -> pure (Right (toLoginResponse token user))
+              mResolved <- lookupUsernameFromToken token
+              case mResolved of
+                Nothing -> pure (Left PasswordProfileError)
+                Just _  -> do
+                  mUser <- loadAuthedUser token
+                  case mUser of
+                    Nothing   -> pure (Left PasswordProfileError)
+                    Just user -> pure (Right (toLoginResponse token user))
 
 data PasswordResetError
   = PasswordResetInvalidToken

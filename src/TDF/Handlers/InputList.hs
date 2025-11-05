@@ -1,9 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module TDF.Handlers.InputList
   ( InventoryItem
   , InputListEntry
+  , AssetField(..)
+  , parseAssetField
   , listInventoryDB
   , seedInventoryDB
   , seedHQDB
@@ -16,7 +19,9 @@ module TDF.Handlers.InputList
 
 import           Control.Applicative        ((<|>))
 import           Control.Exception          (IOException, catch)
+import           Control.Monad              (guard)
 import           Data.Char                  (isAlphaNum)
+import           Data.List                  (find)
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (mapMaybe)
 import           Data.Text                  (Text)
@@ -32,12 +37,29 @@ import           System.Directory           (createDirectoryIfMissing, removeFil
 import           System.Exit                (ExitCode(..))
 import           System.FilePath            ((</>))
 import           System.Process             (readProcessWithExitCode)
+import qualified Data.Set                   as Set
 
 import qualified TDF.ModelsExtra            as ME
 import           TDF.Seed                   (seedHolgerSession, seedInventoryAssets)
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
+
+data AssetField
+  = AssetFieldMic
+  | AssetFieldPreamp
+  deriving (Eq, Show)
+
+parseAssetField :: Text -> Maybe AssetField
+parseAssetField raw =
+  case T.toLower (T.strip raw) of
+    "mic"         -> Just AssetFieldMic
+    "microphone"  -> Just AssetFieldMic
+    "pre"         -> Just AssetFieldPreamp
+    "preamp"      -> Just AssetFieldPreamp
+    "pre-amp"     -> Just AssetFieldPreamp
+    "preamplifier"-> Just AssetFieldPreamp
+    _             -> Nothing
 
 instance ToJSON (Entity InventoryItem) where
   toJSON (Entity key item) = object
@@ -69,8 +91,46 @@ instance ToJSON (Entity InputListEntry) where
     , "notes"          .= ME.inputRowNotes row
     ]
 
-listInventoryDB :: SqlPersistT IO [Entity InventoryItem]
-listInventoryDB = selectList [] [Asc ME.AssetName]
+listInventoryDB
+  :: Maybe AssetField
+  -> Maybe ME.SessionId
+  -> Maybe Int
+  -> SqlPersistT IO [Entity InventoryItem]
+listInventoryDB mField mSession mChannel = do
+  allAssets <- selectList [] [Asc ME.AssetName]
+  let activeAssets = filter (isAssetActive . entityVal) allAssets
+      fieldFiltered = maybe activeAssets (\field -> filter (matchesField field) activeAssets) mField
+  case (mField, mSession) of
+    (Just field, Just sessionId) -> do
+      rows <- loadLatestInputRows sessionId
+      let usedIds = Set.fromList (mapMaybe (rowAsset field) (map entityVal rows))
+          keepId  = currentChannelAsset field rows mChannel
+          available = filter (assetAvailable usedIds keepId) fieldFiltered
+      pure available
+    _ -> pure fieldFiltered
+  where
+    isAssetActive asset = ME.assetStatus asset == ME.Active
+
+    matchesField field (Entity _ item) =
+      let category = T.toLower (ME.assetCategory item)
+      in case field of
+           AssetFieldMic    -> "mic" `T.isInfixOf` category || "di" `T.isInfixOf` category
+           AssetFieldPreamp -> "pre" `T.isInfixOf` category
+
+    rowAsset field row =
+      case field of
+        AssetFieldMic    -> ME.inputRowMicId row
+        AssetFieldPreamp -> ME.inputRowPreampId row
+
+    currentChannelAsset field rows mChan = do
+      channelNum <- mChan
+      guard (channelNum >= 1)
+      row <- find ((== channelNum) . ME.inputRowChannelNumber) (map entityVal rows)
+      rowAsset field row
+
+    assetAvailable usedIds keepId (Entity key _) =
+      let inUse = Set.member key usedIds
+      in not inUse || Just key == keepId
 
 seedInventoryDB :: SqlPersistT IO ()
 seedInventoryDB = seedInventoryAssets
