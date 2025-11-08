@@ -1,19 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 module TDF.Cors (corsPolicy) where
-import Network.Wai.Middleware.Cors
-import Network.HTTP.Types (Method)
-import Data.Maybe (fromMaybe)
-import System.Environment (lookupEnv)
-import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.ByteString.Char8 as BS
-import Data.Char (isSpace)
+
+import           Data.Char                      (isSpace)
+import qualified Data.ByteString.Char8          as BS
+import           Network.Wai                    (Middleware)
+import           Network.Wai.Middleware.Cors
+import           System.Environment             (lookupEnv)
 
 corsPolicy :: IO Middleware
 corsPolicy = do
   origins <- fmap (maybe ["http://localhost:5173","https://tdfui.pages.dev"] splitComma) (lookupEnv "ALLOWED_ORIGINS")
   let policy = simpleCorsResourcePolicy
-        { corsOrigins        = Just (map (\o -> (BS.pack o, True)) origins, True)
+        { corsOrigins        = Just (map BS.pack origins, True)
         , corsRequestHeaders = "authorization":"content-type":simpleHeaders
         , corsMethods        = "GET":"POST":"PATCH":"OPTIONS":simpleMethods
         }
