@@ -81,6 +81,8 @@ commitEnvVars =
   , "RENDER_GIT_COMMIT"
   , "RENDER_GIT_COMMIT_SHA"
   , "VERCEL_GIT_COMMIT_SHA"
+  , "KOYEB_GIT_COMMIT"
+  , "KOYEB_GIT_COMMIT_SHA"
   ]
 
 buildTimeEnvVars :: [String]
