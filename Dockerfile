@@ -17,9 +17,7 @@ COPY stack.yaml tdf-hq.cabal ./
 
 # Make sure Stack installs the correct compiler for the resolver
 # Also, be explicit and avoid any global "system-ghc" config
-RUN --mount=type=cache,target=/root/.stack \
-    --mount=type=cache,target=/app/.stack-work \
-    stack --no-terminal --install-ghc setup && \
+RUN stack --no-terminal --install-ghc setup && \
     stack --no-terminal --install-ghc build --only-dependencies
 
 # Copy sources (git metadata is provided via build args when available)
@@ -31,9 +29,7 @@ COPY .git .git
 
 
 # Build and export the binary
-RUN --mount=type=cache,target=/root/.stack \
-    --mount=type=cache,target=/app/.stack-work \
-    stack --no-terminal --install-ghc build --copy-bins --local-bin-path /out
+RUN stack --no-terminal --install-ghc build --copy-bins --local-bin-path /out
 
 # -------- Stage 2: slim runtime ----------
 FROM debian:bookworm-slim
