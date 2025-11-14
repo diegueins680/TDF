@@ -43,6 +43,7 @@ executable tdf-hq-exe
     TDF.Trials.Seed
     TDF.Trials.Server
     TDF.Version
+    TDF.Profiles.Artist
     Paths_tdf_hq
   default-language: Haskell2010
   ghc-options:      -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
@@ -57,6 +58,7 @@ executable tdf-hq-exe
     , persistent           >=2.14
     , persistent-template  >=2.12
     , persistent-postgresql >=2.13
+    , persistent-sqlite     >=2.13
     , resource-pool
     , monad-logger
     , resourcet
@@ -85,6 +87,7 @@ executable tdf-hq-exe
     , path-pieces
     , uuid
     , template-haskell
+    , file-embed
     , smtp-mail
 
 test-suite tdf-hq-test
@@ -104,6 +107,7 @@ test-suite tdf-hq-test
     , persistent           >=2.14
     , persistent-template  >=2.12
     , persistent-postgresql >=2.13
+    , persistent-sqlite     >=2.13
     , resource-pool
     , monad-logger
     , resourcet
@@ -131,5 +135,6 @@ test-suite tdf-hq-test
     , path-pieces
     , uuid
     , template-haskell
+    , file-embed
     , hspec                >=2.7
     , smtp-mail

@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TemplateHaskell #-}
 module TDF.Meta
   ( MetaAPI
   , metaServer
@@ -18,10 +19,11 @@ import           Data.Version               (showVersion)
 import           GHC.Generics               (Generic)
 import           Network.HTTP.Media         ((//), (/:))
 import           Servant
+import qualified Data.ByteString.Lazy       as BL
 import qualified Data.Text                  as T
-import qualified Data.Text.IO               as TIO
 import qualified Data.Text.Lazy             as TL
 import qualified Data.Text.Lazy.Encoding    as TLE
+import           Data.FileEmbed             (embedFile)
 import qualified Paths_tdf_hq               as Paths
 
 -- | Basic build info for the About dialog.
@@ -34,7 +36,7 @@ instance ToJSON BuildInfo
 
 type MetaAPI =
        "version"      :> Get '[JSON] BuildInfo
-  :<|> "openapi.yaml" :> Get '[PlainText] T.Text
+  :<|> "openapi.yaml" :> Get '[YAML] BL.ByteString
   :<|> "docs"         :> Get '[HTML] T.Text
 
 metaServer :: Server MetaAPI
@@ -47,8 +49,11 @@ metaServer = versionH :<|> openapiH :<|> docsH
         , version = T.pack (showVersion Paths.version)
         , builtAt = now
         }
-    openapiH = liftIO $ TIO.readFile "docs/openapi/api.yaml"
+    openapiH = pure openapiSpec
     docsH    = pure (T.pack redocIndex)
+
+openapiSpec :: BL.ByteString
+openapiSpec = BL.fromStrict $(embedFile "docs/openapi/api.yaml")
 
 -- | Minimal content type to serve HTML documents encoded as UTF-8.
 data HTML
@@ -98,3 +103,11 @@ If your app exposes 'app :: Application' instead, wrap your existing server:
 
 Adjust the wiring to your codebase as needed.
 -}
+-- | Serve the embedded OpenAPI document with the canonical YAML mime type.
+data YAML
+
+instance Accept YAML where
+  contentType _ = "application" // "yaml"
+
+instance MimeRender YAML BL.ByteString where
+  mimeRender _ = id
