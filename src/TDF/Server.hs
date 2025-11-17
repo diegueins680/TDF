@@ -69,8 +69,21 @@ import           TDF.Profiles.Artist ( fetchArtistProfileMap
                                      , loadOrCreateArtistProfileDTO
                                      , upsertArtistProfileRecord
                                      )
+import           TDF.Routes.Academy ( AcademyAPI
+                                    , EnrollReq(..)
+                                    , ProgressReq(..)
+                                    , ReferralClaimReq(..)
+                                    , MicrocourseDTO(..)
+                                    , LessonDTO(..)
+                                    , NextCohortDTO(..)
+                                    )
 
 type AppM = ReaderT Env Handler
+
+runDB :: SqlPersistT IO a -> AppM a
+runDB action = do
+  Env{..} <- ask
+  liftIO $ runSqlPool action envPool
 
 type CombinedAPI = TrialsAPI :<|> API
 
@@ -97,6 +110,7 @@ server =
   :<|> authV1Server
   :<|> fanPublicServer
   :<|> metaServer
+  :<|> academyServer
   :<|> seedTrigger
   :<|> inputListServer
   :<|> protectedServer
@@ -822,6 +836,166 @@ metaServer :: ServerT Meta.MetaAPI AppM
 metaServer = hoistServer metaProxy lift Meta.metaServer
   where
     metaProxy = Proxy :: Proxy Meta.MetaAPI
+
+academyServer :: ServerT AcademyAPI AppM
+academyServer =
+       enrollH
+  :<|> microcourseH
+  :<|> progressH
+  :<|> claimReferralH
+  :<|> nextCohortH
+  where
+    enrollH EnrollReq{..} = do
+      normalizedEmail <- requireEmail email
+      normalizedRole  <- requireRole role
+      let platformClean = cleanOptional platform
+      user <- upsertAcademyUser normalizedEmail normalizedRole platformClean
+      for_ (cleanOptional referralCode) $ \codeTxt ->
+        claimReferral normalizedEmail (Just (entityKey user)) codeTxt
+      pure NoContent
+
+    microcourseH rawSlug = do
+      slug <- requireSlug rawSlug
+      mCourse <- runDB $ getBy (UniqueAcademyMicrocourseSlug slug)
+      case mCourse of
+        Nothing -> throwNotFound "Microcurso no disponible"
+        Just (Entity courseId course) -> do
+          lessons <- runDB $ selectList
+            [AcademyLessonMicrocourseId ==. courseId]
+            [Asc AcademyLessonDay]
+          pure MicrocourseDTO
+            { mcSlug    = academyMicrocourseSlug course
+            , mcTitle   = academyMicrocourseTitle course
+            , mcSummary = academyMicrocourseSummary course
+            , lessons   = map lessonToDTO lessons
+            }
+
+    progressH ProgressReq{..} = do
+      normalizedEmail <- requireEmail email
+      courseSlug <- requireSlug slug
+      dayNumber <- requireDay day
+      mUser <- runDB $ getBy (UniqueAcademyUserEmail normalizedEmail)
+      user <- maybe (throwNotFound "Usuario no inscrito") pure mUser
+      mCourse <- runDB $ getBy (UniqueAcademyMicrocourseSlug courseSlug)
+      course <- maybe (throwNotFound "Microcurso no disponible") pure mCourse
+      mLesson <- runDB $ selectFirst
+        [ AcademyLessonMicrocourseId ==. entityKey course
+        , AcademyLessonDay ==. dayNumber
+        ]
+        []
+      lesson <- maybe (throwNotFound "Lección no encontrada") pure mLesson
+      now <- liftIO getCurrentTime
+      void $ runDB $ upsert
+        (AcademyProgress (entityKey user) (entityKey lesson) now)
+        [AcademyProgressCompletedAt =. now]
+      pure NoContent
+
+    claimReferralH ReferralClaimReq{..} = do
+      normalizedEmail <- requireEmail email
+      mUser <- runDB $ getBy (UniqueAcademyUserEmail normalizedEmail)
+      claimReferral normalizedEmail (entityKey <$> mUser) code
+      pure NoContent
+
+    nextCohortH = do
+      now <- liftIO getCurrentTime
+      mCohort <- runDB $ selectFirst
+        [CohortEndsAt >=. now]
+        [Asc CohortStartsAt]
+      cohortEnt <- maybe (throwNotFound "Sin cohortes activas") pure mCohort
+      seatsTaken <- runDB $ count [CohortEnrollmentCohortId ==. entityKey cohortEnt]
+      let cohort = entityVal cohortEnt
+          remaining = max 0 (cohortSeatCap cohort - seatsTaken)
+      pure NextCohortDTO
+        { nextSlug      = cohortSlug cohort
+        , nextTitle     = cohortTitle cohort
+        , nextStartsAt  = cohortStartsAt cohort
+        , nextEndsAt    = cohortEndsAt cohort
+        , nextSeatCap   = cohortSeatCap cohort
+        , nextSeatsLeft = remaining
+        }
+
+    lessonToDTO (Entity _ lesson) = LessonDTO
+      { lessonDay   = academyLessonDay lesson
+      , lessonTitle = academyLessonTitle lesson
+      , lessonBody  = academyLessonBody lesson
+      }
+
+cleanOptional :: Maybe Text -> Maybe Text
+cleanOptional Nothing = Nothing
+cleanOptional (Just raw) =
+  let trimmed = T.strip raw
+  in if T.null trimmed then Nothing else Just trimmed
+
+requireEmail :: Text -> AppM Text
+requireEmail raw = do
+  let normalized = T.toLower (T.strip raw)
+  when (T.null normalized) (throwBadRequest "email requerido")
+  pure normalized
+
+requireRole :: Text -> AppM Text
+requireRole raw = do
+  let normalized = T.toLower (T.strip raw)
+  when (T.null normalized) (throwBadRequest "role requerido")
+  pure normalized
+
+requireSlug :: Text -> AppM Text
+requireSlug raw = do
+  let normalized = T.toLower (T.strip raw)
+  when (T.null normalized) (throwBadRequest "slug requerido")
+  pure normalized
+
+requireDay :: Int -> AppM Int
+requireDay n = do
+  when (n <= 0) (throwBadRequest "day debe ser positivo")
+  pure n
+
+requireReferralCode :: Text -> AppM Text
+requireReferralCode raw = do
+  let normalized = T.toUpper (T.strip raw)
+  when (T.null normalized) (throwBadRequest "code requerido")
+  pure normalized
+
+upsertAcademyUser :: Text -> Text -> Maybe Text -> AppM (Entity AcademyUser)
+upsertAcademyUser emailVal roleVal platformVal = do
+  now <- liftIO getCurrentTime
+  runDB $ do
+    mExisting <- getBy (UniqueAcademyUserEmail emailVal)
+    case mExisting of
+      Nothing -> do
+        let record = AcademyUser emailVal roleVal platformVal now
+        key <- insert record
+        pure (Entity key record)
+      Just (Entity key _) -> do
+        update key
+          [ AcademyUserRole =. roleVal
+          , AcademyUserPlatform =. platformVal
+          ]
+        updated <- getJust key
+        pure (Entity key updated)
+
+claimReferral :: Text -> Maybe (Key AcademyUser) -> Text -> AppM ()
+claimReferral emailVal mUser rawCode = do
+  codeTxt <- requireReferralCode rawCode
+  let codeKey = ReferralCodeKey codeTxt
+  existing <- runDB $ get codeKey
+  case existing of
+    Nothing -> throwNotFound "Código de referido inválido"
+    Just _  -> pure ()
+  now <- liftIO getCurrentTime
+  void $ runDB $ upsert
+    ReferralClaim
+      { referralClaimCodeId = codeKey
+      , referralClaimClaimantUserId = mUser
+      , referralClaimEmail = emailVal
+      , referralClaimClaimedAt = now
+      }
+    [ ReferralClaimClaimantUserId =. mUser
+    , ReferralClaimEmail =. emailVal
+    , ReferralClaimClaimedAt =. now
+    ]
+
+throwNotFound :: Text -> AppM a
+throwNotFound msg = throwError err404 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
 
 seedTrigger :: Maybe Text -> AppM NoContent
 seedTrigger rawToken = do
