@@ -19,6 +19,7 @@ import           Data.Aeson (ToJSON, FromJSON)
 import           GHC.Generics (Generic)
 import           Data.Text (Text)
 import           Data.Time (UTCTime, Day)
+import           Data.UUID (UUID)
 import           Database.Persist.TH
 
 -- Enums
@@ -339,5 +340,71 @@ AuditLog
     action           Text
     diff             Text Maybe
     createdAt        UTCTime
+    deriving Show Generic
+
+AcademyUser
+    Id UUID default=gen_random_uuid()
+    email     Text
+    role      Text
+    platform  Text Maybe
+    createdAt UTCTime default=now()
+    UniqueAcademyUserEmail email
+    deriving Show Generic
+
+AcademyMicrocourse
+    Id UUID default=gen_random_uuid()
+    slug     Text
+    title    Text
+    summary  Text Maybe
+    createdAt UTCTime default=now()
+    UniqueAcademyMicrocourseSlug slug
+    deriving Show Generic
+
+AcademyLesson
+    Id UUID default=gen_random_uuid()
+    microcourseId AcademyMicrocourseId
+    day      Int
+    title    Text
+    body     Text
+    UniqueAcademyLesson microcourseId day
+    deriving Show Generic
+
+AcademyProgress
+    userId   AcademyUserId
+    lessonId AcademyLessonId
+    completedAt UTCTime default=now()
+    Primary userId lessonId
+    deriving Show Generic
+
+ReferralCode
+    Id Text
+    ownerUserId AcademyUserId Maybe
+    createdAt   UTCTime default=now()
+    deriving Show Generic
+
+ReferralClaim
+    Id UUID default=gen_random_uuid()
+    codeId         ReferralCodeId
+    claimantUserId AcademyUserId Maybe
+    email          Text
+    claimedAt      UTCTime default=now()
+    UniqueReferralClaim codeId email
+    deriving Show Generic
+
+Cohort
+    Id UUID default=gen_random_uuid()
+    slug     Text
+    title    Text
+    startsAt UTCTime
+    endsAt   UTCTime
+    seatCap  Int
+    UniqueCohortSlug slug
+    deriving Show Generic
+
+CohortEnrollment
+    cohortId CohortId
+    userId   AcademyUserId
+    createdAt UTCTime default=now()
+    Primary cohortId userId
     deriving Show Generic
 |]
