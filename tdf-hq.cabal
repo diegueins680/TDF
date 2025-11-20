@@ -79,6 +79,7 @@ executable tdf-hq-exe
     , servant              >=0.19
     , servant-server       >=0.19
     , servant-multipart
+    , servant-multipart
     , postgresql-simple
     , http-types
     , http-media
@@ -130,12 +131,17 @@ test-suite tdf-hq-test
     , conduit
     , servant              >=0.19
     , servant-server       >=0.19
+    , servant-multipart
     , http-types
     , http-media
     , wai
     , warp                 >=3.3
     , wai-cors
     , http2                >=5.0 && <5.3
+    , postgresql-simple
+    , random
+    , http-client
+    , http-client-tls
     , entropy
     , filepath
     , directory
