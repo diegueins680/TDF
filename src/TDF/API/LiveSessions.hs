@@ -80,13 +80,13 @@ instance FromMultipart Tmp LiveSessionIntakePayload where
       optionalText name mp = fmap inputValueText (lookupInputByName name mp)
       lookupFile name mp = lookup name [(fdInputName f, f) | f <- files mp]
       optionalDay name mp =
-        case optionalText name mp of
+        case lookupInputByName name mp of
           Nothing -> Right Nothing
-          Just raw ->
-            let trimmed = T.strip raw
-            in if T.null trimmed
+          Just inp ->
+            let txt = T.strip (inputValueText inp)
+            in if T.null txt
                  then Right Nothing
-                 else fmap Just (readMaybeDay trimmed)
+                 else fmap Just (readMaybeDay txt)
 
       decodeMusicians txt =
         case eitherDecodeStrict' (encodeUtf8 txt) of
