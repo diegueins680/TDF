@@ -58,9 +58,9 @@ data LiveSessionIntakePayload = LiveSessionIntakePayload
 instance FromMultipart Tmp LiveSessionIntakePayload where
   fromMultipart multipart = do
     bandName <- lookupText "bandName" multipart
-    let contactEmail = optionalText "contactEmail" multipart
-        contactPhone = optionalText "contactPhone" multipart
-        riderFile    = lookupFile "rider" multipart
+    contactEmail <- optionalText "contactEmail" multipart
+    contactPhone <- optionalText "contactPhone" multipart
+    let riderFile    = lookupFile "rider" multipart
     sessionDate <- optionalDay "sessionDate" multipart
     musiciansTxt <- lookupText "musicians" multipart
     musicians <- decodeMusicians musiciansTxt
@@ -77,11 +77,14 @@ instance FromMultipart Tmp LiveSessionIntakePayload where
         find (\(Input nm _) -> nm == name) (inputs mp)
       lookupText name mp =
         maybe (Left ("Missing field: " <> T.unpack name)) (Right . inputValueText) (lookupInputByName name mp)
-      optionalText name mp = fmap inputValueText (lookupInputByName name mp)
+      optionalText name mp =
+        case lookupInputByName name mp of
+          Nothing  -> Right Nothing
+          Just inp -> Right (Just (inputValueText inp))
       lookupFile name mp = lookup name [(fdInputName f, f) | f <- files mp]
       optionalDay name mp =
         case lookupInputByName name mp of
-          Nothing -> Right Nothing
+          Nothing  -> Right Nothing
           Just inp ->
             let txt = T.strip (inputValueText inp)
             in if T.null txt
