@@ -15,11 +15,13 @@ executable tdf-hq-exe
     TDF.API
     TDF.API.Bands
     TDF.API.Future
+    TDF.API.LiveSessions
     TDF.API.Inventory
     TDF.API.Pipelines
     TDF.API.Rooms
     TDF.API.Sessions
     TDF.API.Types
+    TDF.API.WhatsApp
     TDF.Auth
     TDF.Config
     TDF.Cors
@@ -30,12 +32,16 @@ executable tdf-hq-exe
     TDF.Meta
     TDF.Models
     TDF.ModelsExtra
+    TDF.Leads.Model
+    TDF.Email.Service
+    TDF.Services
     TDF.Pipelines
     TDF.Routes.Academy
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin
     TDF.ServerExtra
+    TDF.ServerLiveSessions
     TDF.ServerFuture
     TDF.Trials.API
     TDF.Trials.DTO
@@ -43,6 +49,9 @@ executable tdf-hq-exe
     TDF.Trials.Seed
     TDF.Trials.Server
     TDF.Version
+    TDF.WhatsApp.Client
+    TDF.WhatsApp.Types
+    TDF.WhatsApp.Service
     TDF.Profiles.Artist
     Paths_tdf_hq
   default-language: Haskell2010
@@ -53,8 +62,11 @@ executable tdf-hq-exe
     , bytestring
     , text
     , time
+    , random
     , containers
     , gitrev
+    , http-client
+    , http-client-tls
     , persistent           >=2.14
     , persistent-template  >=2.12
     , persistent-postgresql >=2.13
@@ -65,6 +77,8 @@ executable tdf-hq-exe
     , conduit
     , servant              >=0.19
     , servant-server       >=0.19
+    , servant-multipart
+    , postgresql-simple
     , http-types
     , http-media
     , warp                 >=3.3

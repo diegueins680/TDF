@@ -12,8 +12,9 @@ RUN ghc --version || true
 RUN stack --version || true
 
 # Copy project definition first for better layer caching
-COPY stack.yaml tdf-hq.cabal ./
-# COPY package.yaml ./   # uncomment if you have it
+COPY stack.yaml stack.yaml
+COPY tdf-hq.cabal tdf-hq.cabal
+# COPY tdf-hq/package.yaml ./   # uncomment if you have it
 
 # Make sure Stack installs the correct compiler for the resolver
 # Also, be explicit and avoid any global "system-ghc" config
@@ -23,9 +24,8 @@ RUN stack --no-terminal --install-ghc setup && \
 # Copy sources (git metadata is provided via build args when available)
 COPY app app
 COPY src src
-COPY config config
+COPY config/default.env.example config/default.env
 COPY docs docs
-COPY .git .git
 
 
 # Build and export the binary
@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 ARG SOURCE_COMMIT=UNKNOWN
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV GIT_SHA=${SOURCE_COMMIT}
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 COPY --from=builder /app/docs /app/docs

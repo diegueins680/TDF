@@ -56,12 +56,15 @@ import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
+import           TDF.ServerLiveSessions (liveSessionsServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Meta as Meta
 import           TDF.Version      (getVersionInfo)
 import qualified TDF.Handlers.InputList as InputList
 import qualified TDF.Email as Email
+import qualified TDF.Email.Service as EmailSvc
+import qualified TDF.Services as Services
 import           TDF.Profiles.Artist ( fetchArtistProfileMap
                                      , fetchPartyNameMap
                                      , loadAllArtistProfilesDTO
@@ -273,6 +276,7 @@ protectedServer user =
   :<|> sessionsServer user
   :<|> pipelinesServer user
   :<|> roomsServer user
+  :<|> liveSessionsServer user
   :<|> futureServer
 
 -- Health
@@ -347,39 +351,42 @@ signup SignupRequest
       firstClean    = T.strip rawFirst
       lastClean     = T.strip rawLast
       phoneClean    = fmap T.strip rawPhone
+      displayName =
+        case filter (not . T.null) [firstClean, lastClean] of
+          [] -> emailClean
+          xs -> T.unwords xs
   when (T.null emailClean) $ throwBadRequest "Email is required"
   when (T.null passwordClean) $ throwBadRequest "Password is required"
   when (T.length passwordClean < 8) $ throwBadRequest "Password must be at least 8 characters"
   when (T.null firstClean && T.null lastClean) $ throwBadRequest "First or last name is required"
   now <- liftIO getCurrentTime
-  Env pool _ <- ask
+  Env pool cfg <- ask
+  let services = Services.buildServices cfg
+      emailSvc = Services.emailService services
   result <- liftIO $ flip runSqlPool pool $
-    runSignupDb emailClean passwordClean firstClean lastClean phoneClean now
+    runSignupDb emailClean passwordClean displayName phoneClean now
   case result of
     Left SignupEmailExists ->
       throwError err409 { errBody = BL.fromStrict (TE.encodeUtf8 "Account already exists for this email") }
     Left SignupProfileError ->
       throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
-    Right resp -> pure resp
+    Right resp -> do
+      liftIO $ EmailSvc.sendWelcome emailSvc displayName emailClean emailClean passwordClean
+      pure resp
   where
     runSignupDb
       :: Text
       -> Text
       -> Text
-      -> Text
       -> Maybe Text
       -> UTCTime
       -> SqlPersistT IO (Either SignupDbError LoginResponse)
-    runSignupDb emailVal passwordVal firstVal lastVal phoneVal nowVal = do
+    runSignupDb emailVal passwordVal displayName phoneVal nowVal = do
       existing <- getBy (UniqueCredentialUsername emailVal)
       case existing of
         Just _  -> pure (Left SignupEmailExists)
         Nothing -> do
-          let displayName =
-                case filter (not . T.null) [firstVal, lastVal] of
-                  [] -> emailVal
-                  xs -> T.unwords xs
-              partyRecord = Party
+          let partyRecord = Party
                 { partyLegalName        = Nothing
                 , partyDisplayName      = displayName
                 , partyIsOrg            = False
@@ -512,14 +519,11 @@ passwordReset PasswordResetRequest{..} = do
   let emailClean = T.strip email
   when (T.null emailClean) $ throwBadRequest "Email is required"
   Env pool cfg <- ask
+  let services = Services.buildServices cfg
+      emailSvc = Services.emailService services
   mPayload <- liftIO $ flip runSqlPool pool (runPasswordReset emailClean)
   for_ mPayload $ \(token, displayName) -> liftIO $
-    Email.sendPasswordResetEmail
-      (emailConfig cfg)
-      displayName
-      emailClean
-      token
-      (appBaseUrl cfg)
+    EmailSvc.sendPasswordReset emailSvc displayName emailClean token
   pure NoContent
   where
     runPasswordReset :: Text -> SqlPersistT IO (Maybe (Text, Text))

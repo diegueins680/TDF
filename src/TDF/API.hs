@@ -30,6 +30,7 @@ import           TDF.Version      (VersionInfo)
 import qualified TDF.ModelsExtra  as ME
 import           TDF.Routes.Academy (AcademyAPI)
 import           Data.Int (Int64)
+import           TDF.API.LiveSessions (LiveSessionsAPI)
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
@@ -142,6 +143,7 @@ type ProtectedAPI =
   :<|> SessionsAPI
   :<|> PipelinesAPI
   :<|> RoomsAPI
+  :<|> LiveSessionsAPI
   :<|> "stubs"    :> FutureAPI
 
 type API =
