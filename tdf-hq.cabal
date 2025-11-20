@@ -32,6 +32,7 @@ executable tdf-hq-exe
     TDF.Meta
     TDF.Models
     TDF.ModelsExtra
+    TDF.UUIDInstances
     TDF.Leads.Model
     TDF.Email.Service
     TDF.Services

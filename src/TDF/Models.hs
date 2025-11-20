@@ -21,6 +21,7 @@ import           Data.Text (Text)
 import           Data.Time (UTCTime, Day)
 import           Data.UUID (UUID)
 import           Database.Persist.TH
+import           TDF.UUIDInstances ()
 
 -- Enums
 data ServiceKind = Recording | Mixing | Mastering | Rehearsal | Classes | EventProduction
