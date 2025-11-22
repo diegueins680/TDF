@@ -1,11 +1,21 @@
 # -------- Stage 1: build with Stack (no GHCR) ----------
+ARG SOURCE_COMMIT=dev
+ARG BUILD_TIME=unknown
+
 FROM haskell:9.6-bullseye AS builder
+ARG SOURCE_COMMIT
+ARG BUILD_TIME
 WORKDIR /app
 
 # OS deps for building persistent-postgresql + basic tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev pkg-config git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
+ENV GIT_SHA=${SOURCE_COMMIT}
+ENV BUILD_TIME=${BUILD_TIME}
+ENV STACK_ROOT=/root/.stack
 
 # Show toolchain versions (handy in Render logs)
 RUN ghc --version || true
@@ -28,11 +38,17 @@ COPY config/default.env.example config/default.env
 COPY docs docs
 
 
+# Refresh stack indices and clear any stale pantry cache to avoid hash issues
+RUN rm -rf /root/.stack/pantry/hackage && \
+    stack --no-terminal update
+
 # Build and export the binary
 RUN stack --no-terminal --install-ghc build --copy-bins --local-bin-path /out
 
 # -------- Stage 2: slim runtime ----------
 FROM debian:bookworm-slim
+ARG SOURCE_COMMIT=dev
+ARG BUILD_TIME=unknown
 WORKDIR /app
 
 # Runtime libs for Postgres + CA certs for Neon TLS
@@ -43,6 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG SOURCE_COMMIT=UNKNOWN
 ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV GIT_SHA=${SOURCE_COMMIT}
+ENV BUILD_TIME=${BUILD_TIME}
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 COPY --from=builder /app/docs /app/docs
 
