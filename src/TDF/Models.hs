@@ -15,9 +15,10 @@
 
 module TDF.Models where
 
-import           Data.Aeson (ToJSON, FromJSON)
+import           Data.Aeson (ToJSON(..), FromJSON(..), withText, Value(String))
 import           GHC.Generics (Generic)
 import           Data.Text (Text)
+import qualified Data.Text as T
 import           Data.Time (UTCTime, Day)
 import           Data.UUID (UUID)
 import           Database.Persist.TH
@@ -32,7 +33,34 @@ data PricingModel = Hourly | PerSong | Package | Quote | Retainer
   deriving (Show, Read, Eq, Enum, Bounded, Generic)
 derivePersistField "PricingModel"
 
-data RoleEnum = Admin | Manager | Engineer | Teacher | Reception | Accounting | Artist | Student | Vendor | ReadOnly | Customer | Fan
+data RoleEnum
+  = Admin
+  | Manager
+  | StudioManager
+  | Engineer
+  | Teacher
+  | Reception
+  | Accounting
+  | LiveSessionsProducer
+  | Artist
+  | Artista
+  | Promotor
+  | Promoter
+  | Producer
+  | Songwriter
+  | DJ
+  | Publicist
+  | TourManager
+  | LabelRep
+  | StageManager
+  | RoadCrew
+  | Photographer
+  | AandR
+  | Student
+  | Vendor
+  | ReadOnly
+  | Customer
+  | Fan
   deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
 derivePersistField "RoleEnum"
 
@@ -77,8 +105,12 @@ instance ToJSON ServiceKind
 instance FromJSON ServiceKind
 instance ToJSON PricingModel
 instance FromJSON PricingModel
-instance ToJSON RoleEnum
-instance FromJSON RoleEnum
+instance ToJSON RoleEnum where
+  toJSON = String . roleToText
+
+instance FromJSON RoleEnum where
+  parseJSON = withText "RoleEnum" $ \txt ->
+    maybe (fail $ "Invalid role: " <> T.unpack txt) pure (roleFromText txt)
 instance ToJSON ResourceType
 instance FromJSON ResourceType
 instance ToJSON BookingStatus
