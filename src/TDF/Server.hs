@@ -12,6 +12,7 @@
 module TDF.Server where
 
 import           Control.Applicative ((<|>))
+import           Control.Exception (SomeException, try)
 import           Control.Monad (forM, forM_, void, when, unless)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, ask, runReaderT)
@@ -33,6 +34,7 @@ import           Data.Time.Format (defaultTimeLocale, formatTime)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
 import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy, validatePassword)
+import           System.IO (hPutStrLn, stderr)
 import           Network.Wai (Request)
 import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler)
@@ -57,6 +59,7 @@ import           TDF.DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.Seed       (seedAll)
 import           TDF.ServerAdmin (adminServer)
+import qualified TDF.LogBuffer as LogBuf
 import           TDF.ServerExtra (bandsServer, inventoryServer, loadBandForParty, pipelinesServer, roomsServer, sessionsServer)
 import           TDF.ServerFuture (futureServer)
 import           TDF.ServerLiveSessions (liveSessionsServer)
@@ -536,12 +539,31 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
           Env{..} <- ask
           let emailSvc = EmailSvc.mkEmailService envConfig
               displayName = fromMaybe "" nameClean
-              courseTitle = Courses.title meta
+              CourseMetadata{ title = courseTitle
+                            , sessions = metaSessions
+                            , landingUrl = landing
+                            } = meta
               datesSummary =
                 let fmt d = T.pack (formatTime defaultTimeLocale "%d %b %Y" d)
-                in T.intercalate ", " (map (fmt . Courses.date) (Courses.sessions meta))
-              landing = Courses.landingUrl meta
-          liftIO $ EmailSvc.sendCourseRegistration emailSvc displayName emailAddr courseTitle landing datesSummary
+                in T.intercalate ", " (map (fmt . Courses.date) metaSessions)
+          -- Check if email is configured before attempting to send
+          case EmailSvc.esConfig emailSvc of
+            Nothing -> liftIO $ do
+              let msg = "[CourseRegistration] WARNING: SMTP not configured. Email confirmation not sent to " <> emailAddr
+              hPutStrLn stderr (T.unpack msg)
+              LogBuf.addLog LogBuf.LogWarning msg
+            Just _ -> do
+              -- Send email asynchronously, but log if it fails
+              liftIO $ do
+                result <- try $ EmailSvc.sendCourseRegistration emailSvc displayName emailAddr courseTitle landing datesSummary
+                case result of
+                  Left err -> do
+                    let msg = "[CourseRegistration] Failed to send confirmation email to " <> emailAddr <> ": " <> T.pack (show (err :: SomeException))
+                    hPutStrLn stderr (T.unpack msg)
+                    LogBuf.addLog LogBuf.LogError msg
+                  Right () -> do
+                    let msg = "[CourseRegistration] Successfully sent confirmation email to " <> emailAddr
+                    LogBuf.addLog LogBuf.LogInfo msg
 
 -- | Returns messages that include text bodies, paired with the sender phone.
 extractTextMessages :: WAMetaWebhook -> [(Text, Text)]
