@@ -37,6 +37,10 @@ COPY src src
 COPY config/default.env.example config/default.env
 COPY docs docs
 
+# Capture commit and build time inside the image for version endpoint
+# In build contexts without .git (e.g., Fly remote builds), fall back to SOURCE_COMMIT/BUILD_TIME args.
+RUN echo "${SOURCE_COMMIT:-dev}" > /app/COMMIT && \
+    echo "${BUILD_TIME:-unknown}" > /app/BUILD_TIME
 
 # Refresh stack indices and clear any stale pantry cache to avoid hash issues
 RUN rm -rf /root/.stack/pantry/hackage && \
@@ -62,6 +66,8 @@ ENV GIT_SHA=${SOURCE_COMMIT}
 ENV BUILD_TIME=${BUILD_TIME}
 COPY --from=builder /out/tdf-hq-exe /app/tdf-hq-exe
 COPY --from=builder /app/docs /app/docs
+COPY --from=builder /app/COMMIT /app/COMMIT
+COPY --from=builder /app/BUILD_TIME /app/BUILD_TIME
 
 # Render provides PORT; map it to the app's APP_PORT
 ENV APP_PORT=8080
