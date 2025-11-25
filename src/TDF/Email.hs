@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 module TDF.Email
   ( generateTempPassword
   , sendWelcomeEmail
@@ -10,13 +11,12 @@ module TDF.Email
 
 import           Control.Exception        (SomeException, try)
 import           Data.Char                (isAlphaNum)
-import qualified Data.ByteString.Base64.URL as B64
+import qualified Data.ByteString.Base64.URL  as B64
 import           Data.Maybe              (fromMaybe)
 import           Data.Text                (Text)
 import qualified Data.Text                as T
 import qualified Data.Text.Encoding       as TE
 import qualified Data.Text.Lazy           as TL
-import qualified Data.Text.Lazy.Encoding  as TLE
 import qualified Data.ByteString.Char8    as BS
 import           Network.Mail.Mime        ( Address(..)
                                           , Mail(..)
@@ -27,7 +27,7 @@ import           Network.Mail.Mime        ( Address(..)
 import qualified Network.Mail.Mime        as Mime
 import qualified Network.Mail.SMTP        as SMTP
 import           System.Entropy           (getEntropy)
-import           System.IO                (hPutStrLn, stderr)
+import           System.IO                (stderr)
 import           Text.Printf              (printf)
 
 import           TDF.Config               (EmailConfig(..))
@@ -189,7 +189,7 @@ sendTestEmail (Just cfg) name email subject bodyLines mCtaUrl = do
 
 -- | Send an email with a small audit trail for admins.
 sendMailWithLogging :: EmailConfig -> Address -> Text -> Mime.Mail -> IO ()
-sendMailWithLogging cfg toAddr subject mail = do
+sendMailWithLogging cfg toAddr _subject mail = do
   let host = T.unpack (smtpHost cfg)
       port = fromIntegral (smtpPort cfg)
       user = T.unpack (smtpUsername cfg)
@@ -203,8 +203,6 @@ sendMailWithLogging cfg toAddr subject mail = do
         | modeLabel == "STARTTLS" = SMTP.sendMailWithLoginSTARTTLS' host port user pass mail
         | otherwise               = SMTP.sendMailWithLogin' host port user pass mail
       toEmail = T.unpack (addressEmail toAddr)
-      fromEmail = T.unpack (emailFromAddress cfg)
-      subj = T.unpack subject
   let logLine = T.concat
         [ "[Email] Sending registration email to "
         , T.pack toEmail
@@ -252,9 +250,8 @@ renderPlain greeting bodyLines mCtaUrl =
 
 renderHtml :: Text -> Text -> [Text] -> Maybe Text -> TL.Text
 renderHtml preheader greeting bodyLines mCtaUrl =
-  -- Use hosted PNG to avoid data URI blocking in Gmail.
-  let logoUrl = "https://raw.githubusercontent.com/diegueins680/tdf-app/main/tdf-hq/app/templates/tdf-logo.png"
-      esc = escapeHtml
+  -- Inline PNG so the correct TDF Records logo always renders (no remote fetch).
+  let esc = escapeHtml
       bodyParas = T.concat (map (\p -> "<p style=\"margin:0 0 12px;color:#0f172a;font-size:15px;line-height:22px;\">" <> esc p <> "</p>") bodyLines)
       ctaBlock = maybe "" (\url ->
         "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:20px;\"><tr><td style=\"background:#0ea5e9;padding:12px 18px;border-radius:999px;font-weight:700;\"><a href=\"" <> esc url <> "\" style=\"color:#0b0f1b;text-decoration:none;font-family:Inter,Arial,sans-serif;\">Ver detalles del curso</a></td></tr></table>"
@@ -269,7 +266,7 @@ renderHtml preheader greeting bodyLines mCtaUrl =
         , "<tr><td align=\"center\">"
         , "<table role=\"presentation\" width=\"640\" cellspacing=\"0\" cellpadding=\"0\" style=\"max-width:640px;width:100%;background:#ffffff;border-radius:16px;box-shadow:0 14px 40px rgba(15,23,42,0.08);overflow:hidden;border:1px solid #e2e8f0;\">"
         , "<tr><td style=\"padding:24px 32px 8px;\" align=\"center\">"
-        , "<img src=\"", esc logoUrl, "\" alt=\"TDF Records\" width=\"160\" style=\"display:block;height:auto;margin:0 auto 8px;\" />"
+        , "<img src=\"", logoDataUri, "\" alt=\"TDF Records\" width=\"160\" style=\"display:block;height:auto;margin:0 auto 8px;\" />"
         , "<p style=\"margin:0;color:#334155;font-size:13px;\">Escuela &amp; Estudios</p>"
         , "</td></tr>"
         , "<tr><td style=\"padding:8px 32px 24px;\">"
@@ -283,6 +280,11 @@ renderHtml preheader greeting bodyLines mCtaUrl =
         , "</td></tr></table></td></tr></table></body></html>"
         ]
   in TL.fromStrict html
+
+logoDataUri :: Text
+logoDataUri =
+  -- Hosted asset (Gmail bloquea data URIs); fallback is the Cloudflare Pages frontend.
+  "https://tdf-app.pages.dev/tdf-logo-wordmark.png"
 
 escapeHtml :: Text -> Text
 escapeHtml = T.concatMap replaceChar

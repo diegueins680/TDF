@@ -20,7 +20,7 @@ import           Control.Monad.Trans.Class (lift)
 import           Data.Int (Int64)
 import           Data.List (find, foldl', nub)
 import           Data.Foldable (for_)
-import           Data.Char (isDigit, isSpace)
+import           Data.Char (isDigit, isSpace, isAlphaNum)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import qualified Data.Set as Set
@@ -41,7 +41,6 @@ import           Servant.Server.Experimental.Auth (AuthHandler)
 import           Text.Printf (printf)
 import           Text.Read (readMaybe)
 import           Web.PathPieces (fromPathPiece, toPathPiece)
-import           Data.Proxy (Proxy (..))
 
 import           Database.Persist
 import           Database.Persist.Sql
@@ -490,6 +489,9 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
   normalizedEmail <- case cleanOptional email of
     Nothing -> pure Nothing
     Just e  -> Just <$> requireEmail e
+  mNewUser <- case normalizedEmail of
+    Nothing -> pure Nothing
+    Just addr -> ensureUserAccount nameClean addr
   when (sourceClean == "landing" && isNothing nameClean) $
     throwBadRequest "nombre requerido"
   when (sourceClean == "landing" && isNothing normalizedEmail) $
@@ -511,7 +513,7 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
         , ME.CourseRegistrationUtmContent =. (utmContentVal <|> ME.courseRegistrationUtmContent reg)
         , ME.CourseRegistrationUpdatedAt =. now
         ]
-      sendConfirmation meta nameClean normalizedEmail
+      sendConfirmation meta nameClean normalizedEmail mNewUser
       pure CourseRegistrationResponse { id = fromSqlKey regId, status = pendingStatus }
     _ -> do
       regId <- runDB $ insert ME.CourseRegistration
@@ -529,10 +531,10 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
         , ME.courseRegistrationCreatedAt = now
         , ME.courseRegistrationUpdatedAt = now
         }
-      sendConfirmation meta nameClean normalizedEmail
+      sendConfirmation meta nameClean normalizedEmail mNewUser
       pure CourseRegistrationResponse { id = fromSqlKey regId, status = pendingStatus }
   where
-    sendConfirmation meta nameClean mEmail =
+    sendConfirmation meta nameClean mEmail mNewUser =
       case mEmail of
         Nothing -> pure ()
         Just emailAddr -> do
@@ -552,17 +554,27 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
               let msg = "[CourseRegistration] WARNING: SMTP not configured. Email confirmation not sent to " <> emailAddr
               hPutStrLn stderr (T.unpack msg)
               LogBuf.addLog LogBuf.LogWarning msg
-            Just _ -> do
-              -- Send email asynchronously, but log if it fails
-              liftIO $ do
-                result <- try $ EmailSvc.sendCourseRegistration emailSvc displayName emailAddr courseTitle landing datesSummary
-                case result of
+            Just _ -> liftIO $ do
+              -- Send registration confirmation
+              result <- try $ EmailSvc.sendCourseRegistration emailSvc displayName emailAddr courseTitle landing datesSummary
+              case result of
+                Left err -> do
+                  let msg = "[CourseRegistration] Failed to send confirmation email to " <> emailAddr <> ": " <> T.pack (show (err :: SomeException))
+                  hPutStrLn stderr (T.unpack msg)
+                  LogBuf.addLog LogBuf.LogError msg
+                Right () -> do
+                  let msg = "[CourseRegistration] Successfully sent confirmation email to " <> emailAddr
+                  LogBuf.addLog LogBuf.LogInfo msg
+              -- Send welcome email if we just created credentials
+              for_ mNewUser $ \(username, tempPassword) -> do
+                welcomeResult <- try $ EmailSvc.sendWelcome emailSvc displayName emailAddr username tempPassword
+                case welcomeResult of
                   Left err -> do
-                    let msg = "[CourseRegistration] Failed to send confirmation email to " <> emailAddr <> ": " <> T.pack (show (err :: SomeException))
+                    let msg = "[CourseRegistration] Failed to send welcome email to " <> emailAddr <> ": " <> T.pack (show (err :: SomeException))
                     hPutStrLn stderr (T.unpack msg)
                     LogBuf.addLog LogBuf.LogError msg
                   Right () -> do
-                    let msg = "[CourseRegistration] Successfully sent confirmation email to " <> emailAddr
+                    let msg = "[CourseRegistration] Sent welcome credentials to " <> emailAddr
                     LogBuf.addLog LogBuf.LogInfo msg
 
 -- | Returns messages that include text bodies, paired with the sender phone.
@@ -606,6 +618,82 @@ normalizeUtm :: Maybe UTMTags -> (Maybe Text, Maybe Text, Maybe Text, Maybe Text
 normalizeUtm Nothing = (Nothing, Nothing, Nothing, Nothing)
 normalizeUtm (Just UTMTags{..}) =
   (cleanOptional source, cleanOptional medium, cleanOptional campaign, cleanOptional content)
+
+-- Ensure a Party/UserCredential exists for a registration email. Returns (username, tempPassword) only when a new
+-- credential was created.
+ensureUserAccount :: Maybe Text -> Text -> AppM (Maybe (Text, Text))
+ensureUserAccount mName emailAddr = do
+  now <- liftIO getCurrentTime
+  partyId <- runDB $ do
+    mParty <- selectFirst [PartyPrimaryEmail ==. Just emailAddr] []
+    case mParty of
+      Just (Entity pid _) -> pure pid
+      Nothing -> do
+        let display = fromMaybe emailAddr mName
+        insert Party
+          { partyLegalName = Nothing
+          , partyDisplayName = display
+          , partyIsOrg = False
+          , partyTaxId = Nothing
+          , partyPrimaryEmail = Just emailAddr
+          , partyPrimaryPhone = Nothing
+          , partyWhatsapp = Nothing
+          , partyInstagram = Nothing
+          , partyEmergencyContact = Nothing
+          , partyNotes = Nothing
+          , partyCreatedAt = now
+          }
+  mCred <- runDB $ selectFirst [UserCredentialPartyId ==. partyId] []
+  case mCred of
+    Just _ -> pure Nothing
+    Nothing -> do
+      username <- runDB (generateUniqueUsername (deriveBaseUsername mName emailAddr) partyId)
+      tempPassword <- liftIO Email.generateTempPassword
+      hashed <- liftIO (hashPasswordText tempPassword)
+      _ <- runDB $ insert UserCredential
+        { userCredentialPartyId = partyId
+        , userCredentialUsername = username
+        , userCredentialPasswordHash = hashed
+        , userCredentialActive = True
+        }
+      -- Assign default roles for new customers/fans
+      runDB $ do
+        _ <- upsert (PartyRole partyId Customer True) [PartyRoleActive =. True]
+        _ <- upsert (PartyRole partyId Fan True) [PartyRoleActive =. True]
+        pure ()
+      pure (Just (username, tempPassword))
+
+deriveBaseUsername :: Maybe Text -> Text -> Text
+deriveBaseUsername mName emailAddr =
+  let emailLocal = T.takeWhile (/= '@') emailAddr
+      candidate = fromMaybe emailLocal (slugify <$> mName)
+  in if T.null candidate then emailLocal else candidate
+
+generateUniqueUsername :: Text -> PartyId -> SqlPersistT IO Text
+generateUniqueUsername base partyId = go (0 :: Int)
+  where
+    baseClean = T.take 60 (T.filter (\c -> isAlphaNum c || c `elem` (".-_" :: String)) (T.toLower (T.strip base)))
+    fallback = "tdf-user-" <> T.pack (show (fromSqlKey partyId))
+    root = if T.null baseClean then fallback else baseClean
+    go attempt = do
+      let suffix = if attempt == 0 then "" else "-" <> T.pack (show attempt)
+          candidate = T.take 60 (root <> suffix)
+      conflict <- getBy (UniqueCredentialUsername candidate)
+      case conflict of
+        Nothing -> pure candidate
+        Just _  -> go (attempt + 1)
+
+slugify :: Text -> Text
+slugify =
+  T.take 60 . T.filter (\c -> isAlphaNum c || c `elem` ("._-" :: String)) . T.toLower . T.strip
+
+hashPasswordText :: Text -> IO Text
+hashPasswordText pwd = do
+  let raw = TE.encodeUtf8 pwd
+  mHash <- hashPasswordUsingPolicy slowerBcryptHashingPolicy raw
+  case mHash of
+    Nothing   -> fail "Failed to hash password"
+    Just hash -> pure (TE.decodeUtf8 hash)
 
 findExistingRegistration
   :: Text
@@ -687,6 +775,7 @@ lookupByEmail emailAddress = do
 data SignupDbError
   = SignupEmailExists
   | SignupProfileError
+  | SignupArtistUnavailable
   deriving (Eq, Show)
 
 signupAllowedRoles :: [RoleEnum]
@@ -721,13 +810,15 @@ signup SignupRequest
   , password = rawPassword
   , roles = requestedRoles
   , fanArtistIds = requestedFanArtistIds
+  , claimArtistId = rawClaimArtistId
   } = do
   let emailClean    = T.strip rawEmail
       passwordClean = T.strip rawPassword
       firstClean    = T.strip rawFirst
       lastClean     = T.strip rawLast
       phoneClean    = fmap T.strip rawPhone
-      displayName =
+      claimArtistIdClean = rawClaimArtistId >>= (\val -> if val > 0 then Just val else Nothing)
+      displayNameText =
         case filter (not . T.null) [firstClean, lastClean] of
           [] -> emailClean
           xs -> T.unwords xs
@@ -743,14 +834,16 @@ signup SignupRequest
       sanitizedRoles = nub (Customer : Fan : allowedRoles)
       sanitizedFanArtists = maybe [] (filter (> 0)) requestedFanArtistIds
   result <- liftIO $ flip runSqlPool pool $
-    runSignupDb emailClean passwordClean displayName phoneClean sanitizedRoles sanitizedFanArtists now
+    runSignupDb emailClean passwordClean displayNameText phoneClean sanitizedRoles sanitizedFanArtists claimArtistIdClean now
   case result of
     Left SignupEmailExists ->
       throwError err409 { errBody = BL.fromStrict (TE.encodeUtf8 "Account already exists for this email") }
+    Left SignupArtistUnavailable ->
+      throwError err409 { errBody = BL.fromStrict (TE.encodeUtf8 "Artist profile is not available to claim") }
     Left SignupProfileError ->
       throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Failed to load user profile") }
     Right resp -> do
-      liftIO $ EmailSvc.sendWelcome emailSvc displayName emailClean emailClean passwordClean
+      liftIO $ EmailSvc.sendWelcome emailSvc displayNameText emailClean emailClean passwordClean
       pure resp
   where
     runSignupDb
@@ -760,53 +853,107 @@ signup SignupRequest
       -> Maybe Text
       -> [RoleEnum]
       -> [Int64]
+      -> Maybe Int64
       -> UTCTime
       -> SqlPersistT IO (Either SignupDbError LoginResponse)
-    runSignupDb emailVal passwordVal displayName phoneVal rolesVal fanArtistIdsVal nowVal = do
+    runSignupDb emailVal passwordVal displayNameText phoneVal rolesVal fanArtistIdsVal mClaimArtistId nowVal = do
       existing <- getBy (UniqueCredentialUsername emailVal)
       case existing of
         Just _  -> pure (Left SignupEmailExists)
         Nothing -> do
-          let partyRecord = Party
-                { partyLegalName        = Nothing
-                , partyDisplayName      = displayName
-                , partyIsOrg            = False
-                , partyTaxId            = Nothing
-                , partyPrimaryEmail     = Just emailVal
-                , partyPrimaryPhone     = phoneVal
-                , partyWhatsapp         = Nothing
-                , partyInstagram        = Nothing
-                , partyEmergencyContact = Nothing
-                , partyNotes            = Nothing
-                , partyCreatedAt        = nowVal
+          partyResult <- resolveParty displayNameText mClaimArtistId emailVal phoneVal nowVal
+          case partyResult of
+            Left err -> pure (Left err)
+            Right (pid, partyLabel, existingRoles) -> do
+              let rolesWithArtist =
+                    if isJust mClaimArtistId && Artist `notElem` rolesVal
+                      then Artist : rolesVal
+                      else rolesVal
+                  rolesToApply = nub (rolesWithArtist ++ existingRoles)
+              applyRoles pid rolesToApply
+              for_ fanArtistIdsVal $ \artistId -> do
+                let artistKey = toSqlKey (fromIntegral artistId) :: Key Party
+                when (artistKey /= pid) $
+                  void $ insertBy (FanFollow pid artistKey nowVal)
+              hashed <- liftIO (hashPasswordText passwordVal)
+              _ <- insert UserCredential
+                { userCredentialPartyId      = pid
+                , userCredentialUsername     = emailVal
+                , userCredentialPasswordHash = hashed
+                , userCredentialActive       = True
                 }
-          pid <- insert partyRecord
-          applyRoles pid rolesVal
-          for_ fanArtistIdsVal $ \artistId ->
-            let artistKey = toSqlKey (fromIntegral artistId) :: Key Party
-            in void $ insertBy (FanFollow pid artistKey nowVal)
-          hashed <- liftIO (hashPasswordText passwordVal)
-          _ <- insert UserCredential
-            { userCredentialPartyId      = pid
-            , userCredentialUsername     = emailVal
-            , userCredentialPasswordHash = hashed
-            , userCredentialActive       = True
+              ensureFanProfile pid partyLabel nowVal
+              token <- createSessionToken pid emailVal
+              mUser <- loadAuthedUser token
+              case mUser of
+                Nothing   -> pure (Left SignupProfileError)
+                Just user -> pure (Right (toLoginResponse token user))
+
+    resolveParty
+      :: Text
+      -> Maybe Int64
+      -> Text
+      -> Maybe Text
+      -> UTCTime
+      -> SqlPersistT IO (Either SignupDbError (PartyId, Text, [RoleEnum]))
+    resolveParty displayNameText Nothing emailVal phoneVal nowVal = do
+      let partyRecord = Party
+            { partyLegalName        = Nothing
+            , partyDisplayName      = displayNameText
+            , partyIsOrg            = False
+            , partyTaxId            = Nothing
+            , partyPrimaryEmail     = Just emailVal
+            , partyPrimaryPhone     = phoneVal
+            , partyWhatsapp         = Nothing
+            , partyInstagram        = Nothing
+            , partyEmergencyContact = Nothing
+            , partyNotes            = Nothing
+            , partyCreatedAt        = nowVal
             }
-          insert_ FanProfile
-            { fanProfileFanPartyId     = pid
-            , fanProfileDisplayName    = Just displayName
-            , fanProfileAvatarUrl      = Nothing
-            , fanProfileFavoriteGenres = Nothing
-            , fanProfileBio            = Nothing
-            , fanProfileCity           = Nothing
-            , fanProfileCreatedAt      = nowVal
-            , fanProfileUpdatedAt      = Nothing
-            }
-          token <- createSessionToken pid emailVal
-          mUser <- loadAuthedUser token
-          case mUser of
-            Nothing   -> pure (Left SignupProfileError)
-            Just user -> pure (Right (toLoginResponse token user))
+      pid <- insert partyRecord
+      pure (Right (pid, displayNameText, []))
+
+    resolveParty _ (Just artistId) emailVal phoneVal _ = do
+      let artistKey = toSqlKey (fromIntegral artistId) :: Key Party
+      mProfile <- getBy (UniqueArtistProfile artistKey)
+      case mProfile of
+        Nothing -> pure (Left SignupArtistUnavailable)
+        Just _ -> do
+          existingAccount <- selectFirst [UserCredentialPartyId ==. artistKey] []
+          case existingAccount of
+            Just _  -> pure (Left SignupArtistUnavailable)
+            Nothing -> do
+              mArtistParty <- getEntity artistKey
+              case mArtistParty of
+                Nothing -> pure (Left SignupArtistUnavailable)
+                Just (Entity _ party) -> do
+                  let normalizedPhone = cleanOptional phoneVal
+                      normalizedEmail = Just emailVal
+                      emailMissing = maybe True T.null (M.partyPrimaryEmail party)
+                      updates =
+                        [PartyPrimaryEmail =. normalizedEmail | emailMissing]
+                        ++ [PartyPrimaryPhone =. normalizedPhone | isNothing (M.partyPrimaryPhone party), isJust normalizedPhone]
+                  unless (null updates) $
+                    update artistKey updates
+                  activeRoles <- selectList [PartyRolePartyId ==. artistKey, PartyRoleActive ==. True] []
+                  let existingRoles = map (partyRoleRole . entityVal) activeRoles
+                      label = M.partyDisplayName party
+                  pure (Right (artistKey, label, existingRoles))
+
+    ensureFanProfile pid label nowVal = do
+      mProfile <- getBy (UniqueFanProfile pid)
+      case mProfile of
+        Just _ -> pure ()
+        Nothing -> insert_ FanProfile
+          { fanProfileFanPartyId     = pid
+          , fanProfileDisplayName    = Just label
+          , fanProfileAvatarUrl      = Nothing
+          , fanProfileFavoriteGenres = Nothing
+          , fanProfileBio            = Nothing
+          , fanProfileCity           = Nothing
+          , fanProfileCreatedAt      = nowVal
+          , fanProfileUpdatedAt      = Nothing
+          }
 
 data PasswordChangeError
   = PasswordInvalid
@@ -1273,14 +1420,6 @@ deactivatePasswordResetTokens pid = do
       Just lbl | "password-reset:" `T.isPrefixOf` lbl ->
         update tokenId [ApiTokenActive =. False]
       _ -> pure ()
-
-hashPasswordText :: Text -> IO Text
-hashPasswordText pwd = do
-  let raw = TE.encodeUtf8 pwd
-  mHash <- hashPasswordUsingPolicy slowerBcryptHashingPolicy raw
-  case mHash of
-    Nothing   -> fail "Failed to hash password"
-    Just hash -> pure (TE.decodeUtf8 hash)
 
 metaServer :: ServerT Meta.MetaAPI AppM
 metaServer = hoistServer metaProxy lift Meta.metaServer
@@ -1790,7 +1929,7 @@ defaultResourcesForService (Just service) start end = do
     _ -> pure []
   where
     pickBooth [] = pure []
-    pickBooth (Entity key room : rest) = do
+    pickBooth (Entity key _ : rest) = do
       available <- isResourceAvailableDB key start end
       if available
         then pure [key]
@@ -2007,8 +2146,8 @@ createReceipt user CreateReceiptReq{..} = do
         existing <- selectFirst [ReceiptInvoiceId ==. iid] []
         case existing of
           Just receiptEnt -> do
-            lines <- selectList [ReceiptLineReceiptId ==. entityKey receiptEnt] [Asc ReceiptLineId]
-            pure (Right (receiptToDTO receiptEnt lines))
+            receiptLines <- selectList [ReceiptLineReceiptId ==. entityKey receiptEnt] [Asc ReceiptLineId]
+            pure (Right (receiptToDTO receiptEnt receiptLines))
           Nothing -> do
             invoiceLines <- selectList [InvoiceLineInvoiceId ==. iid] [Asc InvoiceLineId]
             if null invoiceLines
@@ -2035,8 +2174,8 @@ getReceipt user ridParam = do
     case mReceipt of
       Nothing -> pure Nothing
       Just rec -> do
-        lines <- selectList [ReceiptLineReceiptId ==. rid] [Asc ReceiptLineId]
-        pure (Just (receiptToDTO rec lines))
+        receiptLines <- selectList [ReceiptLineReceiptId ==. rid] [Asc ReceiptLineId]
+        pure (Just (receiptToDTO rec receiptLines))
   maybe (throwError err404) pure result
 
 data PreparedLine = PreparedLine
@@ -2102,7 +2241,7 @@ normalizeOptionalText =
   in (>>= clean)
 
 invoiceToDTO :: Entity Invoice -> [Entity InvoiceLine] -> Maybe (Key Receipt) -> InvoiceDTO
-invoiceToDTO (Entity iid inv) lines mReceiptKey = InvoiceDTO
+invoiceToDTO (Entity iid inv) invLines mReceiptKey = InvoiceDTO
   { invId      = fromSqlKey iid
   , number     = invoiceNumber inv
   , statusI    = T.pack (show (invoiceStatus inv))
@@ -2113,7 +2252,7 @@ invoiceToDTO (Entity iid inv) lines mReceiptKey = InvoiceDTO
   , customerId = Just (fromSqlKey (invoiceCustomerId inv))
   , notes      = invoiceNotes inv
   , receiptId  = fmap fromSqlKey mReceiptKey
-  , lineItems  = map invoiceLineToDTO lines
+  , lineItems  = map invoiceLineToDTO invLines
   }
 
 invoiceLineToDTO :: Entity InvoiceLine -> InvoiceLineDTO
@@ -2129,7 +2268,7 @@ invoiceLineToDTO (Entity lid line) = InvoiceLineDTO
   }
 
 receiptToDTO :: Entity Receipt -> [Entity ReceiptLine] -> ReceiptDTO
-receiptToDTO (Entity rid rec) lines = ReceiptDTO
+receiptToDTO (Entity rid rec) receiptLines = ReceiptDTO
   { receiptId     = fromSqlKey rid
   , receiptNumber = M.receiptNumber rec
   , issuedAt      = M.receiptIssuedAt rec
@@ -2142,7 +2281,7 @@ receiptToDTO (Entity rid rec) lines = ReceiptDTO
   , totalCents    = M.receiptTotalCents rec
   , notes         = M.receiptNotes rec
   , invoiceId     = fromSqlKey (M.receiptInvoiceId rec)
-  , lineItems     = map receiptLineToDTO lines
+  , lineItems     = map receiptLineToDTO receiptLines
   }
 
 receiptLineToDTO :: Entity ReceiptLine -> ReceiptLineDTO
