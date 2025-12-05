@@ -12,16 +12,20 @@ import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
-import           Data.Aeson (ToJSON(..), FromJSON(..), Value, object, (.=))
+import           Data.Char (toLower)
+import           Data.Aeson (ToJSON(..), FromJSON(..), Value, object, (.=), defaultOptions, genericParseJSON, genericToJSON, fieldLabelModifier)
 import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
 import           TDF.API.Future    (FutureAPI)
 import           TDF.API.Bands     (BandsAPI)
 import           TDF.API.Inventory (InventoryAPI)
+import           TDF.API.Payments (PaymentsAPI)
+import           TDF.API.Instagram (InstagramAPI)
 import           TDF.API.Pipelines (PipelinesAPI)
 import           TDF.API.Rooms     (RoomsAPI)
 import           TDF.API.Sessions  (SessionsAPI)
+import           TDF.API.Drive     (DriveAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload, UserRoleSummaryDTO, UserRoleUpdatePayload)
 import           TDF.Models        (RoleEnum)
 import           TDF.DTO
@@ -31,6 +35,11 @@ import qualified TDF.ModelsExtra  as ME
 import           TDF.Routes.Academy (AcademyAPI)
 import           TDF.Routes.Courses (CoursesPublicAPI, WhatsAppWebhookAPI)
 import           TDF.API.LiveSessions (LiveSessionsAPI)
+import           TDF.API.Feedback    (FeedbackAPI)
+import           TDF.API.Calendar    (CalendarAPI)
+import           TDF.API.Marketplace (MarketplaceAPI, MarketplaceAdminAPI)
+import           TDF.API.Label (LabelAPI)
+import           TDF.API.SocialEventsAPI (SocialEventsAPI)
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
@@ -51,6 +60,24 @@ type InputListSeedAPI =
   :<|> "sessions" :> "seed" :> SeedAPI
 
 type InputListAPI = InputListPublicAPI :<|> InputListSeedAPI
+
+type AdsPublicAPI =
+       "ads" :> "inquiry" :> ReqBody '[JSON] AdsInquiry :> Post '[JSON] AdsInquiryOut
+
+type AdsAdminAPI =
+       "ads" :> "inquiries" :> Get '[JSON] [AdsInquiryDTO]
+
+type CmsPublicAPI =
+       "cms" :> "content" :> QueryParam "slug" Text :> QueryParam "locale" Text :> Get '[JSON] CmsContentDTO
+  :<|> "cms" :> "contents" :> QueryParam "locale" Text :> QueryParam "slugPrefix" Text :> Get '[JSON] [CmsContentDTO]
+
+type CmsAdminAPI =
+       "cms" :> "content" :>
+         ( QueryParam "slug" Text :> QueryParam "locale" Text :> Get '[JSON] [CmsContentDTO]
+      :<|> ReqBody '[JSON] CmsContentIn :> Post '[JSON] CmsContentDTO
+      :<|> Capture "id" Int :> "publish" :> Post '[JSON] CmsContentDTO
+      :<|> Capture "id" Int :> Delete '[JSON] NoContent
+         )
 
 type PartyAPI =
        Get '[JSON] [PartyDTO]
@@ -149,7 +176,15 @@ type ProtectedAPI =
   :<|> PipelinesAPI
   :<|> RoomsAPI
   :<|> LiveSessionsAPI
+  :<|> FeedbackAPI
+  :<|> "marketplace" :> MarketplaceAdminAPI
+  :<|> "payments" :> PaymentsAPI
+  :<|> "instagram" :> InstagramAPI
   :<|> "social" :> SocialAPI
+  :<|> AdsAdminAPI
+  :<|> "calendar" :> CalendarAPI
+  :<|> CmsAdminAPI
+  :<|> DriveAPI
   :<|> "stubs"    :> FutureAPI
 
 type API =
@@ -166,6 +201,11 @@ type API =
   :<|> AcademyAPI
   :<|> "seed"   :> SeedAPI
   :<|> "input-list" :> InputListAPI
+  :<|> AdsPublicAPI
+  :<|> CmsPublicAPI
+  :<|> "marketplace" :> MarketplaceAPI
+  :<|> "label" :> LabelAPI
+  :<|> "social-events" :> SocialEventsAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
@@ -194,3 +234,66 @@ data UpdateBookingReq = UpdateBookingReq
   , ubEndsAt      :: Maybe UTCTime
   } deriving (Show, Generic)
 instance FromJSON UpdateBookingReq
+
+data AdsInquiry = AdsInquiry
+  { aiName    :: Maybe Text
+  , aiEmail   :: Maybe Text
+  , aiPhone   :: Maybe Text
+  , aiCourse  :: Maybe Text
+  , aiMessage :: Maybe Text
+  , aiChannel :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON AdsInquiry where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 2 }
+
+data AdsInquiryDTO = AdsInquiryDTO
+  { aidInquiryId :: Int
+  , aidCreatedAt :: UTCTime
+  , aidName      :: Maybe Text
+  , aidEmail     :: Maybe Text
+  , aidPhone     :: Maybe Text
+  , aidCourse    :: Maybe Text
+  , aidMessage   :: Maybe Text
+  , aidChannel   :: Maybe Text
+  , aidStatus    :: Text
+  } deriving (Show, Generic)
+instance ToJSON AdsInquiryDTO where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data AdsInquiryOut = AdsInquiryOut
+  { aioOk         :: Bool
+  , aioInquiryId  :: Int
+  , aioPartyId    :: Int
+  , aioRepliedVia :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON AdsInquiryOut where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data CmsContentIn = CmsContentIn
+  { cciSlug    :: Text
+  , cciLocale  :: Text
+  , cciTitle   :: Maybe Text
+  , cciStatus  :: Maybe Text
+  , cciPayload :: Maybe Value
+  } deriving (Show, Generic)
+instance FromJSON CmsContentIn where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data CmsContentDTO = CmsContentDTO
+  { ccdId        :: Int
+  , ccdSlug      :: Text
+  , ccdLocale    :: Text
+  , ccdVersion   :: Int
+  , ccdStatus    :: Text
+  , ccdTitle     :: Maybe Text
+  , ccdPayload   :: Maybe Value
+  , ccdCreatedAt :: UTCTime
+  , ccdPublishedAt :: Maybe UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CmsContentDTO where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+camelDrop :: Int -> String -> String
+camelDrop n xs = case drop n xs of
+  (c:cs) -> toLower c : cs
+  []     -> []

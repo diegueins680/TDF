@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module TDF.Config where
 
+import           Control.Applicative ((<|>))
 import           Data.Char          (toLower)
 import           Data.Maybe         (fromMaybe)
 import           Data.Text          (Text)
@@ -55,8 +56,8 @@ loadConfig = do
   baseUrlEnv <- lookupEnv "HQ_APP_URL"
   smtpHostEnv <- lookupEnv "SMTP_HOST"
   smtpPortEnv <- lookupEnv "SMTP_PORT"
-  smtpUserEnv <- lookupEnv "SMTP_USERNAME"
-  smtpPassEnv <- lookupEnv "SMTP_PASSWORD"
+  smtpUserEnv <- lookupEnv "SMTP_USERNAME" <|> lookupEnv "SMTP_USER"
+  smtpPassEnv <- lookupEnv "SMTP_PASSWORD" <|> lookupEnv "SMTP_PASS"
   smtpFromEnv <- lookupEnv "SMTP_FROM"
   smtpFromNameEnv <- lookupEnv "SMTP_FROM_NAME"
   smtpTlsEnv  <- lookupEnv "SMTP_TLS"

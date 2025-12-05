@@ -54,11 +54,13 @@ data ArtistProfileDTO = ArtistProfileDTO
   , apGenres          :: Maybe Text
   , apHighlights      :: Maybe Text
   , apFollowerCount   :: Int
+  , apHasUserAccount  :: Bool
   } deriving (Show, Generic)
 instance ToJSON ArtistProfileDTO
 
 data ArtistProfileUpsert = ArtistProfileUpsert
   { apuArtistId        :: Int64
+  , apuDisplayName     :: Maybe Text
   , apuSlug            :: Maybe Text
   , apuBio             :: Maybe Text
   , apuCity            :: Maybe Text
@@ -139,6 +141,33 @@ data VCardExchangeRequest = VCardExchangeRequest
   { vcerPartyId :: Int64
   } deriving (Show, Generic)
 instance FromJSON VCardExchangeRequest
+
+-- Course registrations (admin)
+data CourseRegistrationDTO = CourseRegistrationDTO
+  { crId          :: Int64
+  , crCourseSlug  :: Text
+  , crFullName    :: Maybe Text
+  , crEmail       :: Maybe Text
+  , crPhoneE164   :: Maybe Text
+  , crSource      :: Text
+  , crStatus      :: Text
+  , crHowHeard    :: Maybe Text
+  , crUtmSource   :: Maybe Text
+  , crUtmMedium   :: Maybe Text
+  , crUtmCampaign :: Maybe Text
+  , crUtmContent  :: Maybe Text
+  , crCreatedAt   :: UTCTime
+  , crUpdatedAt   :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CourseRegistrationDTO
+
+-- Logs
+data LogEntryDTO = LogEntryDTO
+  { logTimestamp :: UTCTime
+  , logLevel     :: Text
+  , logMessage   :: Text
+  } deriving (Show, Generic)
+instance ToJSON LogEntryDTO
 
 data PartyCreate = PartyCreate
   { cLegalName        :: Maybe Text
@@ -337,6 +366,7 @@ data SignupRequest = SignupRequest
   , marketingOptIn  :: Maybe Bool
   , roles           :: Maybe [RoleEnum]
   , fanArtistIds    :: Maybe [Int64]
+  , claimArtistId   :: Maybe Int64
   } deriving (Show, Generic)
 instance FromJSON SignupRequest
 

@@ -44,6 +44,7 @@ data RoleEnum
   | LiveSessionsProducer
   | Artist
   | Artista
+  | Webmaster
   | Promotor
   | Promoter
   | Producer
@@ -61,6 +62,7 @@ data RoleEnum
   | ReadOnly
   | Customer
   | Fan
+  | Maintenance
   deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
 derivePersistField "RoleEnum"
 
@@ -139,6 +141,7 @@ roleToText Accounting    = "Accounting"
 roleToText LiveSessionsProducer = "Live Sessions Producer"
 roleToText Artist        = "Artist"
 roleToText Artista       = "Artista"
+roleToText Webmaster     = "Webmaster"
 roleToText Promotor      = "Promotor"
 roleToText Promoter      = "Promoter"
 roleToText Producer      = "Producer"
@@ -156,6 +159,7 @@ roleToText Vendor        = "Vendor"
 roleToText ReadOnly      = "ReadOnly"
 roleToText Customer      = "Customer"
 roleToText Fan           = "Fan"
+roleToText Maintenance   = "Maintenance"
 
 roleFromText :: Text -> Maybe RoleEnum
 roleFromText raw = 
@@ -177,6 +181,7 @@ roleFromText raw =
     "live session producer" -> Just LiveSessionsProducer
     "artist"       -> Just Artist
     "artista"      -> Just Artista
+    "webmaster"    -> Just Webmaster
     "promotor"     -> Just Promotor
     "promoter"     -> Just Promoter
     "producer"     -> Just Producer
@@ -196,6 +201,7 @@ roleFromText raw =
     "readonly"     -> Just ReadOnly
     "customer"     -> Just Customer
     "fan"          -> Just Fan
+    "maintenance"  -> Just Maintenance
     _              -> Nothing
 instance ToJSON StockTxnReason
 instance FromJSON StockTxnReason
@@ -425,17 +431,33 @@ ReceiptLine
     totalCents       Int
     deriving Show Generic
 Payment
-    invoiceId        InvoiceId
+    invoiceId        InvoiceId Maybe
+    orderId          ServiceOrderId Maybe
+    partyId          PartyId
     method           PaymentMethod
     amountCents      Int
     receivedAt       UTCTime
     reference        Text Maybe
+    concept          Text Maybe
+    period           Text Maybe
+    attachment       Text Maybe
     createdBy        PartyId Maybe
+    createdAt        UTCTime Maybe
     deriving Show Generic
 PaymentSplit
     paymentId        PaymentId
     payerId          PartyId
     amountCents      Int
+    deriving Show Generic
+
+InstagramMessage
+    externalId       Text
+    senderId         Text
+    senderName       Text Maybe
+    text             Text Maybe
+    direction        Text
+    createdAt        UTCTime
+    UniqueInstagramMessage externalId
     deriving Show Generic
 ExternalCalendarMapping
     resourceId       ResourceId

@@ -159,15 +159,187 @@ data AssetDTO = AssetDTO
   , name     :: Text
   , category :: Text
   , status   :: Text
+  , condition :: Maybe Text
+  , brand    :: Maybe Text
+  , model    :: Maybe Text
   , location :: Maybe Text
+  , qrToken  :: Maybe Text
+  , photoUrl :: Maybe Text
   } deriving (Show, Generic)
 
 instance ToJSON AssetDTO
 instance FromJSON AssetDTO
 
+data MarketplaceItemDTO = MarketplaceItemDTO
+  { miListingId      :: Text
+  , miAssetId        :: Text
+  , miTitle          :: Text
+  , miPurpose        :: Text
+  , miCategory       :: Text
+  , miBrand          :: Maybe Text
+  , miModel          :: Maybe Text
+  , miPhotoUrl       :: Maybe Text
+  , miStatus         :: Maybe Text
+  , miCondition      :: Maybe Text
+  , miPriceUsdCents  :: Int
+  , miPriceDisplay   :: Text
+  , miMarkupPct      :: Int
+  , miCurrency       :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceItemDTO
+instance FromJSON MarketplaceItemDTO
+
+data MarketplaceCartItemDTO = MarketplaceCartItemDTO
+  { mciListingId         :: Text
+  , mciTitle             :: Text
+  , mciCategory          :: Text
+  , mciBrand             :: Maybe Text
+  , mciModel             :: Maybe Text
+  , mciQuantity          :: Int
+  , mciUnitPriceUsdCents :: Int
+  , mciSubtotalCents     :: Int
+  , mciUnitPriceDisplay  :: Text
+  , mciSubtotalDisplay   :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceCartItemDTO
+instance FromJSON MarketplaceCartItemDTO
+
+data MarketplaceCartDTO = MarketplaceCartDTO
+  { mcCartId          :: Text
+  , mcItems           :: [MarketplaceCartItemDTO]
+  , mcCurrency        :: Text
+  , mcSubtotalCents   :: Int
+  , mcSubtotalDisplay :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceCartDTO
+instance FromJSON MarketplaceCartDTO
+
+data MarketplaceCartItemUpdate = MarketplaceCartItemUpdate
+  { mciuListingId :: Text
+  , mciuQuantity  :: Int
+  } deriving (Show, Generic)
+
+instance FromJSON MarketplaceCartItemUpdate
+instance ToJSON MarketplaceCartItemUpdate
+
+data MarketplaceCheckoutReq = MarketplaceCheckoutReq
+  { mcrBuyerName  :: Text
+  , mcrBuyerEmail :: Text
+  , mcrBuyerPhone :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON MarketplaceCheckoutReq
+instance ToJSON MarketplaceCheckoutReq
+
+data MarketplaceOrderItemDTO = MarketplaceOrderItemDTO
+  { moiListingId         :: Text
+  , moiTitle             :: Text
+  , moiQuantity          :: Int
+  , moiUnitPriceUsdCents :: Int
+  , moiSubtotalCents     :: Int
+  , moiUnitPriceDisplay  :: Text
+  , moiSubtotalDisplay   :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceOrderItemDTO
+instance FromJSON MarketplaceOrderItemDTO
+
+data MarketplaceOrderDTO = MarketplaceOrderDTO
+  { moOrderId       :: Text
+  , moCartId        :: Maybe Text
+  , moCurrency      :: Text
+  , moTotalUsdCents :: Int
+  , moTotalDisplay  :: Text
+  , moStatus        :: Text
+  , moStatusHistory :: [(Text, UTCTime)]
+  , moBuyerName     :: Text
+  , moBuyerEmail    :: Text
+  , moBuyerPhone    :: Maybe Text
+  , moPaymentProvider :: Maybe Text
+  , moPaypalOrderId :: Maybe Text
+  , moPaypalPayerEmail :: Maybe Text
+  , moPaidAt        :: Maybe UTCTime
+  , moCreatedAt     :: UTCTime
+  , moUpdatedAt     :: UTCTime
+  , moItems         :: [MarketplaceOrderItemDTO]
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceOrderDTO
+instance FromJSON MarketplaceOrderDTO
+
+data MarketplaceOrderUpdate = MarketplaceOrderUpdate
+  { mouStatus          :: Maybe Text
+  , mouPaymentProvider :: Maybe (Maybe Text)
+  , mouPaidAt          :: Maybe (Maybe UTCTime)
+  } deriving (Show, Generic)
+
+instance ToJSON MarketplaceOrderUpdate
+instance FromJSON MarketplaceOrderUpdate
+
+data DatafastCheckoutDTO = DatafastCheckoutDTO
+  { dcOrderId     :: Text
+  , dcCheckoutId  :: Text
+  , dcWidgetUrl   :: Text
+  , dcAmount      :: Text
+  , dcCurrency    :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON DatafastCheckoutDTO
+instance FromJSON DatafastCheckoutDTO
+
+data PaypalCreateDTO = PaypalCreateDTO
+  { pcOrderId       :: Text
+  , pcPaypalOrderId :: Text
+  , pcApprovalUrl   :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON PaypalCreateDTO
+instance FromJSON PaypalCreateDTO
+
+data PaypalCaptureReq = PaypalCaptureReq
+  { pcCaptureOrderId   :: Text
+  , pcCapturePaypalId  :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON PaypalCaptureReq
+instance FromJSON PaypalCaptureReq
+
+data LabelTrackDTO = LabelTrackDTO
+  { ltId        :: Text
+  , ltTitle     :: Text
+  , ltNote      :: Maybe Text
+  , ltStatus    :: Text
+  , ltCreatedAt :: UTCTime
+  , ltUpdatedAt :: UTCTime
+  } deriving (Show, Generic)
+
+instance ToJSON LabelTrackDTO
+instance FromJSON LabelTrackDTO
+
+data LabelTrackCreate = LabelTrackCreate
+  { ltcTitle :: Text
+  , ltcNote  :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON LabelTrackCreate
+instance FromJSON LabelTrackCreate
+
+data LabelTrackUpdate = LabelTrackUpdate
+  { ltuTitle  :: Maybe Text
+  , ltuNote   :: Maybe Text
+  , ltuStatus :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON LabelTrackUpdate
+instance FromJSON LabelTrackUpdate
+
 data AssetCreate = AssetCreate
   { cName     :: Text
   , cCategory :: Text
+  , cPhotoUrl :: Maybe Text
   } deriving (Show, Generic)
 
 instance ToJSON AssetCreate
@@ -179,10 +351,64 @@ data AssetUpdate = AssetUpdate
   , uStatus     :: Maybe Text
   , uLocationId :: Maybe Text
   , uNotes      :: Maybe Text
+  , uPhotoUrl   :: Maybe Text
   } deriving (Show, Generic)
 
 instance FromJSON AssetUpdate
 instance ToJSON AssetUpdate
+
+data AssetCheckoutDTO = AssetCheckoutDTO
+  { checkoutId     :: Text
+  , assetId        :: Text
+  , targetKind     :: Text
+  , targetSessionId:: Maybe Text
+  , targetPartyRef :: Maybe Text
+  , targetRoomId   :: Maybe Text
+  , checkedOutBy   :: Text
+  , checkedOutAt   :: UTCTime
+  , dueAt          :: Maybe UTCTime
+  , conditionOut   :: Maybe Text
+  , conditionIn    :: Maybe Text
+  , returnedAt     :: Maybe UTCTime
+  , notes          :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON AssetCheckoutDTO
+instance FromJSON AssetCheckoutDTO
+
+data DriveUploadDTO = DriveUploadDTO
+  { duFileId         :: Text
+  , duWebViewLink    :: Maybe Text
+  , duWebContentLink :: Maybe Text
+  , duPublicUrl      :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON DriveUploadDTO
+instance FromJSON DriveUploadDTO
+
+data AssetCheckoutRequest = AssetCheckoutRequest
+  { coTargetKind    :: Maybe Text
+  , coTargetSession :: Maybe Text
+  , coTargetParty   :: Maybe Text
+  , coTargetRoom    :: Maybe Text
+  , coDueAt         :: Maybe UTCTime
+  , coConditionOut  :: Maybe Text
+  , coNotes         :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON AssetCheckoutRequest
+instance ToJSON AssetCheckoutRequest
+
+data AssetCheckinRequest = AssetCheckinRequest
+  { ciConditionIn :: Maybe Text
+  , ciNotes       :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON AssetCheckinRequest
+instance ToJSON AssetCheckinRequest
+
+data AssetQrDTO = AssetQrDTO
+  { qrToken :: Text
+  , qrUrl   :: Text
+  } deriving (Show, Generic)
+instance ToJSON AssetQrDTO
+instance FromJSON AssetQrDTO
 
 data RoomDTO = RoomDTO
   { roomId    :: Text
@@ -430,6 +656,23 @@ instance FromJSON BandMemberInput where
     BandMemberInput
       <$> o .:  "bmPartyId"
       <*> o .:? "bmRole"
+
+-- Minimal Payment DTO for UI/backend bridging
+data SimplePaymentDTO = SimplePaymentDTO
+  { spId          :: Int64
+  , spPartyId     :: Int64
+  , spOrderId     :: Maybe Int64
+  , spInvoiceId   :: Maybe Int64
+  , spAmountCents :: Int
+  , spCurrency    :: Text
+  , spMethod      :: Text
+  , spReference   :: Maybe Text
+  , spPaidAt      :: Text
+  , spConcept     :: Maybe Text
+  , spPeriod      :: Maybe Text
+  , spAttachment  :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON SimplePaymentDTO
 
 data BandCreate = BandCreate
   { bcName          :: Text
