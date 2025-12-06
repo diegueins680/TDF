@@ -6,15 +6,12 @@ import System.Environment (lookupEnv)
 import qualified Data.ByteString.Char8 as BS
 import Data.Char (isSpace, toLower)
 import Control.Applicative ((<|>))
-import Data.List (dropWhileEnd, intercalate, nub)
 
 corsPolicy :: IO Middleware
 corsPolicy = do
   originsEnv <- lookupEnv "ALLOWED_ORIGINS"
             <|> lookupEnv "ALLOW_ORIGINS"
-            <|> lookupEnv "ALLOW_ORIGIN"
             <|> lookupEnv "CORS_ALLOW_ORIGINS"
-            <|> lookupEnv "CORS_ALLOW_ORIGIN"
   allowAllEnv <- lookupEnv "ALLOW_ALL_ORIGINS"
              <|> lookupEnv "ALLOW_ORIGINS_ALL"
              <|> lookupEnv "CORS_ALLOW_ALL"
@@ -25,9 +22,8 @@ corsPolicy = do
         , "https://tdf-app.pages.dev"
         ]
       parsed = maybe [] splitComma originsEnv
-      normalized = map normalizeOrigin parsed
-      filtered = filter (not . null) normalized
-      origins = nub (if null filtered then defaults else filtered)
+      filtered = filter (not . null) parsed
+      origins = if null filtered then defaults else filtered
       wildcard = any (== "*") origins
       allowAll = wildcard || maybe False asBool allowAllEnv
       originSetting =
@@ -41,8 +37,6 @@ corsPolicy = do
         , corsRequireOrigin      = False
         , corsIgnoreFailures     = False
         }
-  putStrLn $ "[cors] allowAll=" <> show allowAll
-          <> " origins=" <> if allowAll then "*" else intercalate "," origins
   pure (cors (const (Just policy)))
 
 -- | Split a comma-separated list into trimmed entries.
@@ -56,15 +50,8 @@ splitComma = go . dropWhile isSpace
       in if null t
            then [h']
            else h' : go (drop 1 t)
-
--- | Remove surrounding whitespace and trailing slashes to avoid origin mismatches.
-normalizeOrigin :: String -> String
-normalizeOrigin = dropTrailingSlash . trim
-  where
-    dropTrailingSlash = dropWhileEnd (== '/')
-
-trim :: String -> String
-trim = dropWhileEnd isSpace . dropWhile isSpace
+    trim = dropWhileEnd isSpace . dropWhile isSpace
+    dropWhileEnd p = reverse . dropWhile p . reverse
 
 asBool :: String -> Bool
 asBool v =
