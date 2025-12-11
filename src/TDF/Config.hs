@@ -30,6 +30,9 @@ data AppConfig = AppConfig
   , runMigrations   :: Bool
   , seedTriggerToken :: Maybe Text
   , appBaseUrl      :: Maybe Text
+  , courseDefaultSlug :: Text
+  , courseDefaultMapUrl :: Maybe Text
+  , courseDefaultInstructorAvatar :: Maybe Text
   , emailConfig     :: Maybe EmailConfig
   , googleClientId  :: Maybe Text
   , instagramAppToken :: Maybe Text
@@ -58,6 +61,9 @@ loadConfig = do
   seedEnv    <- lookupEnv "SEED_TRIGGER_TOKEN"
   baseUrlEnv <- lookupEnv "HQ_APP_URL"
   googleClientIdEnv <- lookupEnv "GOOGLE_CLIENT_ID"
+  courseSlugEnv <- lookupEnv "COURSE_DEFAULT_SLUG"
+  courseMapEnv <- lookupEnv "COURSE_DEFAULT_MAP_URL"
+  courseInstructorAvatarEnv <- lookupEnv "COURSE_DEFAULT_INSTRUCTOR_AVATAR"
   smtpHostEnv <- lookupEnv "SMTP_HOST"
   smtpPortEnv <- lookupEnv "SMTP_PORT"
   smtpUserEnv <- lookupEnv "SMTP_USERNAME" <|> lookupEnv "SMTP_USER"
@@ -79,6 +85,9 @@ loadConfig = do
     , runMigrations = asBool mig
     , seedTriggerToken = mkSeedToken seedEnv
     , appBaseUrl = fmap (T.strip . T.pack) baseUrlEnv
+    , courseDefaultSlug = maybe "produccion-musical-dic-2025" (T.strip . T.pack) courseSlugEnv
+    , courseDefaultMapUrl = fmap (T.strip . T.pack) courseMapEnv
+    , courseDefaultInstructorAvatar = fmap (T.strip . T.pack) courseInstructorAvatarEnv
     , emailConfig = mkEmailConfig smtpHostEnv smtpUserEnv smtpPassEnv smtpFromEnv smtpFromNameEnv smtpPortEnv smtpTlsEnv
     , googleClientId = fmap (T.strip . T.pack) googleClientIdEnv
     , instagramAppToken = fmap (T.strip . T.pack) igTokenEnv
@@ -115,3 +124,35 @@ loadConfig = do
         , smtpPassword = pass
         , smtpUseTLS = useTls
         }
+
+defaultAppBase :: Text
+defaultAppBase = "http://localhost:5173"
+
+sanitizeBaseUrl :: Text -> Text
+sanitizeBaseUrl base =
+  let trimmed = T.dropWhileEnd (== '/') (T.strip base)
+  in if T.null trimmed then defaultAppBase else trimmed
+
+resolveAppBase :: Maybe Text -> Text
+resolveAppBase = sanitizeBaseUrl . fromMaybe defaultAppBase
+
+resolveConfiguredAppBase :: AppConfig -> Text
+resolveConfiguredAppBase cfg = resolveAppBase (appBaseUrl cfg)
+
+courseSlugFallback :: AppConfig -> Text
+courseSlugFallback cfg =
+  let val = T.strip (courseDefaultSlug cfg)
+  in if T.null val then "produccion-musical-dic-2025" else val
+
+courseMapFallback :: AppConfig -> Text
+courseMapFallback cfg = fromMaybe "https://maps.app.goo.gl/6pVYZ2CsbvQfGhAz6" (courseDefaultMapUrl cfg >>= nonEmpty)
+
+courseInstructorAvatarFallback :: AppConfig -> Text
+courseInstructorAvatarFallback cfg =
+  let base = resolveConfiguredAppBase cfg
+  in fromMaybe (base <> "/assets/esteban-munoz.jpg") (courseDefaultInstructorAvatar cfg >>= nonEmpty)
+
+nonEmpty :: Text -> Maybe Text
+nonEmpty txt =
+  let trimmed = T.strip txt
+  in if T.null trimmed then Nothing else Just trimmed
