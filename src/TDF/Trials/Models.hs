@@ -147,4 +147,43 @@ TrialThrottle
     count                Int
     UniqueTrialThrottle  partyId day
     deriving Show
+
+Course
+    slug                 Text
+    title                Text
+    subtitle             Text Maybe
+    format               Text Maybe
+    duration             Text Maybe
+    priceCents           Int
+    currency             Text
+    capacity             Int
+    sessionStartHour     Int Maybe
+    sessionDurationHours Int Maybe
+    locationLabel        Text Maybe
+    locationMapUrl       Text Maybe
+    whatsappCtaUrl       Text Maybe
+    landingUrl           Text Maybe
+    daws                 [Text] Maybe sqltype=text[]
+    includes             [Text] Maybe sqltype=text[]
+    instructorName       Text Maybe
+    instructorBio        Text Maybe
+    instructorAvatarUrl  Text Maybe
+    createdAt            UTCTime default=CURRENT_TIMESTAMP
+    updatedAt            UTCTime default=CURRENT_TIMESTAMP
+    UniqueCourseSlug     slug
+    deriving Show
+
+CourseSessionModel
+    courseId             CourseId
+    label                Text
+    date                 Day
+    order                Int Maybe
+    deriving Show
+
+CourseSyllabusItem
+    courseId             CourseId
+    title                Text
+    topics               [Text]
+    order                Int Maybe
+    deriving Show Eq
 |]

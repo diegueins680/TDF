@@ -19,13 +19,13 @@ import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader (ReaderT, ask, runReaderT)
 import           Control.Monad.Trans.Class (lift)
 import           Data.Int (Int64)
-import           Data.List (find, foldl', nub, isPrefixOf)
+import           Data.List (find, foldl', nub, isPrefixOf, sortOn)
+import           Data.Ord (Down(..))
 import           Data.Foldable (for_)
 import           Data.Char (isDigit, isSpace, isAlphaNum, toLower)
-import qualified Data.Map.Strict as Map
 import           Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import qualified Data.Set as Set
-import           Data.Aeson (Value, object, (.=), eitherDecode, FromJSON(..), encode)
+import           Data.Aeson (Value(..), object, (.=), eitherDecode, FromJSON(..), encode, fromJSON, Result(..))
 import           Data.Aeson.Types (parseMaybe, withObject, (.:), (.:?), (.!=))
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -35,7 +35,7 @@ import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
-import           Data.Time (Day, UTCTime, fromGregorian, getCurrentTime, toGregorian, utctDay, addUTCTime)
+import           Data.Time (Day, UTCTime (..), fromGregorian, getCurrentTime, toGregorian, utctDay, addUTCTime, secondsToDiffTime)
 import           Data.Time.Format (defaultTimeLocale, formatTime)
 import           Data.Time.Format.ISO8601 (iso8601ParseM)
 import           GHC.Generics (Generic)
@@ -61,22 +61,27 @@ import qualified TDF.API      as Api
 import           TDF.API.Marketplace (MarketplaceAPI, MarketplaceAdminAPI)
 import           TDF.API.Label (LabelAPI)
 import           TDF.API.Drive (DriveAPI, DriveUploadForm(..))
+import           TDF.Contracts.API (ContractsAPI)
 import           TDF.Config (AppConfig(..))
 import           TDF.DB
 import           TDF.Models
 import qualified TDF.Models as M
 import qualified TDF.ModelsExtra as ME
 import           TDF.DTO
+import qualified TDF.DTO as DTO
 import           TDF.Auth (AuthedUser(..), ModuleAccess(..), authContext, hasModuleAccess, moduleName, loadAuthedUser)
 import           TDF.Seed       (seedAll, seedInventoryAssets, seedMarketplaceListings)
 import           TDF.ServerAdmin (adminServer)
 import qualified TDF.LogBuffer as LogBuf
 import           TDF.Server.SocialEventsHandlers (socialEventsServer)
-import           TDF.ServerExtra (bandsServer, instagramServer, inventoryServer, loadBandForParty, paymentsServer, pipelinesServer, roomsServer, sessionsServer)
+import           TDF.ServerExtra (bandsServer, instagramServer, inventoryServer, loadBandForParty, paymentsServer, pipelinesServer, roomsPublicServer, roomsServer, serviceCatalogPublicServer, serviceCatalogServer, sessionsServer)
+import           TDF.Server.SocialSync (socialSyncServer)
 import qualified Data.Map.Strict            as Map
 import           TDF.ServerFuture (futureServer)
+import           TDF.ServerRadio (radioServer)
 import           TDF.ServerLiveSessions (liveSessionsServer)
 import           TDF.ServerFeedback (feedbackServer)
+import qualified TDF.Contracts.Server as Contracts
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Meta as Meta
@@ -107,7 +112,11 @@ import           TDF.Routes.Courses ( CoursesPublicAPI
                                     , SyllabusItem(..)
                                     , CourseRegistrationRequest(..)
                                     , CourseRegistrationResponse(..)
+                                    , CourseRegistrationStatusUpdate(..)
                                     , UTMTags(..)
+                                    , CourseUpsert(..)
+                                    , CourseSessionIn(..)
+                                    , CourseSyllabusIn(..)
                                     )
 import qualified TDF.Routes.Courses as Courses
 import           TDF.WhatsApp.Types ( WAMetaWebhook(..)
@@ -121,7 +130,6 @@ import           TDF.WhatsApp.Client (sendText)
 import           Network.HTTP.Client (Manager, RequestBody(..), Response, newManager, httpLbs, parseRequest, Request(..), responseBody, responseStatus)
 import           Network.HTTP.Client.TLS (tlsManagerSettings)
 import           Network.HTTP.Types.URI (urlEncode, renderQuery, renderSimpleQuery)
-import           System.Environment (lookupEnv)
 import           Network.HTTP.Types.Status (statusCode)
 import           System.Environment (lookupEnv)
 import qualified TDF.Trials.Models as Trials
@@ -165,8 +173,45 @@ data ParsedEvent = ParsedEvent
   , peRawPayload :: Maybe CMS.AesonValue
   }
 
+data GoogleIdTokenInfo = GoogleIdTokenInfo
+  { gitAud            :: Text
+  , gitEmail          :: Text
+  , gitEmailVerified  :: Bool
+  , gitName           :: Maybe Text
+  , gitPicture        :: Maybe Text
+  , gitSub            :: Text
+  , gitIss            :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON GoogleIdTokenInfo where
+  parseJSON = withObject "GoogleIdTokenInfo" $ \o -> do
+    gitAud <- o .: "aud"
+    gitEmail <- o .: "email"
+    gitSub <- o .: "sub"
+    gitName <- o .:? "name"
+    gitPicture <- o .:? "picture"
+    gitIss <- o .:? "iss"
+    gitEmailVerified <- parseEmailVerified o
+    pure GoogleIdTokenInfo{..}
+    where
+      parseEmailVerified obj = do
+        mVal <- obj .:? "email_verified"
+        pure $ case mVal of
+          Just (Bool b)   -> b
+          Just (String t) -> let lowered = T.toLower (T.strip t) in lowered == "true" || lowered == "1"
+          _               -> False
+
+data GoogleProfile = GoogleProfile
+  { gpEmail   :: Text
+  , gpName    :: Maybe Text
+  , gpPicture :: Maybe Text
+  } deriving (Show)
+
 runDB :: SqlPersistT IO a -> AppM a
-runDB action = do
+runDB = runDb
+
+runDb :: SqlPersistT IO a -> AppM a
+runDb action = do
   Env{..} <- ask
   liftIO $ runSqlPool action envPool
 
@@ -190,6 +235,7 @@ server =
        versionServer
   :<|> health
   :<|> login
+  :<|> googleLogin
   :<|> signup
   :<|> changePassword
   :<|> authV1Server
@@ -203,8 +249,13 @@ server =
   :<|> adsInquiryPublic
   :<|> cmsPublicServer
   :<|> marketplacePublicServer
-  :<|> labelPublicServer
+  :<|> contractsServer
   :<|> socialEventsServer
+  :<|> radioPresencePublicServer
+  :<|> roomsPublicServer
+  :<|> serviceCatalogPublicServer
+  :<|> listEngineersPublic
+  :<|> bookingPublicServer
   :<|> protectedServer
 
 authV1Server :: ServerT Api.AuthV1API AppM
@@ -268,10 +319,10 @@ seedHQ rawToken = do
 requireSeedToken :: Maybe Text -> AppM ()
 requireSeedToken rawToken = do
   Env{..} <- ask
-  let encode = BL.fromStrict . TE.encodeUtf8
-      missingHeader = throwError err401 { errBody = encode "Missing X-Seed-Token header" }
-      disabled = throwError err403 { errBody = encode "Seeding endpoint disabled" }
-      invalid = throwError err403 { errBody = encode "Invalid seed token" }
+  let encodeBody = BL.fromStrict . TE.encodeUtf8
+      missingHeader = throwError err401 { errBody = encodeBody "Missing X-Seed-Token header" }
+      disabled = throwError err403 { errBody = encodeBody "Seeding endpoint disabled" }
+      invalid = throwError err403 { errBody = encodeBody "Invalid seed token" }
   secret <- maybe disabled pure (seedTriggerToken envConfig)
   token  <- maybe missingHeader (pure . T.strip) rawToken
   when (T.null token) missingHeader
@@ -352,6 +403,62 @@ coursesPublicServer =
     courseMetadataH slug = loadCourseMetadata slug
     registrationH slug payload = createOrUpdateRegistration slug payload
 
+coursesAdminServer :: AuthedUser -> ServerT Courses.CoursesAdminAPI AppM
+coursesAdminServer user =
+       upsertCourseH
+  :<|> listRegistrationsH
+  :<|> getRegistrationH
+  :<|> updateStatusH
+  where
+    requireCourseAdmin = unless (hasRole Admin user || hasRole Webmaster user) $
+      throwError err403
+
+    upsertCourseH payload = do
+      requireCourseAdmin
+      saveCourse payload
+
+    listRegistrationsH mSlug mStatus mLimit = do
+      requireCourseAdmin
+      listCourseRegistrations mSlug mStatus mLimit
+
+    getRegistrationH slug regId = do
+      requireCourseAdmin
+      fetchCourseRegistration slug regId
+
+    updateStatusH slug regId statusPayload = do
+      requireCourseAdmin
+      updateCourseRegistrationStatus slug regId statusPayload
+
+radioPresencePublicServer :: Int64 -> AppM (Maybe RadioPresenceDTO)
+radioPresencePublicServer partyId = do
+  when (partyId <= 0) $ throwBadRequest "Invalid party id"
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    mRow <- selectFirst [PartyRadioPresencePartyId ==. toSqlKey partyId] []
+    pure (fmap presenceToDTO mRow)
+  where
+    presenceToDTO (Entity _ PartyRadioPresence{..}) =
+      RadioPresenceDTO
+        { rpPartyId     = fromIntegral (fromSqlKey partyRadioPresencePartyId)
+        , rpStreamUrl   = partyRadioPresenceStreamUrl
+        , rpStationName = partyRadioPresenceStationName
+        , rpStationId   = partyRadioPresenceStationId
+        , rpUpdatedAt   = partyRadioPresenceUpdatedAt
+        }
+
+listEngineersPublic :: AppM [PublicEngineerDTO]
+listEngineersPublic = do
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    engineerRoles <- selectList [PartyRoleRole ==. Engineer, PartyRoleActive ==. True] []
+    let partyIds = map (partyRolePartyId . entityVal) engineerRoles
+    parties <- selectList
+      [ PartyId <-. partyIds
+      , PartyPrimaryEmail !=. Nothing -- evita cuentas de sistema sin correo (p.ej. "Scheduling")
+      ]
+      [Asc PartyDisplayName]
+    pure [PublicEngineerDTO (fromSqlKey pid) (M.partyDisplayName p) | Entity pid p <- parties]
+
 whatsappWebhookServer :: ServerT WhatsAppWebhookAPI AppM
 whatsappWebhookServer =
        verifyHook
@@ -396,6 +503,10 @@ socialServer user =
        socialListFollowers user
   :<|> socialListFollowing user
   :<|> vcardExchange user
+  :<|> socialListFriends user
+  :<|> socialAddFriend user
+  :<|> socialRemoveFriend user
+  :<|> socialListSuggestedFriends user
 
 driveServer :: AuthedUser -> ServerT DriveAPI AppM
 driveServer _ mAccessToken DriveUploadForm{..} = do
@@ -410,10 +521,16 @@ driveServer _ mAccessToken DriveUploadForm{..} = do
   dto <- liftIO $ uploadToDrive manager accessToken duFile nameOverride folder
   pure dto
 
+countriesServer :: AppM [CountryDTO]
+countriesServer = do
+  countries <- runDB $ selectList [] [Asc CountryName]
+  pure (map toCountryDTO countries)
+
 protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
        partyServer user
   :<|> bookingServer user
+  :<|> serviceCatalogServer user
   :<|> packageServer user
   :<|> invoiceServer user
   :<|> receiptServer user
@@ -431,10 +548,15 @@ protectedServer user =
   :<|> paymentsServer user
   :<|> instagramServer
   :<|> socialServer user
+  :<|> socialSyncServer user
   :<|> adsAdminServer user
+  :<|> coursesAdminServer user
+  :<|> labelServer user
   :<|> calendarServer user
   :<|> cmsAdminServer user
   :<|> driveServer user
+  :<|> radioServer user
+  :<|> countriesServer
   :<|> futureServer
 
 calendarServer :: AuthedUser -> ServerT CalAPI.CalendarAPI AppM
@@ -459,7 +581,9 @@ calendarServer user =
             _ -> fmap T.strip (T.pack <$> mRedirectEnv)
       case (cid, secret, redirect) of
         (Just cid', Just sec', Just redir') -> pure (cid', sec', redir')
-        _ -> throwError err500 { errBody = "Faltan variables GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI" }
+        _ ->
+          throwError err503
+            { errBody = "Google Calendar no configurado (faltan GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI)." }
 
     calendarAuthUrlH :: AppM CalAPI.AuthUrlResponse
     calendarAuthUrlH = do
@@ -816,12 +940,63 @@ calendarServer user =
 
 productionCourseSlug :: Text
 productionCourseSlug = "produccion-musical-dic-2025"
-
 productionCoursePrice :: Double
 productionCoursePrice = 150
-
 productionCourseCapacity :: Int
-productionCourseCapacity = 10
+productionCourseCapacity = 16
+
+-- Backward-compatible helpers used by cron jobs
+buildLandingUrl :: AppConfig -> Text
+buildLandingUrl cfg = buildLandingUrlFor cfg productionCourseSlug
+
+courseMetadataFor :: AppConfig -> Maybe Text -> Text -> Maybe CourseMetadata
+courseMetadataFor cfg mWaContact slugVal =
+  if normalizeSlug slugVal /= productionCourseSlug
+    then Nothing
+    else
+      let whatsappUrl = buildWhatsappCtaFor mWaContact "Curso de Producción Musical" (buildLandingUrl cfg)
+          sessions =
+            [ CourseSession "Sábado 1 · Introducción" (fromGregorian 2025 12 13)
+            , CourseSession "Sábado 2 · Grabación" (fromGregorian 2025 12 20)
+            , CourseSession "Sábado 3 · Mezcla" (fromGregorian 2025 12 27)
+            , CourseSession "Sábado 4 · Masterización" (fromGregorian 2026 1 3)
+            ]
+          syllabus =
+            [ SyllabusItem "Introducción a la producción musical" ["Conceptos básicos", "Herramientas esenciales"]
+            , SyllabusItem "Grabación y captura de audio" ["Técnicas de grabación", "Configuración de micrófonos"]
+            , SyllabusItem "Mezcla y edición" ["Ecualización y compresión", "Balance y panoramización"]
+            , SyllabusItem "Masterización y publicación" ["Mastering", "Distribución digital"]
+            ]
+      in Just CourseMetadata
+        { slug = productionCourseSlug
+        , title = "Curso de Producción Musical"
+        , subtitle = "Presencial · 4 sábados · 16 horas"
+        , format = "Presencial"
+        , duration = "4 sábados · 16 horas"
+        , price = productionCoursePrice
+        , currency = "USD"
+        , capacity = productionCourseCapacity
+        , remaining = productionCourseCapacity
+        , sessionStartHour = 15
+        , sessionDurationHours = 4
+        , locationLabel = "TDF Records – Quito"
+        , locationMapUrl = "https://maps.app.goo.gl/6pVYZ2CsbvQfGhAz6"
+        , daws = ["Logic", "Luna"]
+        , includes =
+            [ "Acceso a grabaciones"
+            , "Certificado de participación"
+            , "Mentorías"
+            , "Grupo de WhatsApp"
+            , "Acceso a la plataforma de TDF Records"
+            ]
+        , instructorName = Just "Esteban Muñoz"
+        , instructorBio = Just "Productor e ingeniero residente en TDF Records, mentor del programa de producción."
+        , instructorAvatarUrl = Just "https://tdf-app.pages.dev/assets/esteban-munoz.jpg"
+        , sessions = sessions
+        , syllabus = syllabus
+        , whatsappCtaUrl = whatsappUrl
+        , landingUrl = buildLandingUrl cfg
+        }
 
 data WhatsAppEnv = WhatsAppEnv
   { waToken        :: Maybe Text
@@ -858,71 +1033,97 @@ loadCourseMetadata rawSlug = do
   Env{..} <- ask
   waEnv <- liftIO loadWhatsAppEnv
   let normalized = normalizeSlug rawSlug
-      meta = courseMetadataFor envConfig (waContactNumber waEnv) normalized
-  maybe (throwNotFound "Curso no encontrado") pure meta
+  mDbMeta <- loadCourseMetadataFromDB envConfig waEnv normalized
+  let fallbackMeta = courseMetadataFor envConfig (waContactNumber waEnv) normalized
+  baseMeta <- maybe (maybe (throwNotFound "Curso no encontrado") pure fallbackMeta) pure mDbMeta
+  let Courses.CourseMetadata{ Courses.capacity = baseCapacity } = baseMeta
+  countRegs <- runDB $
+    count
+      [ ME.CourseRegistrationCourseSlug ==. normalized
+      , ME.CourseRegistrationStatus !=. "cancelled"
+      ]
+  let remainingSeats = max 0 (baseCapacity - fromIntegral countRegs)
+  pure baseMeta { Courses.remaining = remainingSeats }
 
-courseMetadataFor :: AppConfig -> Maybe Text -> Text -> Maybe CourseMetadata
-courseMetadataFor cfg mWaContact slugVal
-  | slugVal /= productionCourseSlug = Nothing
-  | otherwise =
-      let landingUrlVal = buildLandingUrl cfg
-          whatsappUrl   = buildWhatsappCta mWaContact landingUrlVal
-      in Just CourseMetadata
-        { slug = productionCourseSlug
-        , title = "Curso de Producción Musical"
-        , subtitle = "Presencial · 4 sábados · 16 horas"
-        , format = "Presencial"
-        , duration = "4 sábados · 16 horas"
-        , price = productionCoursePrice
-        , currency = "USD"
-        , capacity = productionCourseCapacity
-        , locationLabel = "TDF Records – Quito"
-        , locationMapUrl = "https://maps.app.goo.gl/6pVYZ2CsbvQfGhAz6"
-        , daws = ["Logic", "Luna"]
-        , includes =
-            [ "Acceso a grabaciones"
-            , "Certificado de participación"
-            , "Mentorías"
-            , "Grupo de WhatsApp"
-            , "Acceso a la plataforma de TDF Records"
-            ]
-        , sessions =
-            [ CourseSession "Sábado 1 · Introducción" (fromGregorian 2025 12 13)
-            , CourseSession "Sábado 2 · Grabación" (fromGregorian 2025 12 20)
-            , CourseSession "Sábado 3 · Mezcla" (fromGregorian 2025 12 27)
-            , CourseSession "Sábado 4 · Masterización" (fromGregorian 2026 1 3)
-            ]
-        , syllabus =
-            [ SyllabusItem "Primer sábado – Introducción a la producción musical"
-                [ "Conceptos básicos"
-                , "Herramientas esenciales y software"
-                ]
-            , SyllabusItem "Segundo sábado – Grabación y captura de audio"
-                [ "Técnicas de grabación"
-                , "Configuración de micrófonos y espacios"
-                ]
-            , SyllabusItem "Tercer sábado – Mezcla y edición"
-                [ "Ecualización, compresión y efectos"
-                , "Técnicas de balance y panoramización"
-                ]
-            , SyllabusItem "Cuarto sábado – Masterización y publicación"
-                [ "Técnicas de masterización"
-                , "Preparación para distribución digital"
-                ]
-            ]
-        , whatsappCtaUrl = whatsappUrl
-        , landingUrl = landingUrlVal
-        }
+loadCourseMetadataFromDB :: AppConfig -> WhatsAppEnv -> Text -> AppM (Maybe CourseMetadata)
+loadCourseMetadataFromDB cfg waEnv slugVal = do
+  runDB $ do
+    mCourse <- getBy (Trials.UniqueCourseSlug slugVal)
+    case mCourse of
+      Nothing -> pure Nothing
+      Just (Entity cid course) -> do
+        sessions <- selectList
+          [Trials.CourseSessionModelCourseId ==. cid]
+          [Asc Trials.CourseSessionModelOrder, Asc Trials.CourseSessionModelDate]
+        syllabus <- selectList
+          [Trials.CourseSyllabusItemCourseId ==. cid]
+          [Asc Trials.CourseSyllabusItemOrder, Asc Trials.CourseSyllabusItemId]
+        pure $ Just (toCourseMetadata cfg waEnv course sessions syllabus)
 
-buildLandingUrl :: AppConfig -> Text
-buildLandingUrl cfg =
+toCourseMetadata
+  :: AppConfig
+  -> WhatsAppEnv
+  -> Trials.Course
+  -> [Entity Trials.CourseSessionModel]
+  -> [Entity Trials.CourseSyllabusItem]
+  -> CourseMetadata
+toCourseMetadata cfg waEnv course sessions syllabus =
+  let slugVal = Trials.courseSlug course
+      landingUrlVal =
+        fromMaybe (buildLandingUrlFor cfg slugVal) (cleanOptional (Trials.courseLandingUrl course))
+      whatsappUrl =
+        fromMaybe
+          (buildWhatsappCtaFor (waContactNumber waEnv) (Trials.courseTitle course) landingUrlVal)
+          (cleanOptional (Trials.courseWhatsappCtaUrl course))
+      dawsList = filter (not . T.null) (maybe [] (map T.strip) (Trials.courseDaws course))
+      includesList = filter (not . T.null) (maybe [] (map T.strip) (Trials.courseIncludes course))
+      instructorNameVal = cleanOptional (Trials.courseInstructorName course)
+      instructorBioVal = cleanOptional (Trials.courseInstructorBio course)
+      instructorAvatarVal = cleanOptional (Trials.courseInstructorAvatarUrl course)
+      toSession (Entity _ s) =
+        CourseSession
+          { label = Trials.courseSessionModelLabel s
+          , date = Trials.courseSessionModelDate s
+          }
+      toSyllabus (Entity _ s) =
+        SyllabusItem
+          { title = Trials.courseSyllabusItemTitle s
+          , topics = filter (not . T.null . T.strip) (Trials.courseSyllabusItemTopics s)
+          }
+  in CourseMetadata
+      { slug = slugVal
+      , title = Trials.courseTitle course
+      , subtitle = fromMaybe "" (Trials.courseSubtitle course)
+      , format = fromMaybe "" (Trials.courseFormat course)
+      , duration = fromMaybe "" (Trials.courseDuration course)
+      , price = fromIntegral (Trials.coursePriceCents course) / 100
+      , currency = Trials.courseCurrency course
+      , capacity = Trials.courseCapacity course
+      , remaining = Trials.courseCapacity course
+      , sessionStartHour = fromMaybe 0 (Trials.courseSessionStartHour course)
+      , sessionDurationHours = fromMaybe 0 (Trials.courseSessionDurationHours course)
+      , locationLabel = fromMaybe "" (Trials.courseLocationLabel course)
+      , locationMapUrl = fromMaybe "" (Trials.courseLocationMapUrl course)
+      , daws = dawsList
+      , includes = includesList
+      , instructorName = instructorNameVal
+      , instructorBio = instructorBioVal
+      , instructorAvatarUrl = instructorAvatarVal
+      , sessions = map toSession sessions
+      , syllabus = map toSyllabus syllabus
+      , whatsappCtaUrl = whatsappUrl
+      , landingUrl = landingUrlVal
+      }
+
+buildLandingUrlFor :: AppConfig -> Text -> Text
+buildLandingUrlFor cfg slugVal =
   let rawBase = fromMaybe "https://tdf-app.pages.dev" (appBaseUrl cfg)
       base = T.dropWhileEnd (== '/') rawBase
-  in base <> "/curso/" <> productionCourseSlug
+  in base <> "/curso/" <> slugVal
 
-buildWhatsappCta :: Maybe Text -> Text -> Text
-buildWhatsappCta mNumber landingUrl =
-  let msg = "INSCRIBIRME Curso Produccion Musical " <> landingUrl
+buildWhatsappCtaFor :: Maybe Text -> Text -> Text -> Text
+buildWhatsappCtaFor mNumber courseTitle landingUrl =
+  let msg = "INSCRIBIRME " <> courseTitle <> " " <> landingUrl
       encoded = TE.decodeUtf8 (urlEncode True (TE.encodeUtf8 msg))
       cleanNumber txt = T.filter isDigit txt
   in case mNumber >>= nonEmpty of
@@ -933,11 +1134,196 @@ buildWhatsappCta mNumber landingUrl =
       let trimmed = T.strip txt
       in if T.null trimmed then Nothing else Just trimmed
 
+saveCourse :: CourseUpsert -> AppM CourseMetadata
+saveCourse Courses.CourseUpsert{..} = do
+  now <- liftIO getCurrentTime
+  Env{..} <- ask
+  waEnv <- liftIO loadWhatsAppEnv
+  let slugVal = normalizeSlug slug
+      titleClean = T.strip title
+  when (T.null slugVal) $
+    throwBadRequest "slug requerido"
+  when (T.null titleClean) $
+    throwBadRequest "titulo requerido"
+  let
+      subtitleClean = cleanOptional subtitle
+      formatClean = cleanOptional format
+      durationClean = cleanOptional duration
+      currencyClean = let cur = T.strip currency in if T.null cur then "USD" else cur
+      capacityClean = max 0 capacity
+      priceCentsClean = max 0 priceCents
+      startHourClean = fmap (max 0) sessionStartHour
+      durationHoursClean = fmap (max 0) sessionDurationHours
+      locationLabelClean = cleanOptional locationLabel
+      locationMapUrlClean = cleanOptional locationMapUrl
+      landingUrlClean = cleanOptional landingUrl
+      landingResolved = fromMaybe (buildLandingUrlFor envConfig slugVal) landingUrlClean
+      whatsappClean = cleanOptional whatsappCtaUrl
+      whatsappResolved = fromMaybe (buildWhatsappCtaFor (waContactNumber waEnv) titleClean landingResolved) whatsappClean
+      dawsClean = normalizeList daws
+      includesClean = normalizeList includes
+      instructorNameClean = cleanOptional instructorName
+      instructorBioClean = cleanOptional instructorBio
+      instructorAvatarClean = cleanOptional instructorAvatarUrl
+      normalizeList xs =
+        case filter (not . T.null) (map T.strip xs) of
+          [] -> Nothing
+          ys -> Just ys
+      sanitizeTopics = filter (not . T.null . T.strip)
+      withOrder fallbackIdx mOrder = fromMaybe fallbackIdx mOrder
+  runDB $ do
+    mExisting <- getBy (Trials.UniqueCourseSlug slugVal)
+    courseId <- case mExisting of
+      Nothing -> insert Trials.Course
+        { Trials.courseSlug = slugVal
+        , Trials.courseTitle = titleClean
+        , Trials.courseSubtitle = subtitleClean
+        , Trials.courseFormat = formatClean
+        , Trials.courseDuration = durationClean
+        , Trials.coursePriceCents = priceCentsClean
+        , Trials.courseCurrency = currencyClean
+        , Trials.courseCapacity = capacityClean
+        , Trials.courseSessionStartHour = startHourClean
+        , Trials.courseSessionDurationHours = durationHoursClean
+        , Trials.courseLocationLabel = locationLabelClean
+        , Trials.courseLocationMapUrl = locationMapUrlClean
+        , Trials.courseWhatsappCtaUrl = Just whatsappResolved
+        , Trials.courseLandingUrl = Just landingResolved
+        , Trials.courseDaws = dawsClean
+        , Trials.courseIncludes = includesClean
+        , Trials.courseInstructorName = instructorNameClean
+        , Trials.courseInstructorBio = instructorBioClean
+        , Trials.courseInstructorAvatarUrl = instructorAvatarClean
+        , Trials.courseCreatedAt = now
+        , Trials.courseUpdatedAt = now
+        }
+      Just (Entity cid _) -> do
+        update cid
+          [ Trials.CourseSlug =. slugVal
+          , Trials.CourseTitle =. titleClean
+          , Trials.CourseSubtitle =. subtitleClean
+          , Trials.CourseFormat =. formatClean
+          , Trials.CourseDuration =. durationClean
+          , Trials.CoursePriceCents =. priceCentsClean
+          , Trials.CourseCurrency =. currencyClean
+          , Trials.CourseCapacity =. capacityClean
+          , Trials.CourseSessionStartHour =. startHourClean
+          , Trials.CourseSessionDurationHours =. durationHoursClean
+          , Trials.CourseLocationLabel =. locationLabelClean
+          , Trials.CourseLocationMapUrl =. locationMapUrlClean
+          , Trials.CourseWhatsappCtaUrl =. Just whatsappResolved
+          , Trials.CourseLandingUrl =. Just landingResolved
+          , Trials.CourseDaws =. dawsClean
+          , Trials.CourseIncludes =. includesClean
+          , Trials.CourseInstructorName =. instructorNameClean
+          , Trials.CourseInstructorBio =. instructorBioClean
+          , Trials.CourseInstructorAvatarUrl =. instructorAvatarClean
+          , Trials.CourseUpdatedAt =. now
+          ]
+        pure cid
+
+    deleteWhere [Trials.CourseSessionModelCourseId ==. courseId]
+    deleteWhere [Trials.CourseSyllabusItemCourseId ==. courseId]
+
+    let sessionPayload = zip [1..] sessions
+    for_ sessionPayload $ \(idx, CourseSessionIn{..}) -> do
+      let ordVal = withOrder idx order
+      insert_ Trials.CourseSessionModel
+        { Trials.courseSessionModelCourseId = courseId
+        , Trials.courseSessionModelLabel = T.strip label
+        , Trials.courseSessionModelDate = date
+        , Trials.courseSessionModelOrder = Just ordVal
+        }
+
+    let syllabusPayload = zip [1..] syllabus
+    for_ syllabusPayload $ \(idx, CourseSyllabusIn{..}) -> do
+      let ordVal = withOrder idx order
+      insert_ Trials.CourseSyllabusItem
+        { Trials.courseSyllabusItemCourseId = courseId
+        , Trials.courseSyllabusItemTitle = T.strip title
+        , Trials.courseSyllabusItemTopics = sanitizeTopics topics
+        , Trials.courseSyllabusItemOrder = Just ordVal
+        }
+  loadCourseMetadata slugVal
+
+listCourseRegistrations
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe Int
+  -> AppM [DTO.CourseRegistrationDTO]
+listCourseRegistrations mSlug mStatus mLimit = do
+  let filters = catMaybes
+        [ (\s -> ME.CourseRegistrationCourseSlug ==. normalizeSlug s) <$> cleanOptional mSlug
+        , (\s -> ME.CourseRegistrationStatus ==. T.toLower (T.strip s)) <$> cleanOptional mStatus
+        ]
+      capped = max 1 (min 500 (fromMaybe 200 mLimit))
+  rows <- runDB $ selectList filters [Desc ME.CourseRegistrationCreatedAt, LimitTo capped]
+  pure (map toCourseRegistrationDTO rows)
+
+fetchCourseRegistration :: Text -> Int64 -> AppM DTO.CourseRegistrationDTO
+fetchCourseRegistration rawSlug regId = do
+  let slugVal = normalizeSlug rawSlug
+      key = toSqlKey regId
+  mRow <- runDB $ getEntity key
+  case mRow of
+    Nothing -> throwNotFound "Registro no encontrado"
+    Just ent@(Entity _ reg)
+      | ME.courseRegistrationCourseSlug reg /= slugVal -> throwNotFound "Registro no encontrado"
+      | otherwise -> pure (toCourseRegistrationDTO ent)
+
+updateCourseRegistrationStatus
+  :: Text
+  -> Int64
+  -> CourseRegistrationStatusUpdate
+  -> AppM CourseRegistrationResponse
+updateCourseRegistrationStatus rawSlug regId CourseRegistrationStatusUpdate{..} = do
+  let slugVal = normalizeSlug rawSlug
+      newStatus = T.toLower (T.strip status)
+      key = toSqlKey regId
+  when (T.null newStatus) $
+    throwBadRequest "status requerido"
+  now <- liftIO getCurrentTime
+  mRow <- runDB $ getEntity key
+  case mRow of
+    Nothing -> throwNotFound "Registro no encontrado"
+    Just (Entity _ reg)
+      | ME.courseRegistrationCourseSlug reg /= slugVal -> throwNotFound "Registro no encontrado"
+      | otherwise -> do
+          runDB $ update key
+            [ ME.CourseRegistrationStatus =. newStatus
+            , ME.CourseRegistrationUpdatedAt =. now
+            ]
+          pure CourseRegistrationResponse { id = regId, status = newStatus }
+
+toCourseRegistrationDTO :: Entity ME.CourseRegistration -> DTO.CourseRegistrationDTO
+toCourseRegistrationDTO (Entity rid reg) =
+  DTO.CourseRegistrationDTO
+    { DTO.crId = fromSqlKey rid
+    , DTO.crCourseSlug = ME.courseRegistrationCourseSlug reg
+    , DTO.crFullName = ME.courseRegistrationFullName reg
+    , DTO.crEmail = ME.courseRegistrationEmail reg
+    , DTO.crPhoneE164 = ME.courseRegistrationPhoneE164 reg
+    , DTO.crSource = ME.courseRegistrationSource reg
+    , DTO.crStatus = ME.courseRegistrationStatus reg
+    , DTO.crHowHeard = ME.courseRegistrationHowHeard reg
+    , DTO.crUtmSource = ME.courseRegistrationUtmSource reg
+    , DTO.crUtmMedium = ME.courseRegistrationUtmMedium reg
+    , DTO.crUtmCampaign = ME.courseRegistrationUtmCampaign reg
+    , DTO.crUtmContent = ME.courseRegistrationUtmContent reg
+    , DTO.crCreatedAt = ME.courseRegistrationCreatedAt reg
+    , DTO.crUpdatedAt = ME.courseRegistrationUpdatedAt reg
+    }
+
 createOrUpdateRegistration :: Text -> CourseRegistrationRequest -> AppM CourseRegistrationResponse
 createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
-  meta <- loadCourseMetadata rawSlug
+  metaRaw <- loadCourseMetadata rawSlug
+  let Courses.CourseMetadata{ Courses.slug = metaSlug
+                            , Courses.sessions = metaSessions
+                            , Courses.title = metaTitle
+                            , Courses.landingUrl = metaLanding
+                            } = metaRaw
   now <- liftIO getCurrentTime
-  let slugVal = normalizeSlug (Courses.slug meta)
+  let slugVal = normalizeSlug metaSlug
       nameClean = cleanOptional fullName
       sourceClean = normalizeSource source
       howHeardClean = cleanOptional howHeard
@@ -971,7 +1357,7 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
         , ME.CourseRegistrationUtmContent =. (utmContentVal <|> ME.courseRegistrationUtmContent reg)
         , ME.CourseRegistrationUpdatedAt =. now
         ]
-      sendConfirmation meta nameClean normalizedEmail mNewUser
+      sendConfirmation metaTitle metaLanding metaSessions nameClean normalizedEmail mNewUser
       pure CourseRegistrationResponse { id = fromSqlKey regId, status = pendingStatus }
     _ -> do
       regId <- runDB $ insert ME.CourseRegistration
@@ -989,23 +1375,19 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
         , ME.courseRegistrationCreatedAt = now
         , ME.courseRegistrationUpdatedAt = now
         }
-      sendConfirmation meta nameClean normalizedEmail mNewUser
+      sendConfirmation metaTitle metaLanding metaSessions nameClean normalizedEmail mNewUser
       pure CourseRegistrationResponse { id = fromSqlKey regId, status = pendingStatus }
   where
-    sendConfirmation meta nameClean mEmail mNewUser =
+    sendConfirmation courseTitle landing metaSessions nameClean mEmail mNewUser =
       case mEmail of
         Nothing -> pure ()
         Just emailAddr -> do
           Env{..} <- ask
           let emailSvc = EmailSvc.mkEmailService envConfig
               displayName = fromMaybe "" nameClean
-              CourseMetadata{ title = courseTitle
-                            , sessions = metaSessions
-                            , landingUrl = landing
-                            } = meta
               datesSummary =
                 let fmt d = T.pack (formatTime defaultTimeLocale "%d %b %Y" d)
-                in T.intercalate ", " (map (fmt . Courses.date) metaSessions)
+                in T.intercalate ", " (map (\Courses.CourseSession{ Courses.date = d } -> fmt d) metaSessions)
           -- Check if email is configured before attempting to send
           case EmailSvc.esConfig emailSvc of
             Nothing -> liftIO $ do
@@ -1048,10 +1430,14 @@ extractTextMessages WAMetaWebhook{entry} =
 
 sendWhatsappReply :: WhatsAppEnv -> Text -> AppM ()
 sendWhatsappReply WhatsAppEnv{waToken = Just tok, waPhoneId = Just pid} phone = do
-  meta <- loadCourseMetadata productionCourseSlug
+  metaRaw <- loadCourseMetadata productionCourseSlug
+  let Courses.CourseMetadata{ Courses.title = metaTitle
+                            , Courses.capacity = metaCapacity
+                            , Courses.landingUrl = metaLanding
+                            } = metaRaw
   manager <- liftIO $ newManager tlsManagerSettings
-  let msg = "¡Gracias por tu interés en el Curso de Producción Musical! Aquí tienes el link de inscripción: "
-            <> landingUrl meta <> ". Cupos limitados (" <> T.pack (show productionCourseCapacity) <> ")."
+  let msg = "¡Gracias por tu interés en " <> metaTitle <> "! Aquí tienes el link de inscripción: "
+            <> metaLanding <> ". Cupos limitados (" <> T.pack (show metaCapacity) <> ")."
   _ <- liftIO $ sendText manager tok pid phone msg
   pure ()
 sendWhatsappReply _ _ = pure ()
@@ -1080,29 +1466,44 @@ normalizeUtm (Just UTMTags{..}) =
 -- Ensure a Party/UserCredential exists for a registration email. Returns (username, tempPassword) only when a new
 -- credential was created.
 ensureUserAccount :: Maybe Text -> Text -> AppM (Maybe (Text, Text))
-ensureUserAccount mName emailAddr = do
+ensureUserAccount mName emailAddr = snd <$> ensurePartyWithAccount mName emailAddr Nothing
+
+ensurePartyWithAccount :: Maybe Text -> Text -> Maybe Text -> AppM (Key Party, Maybe (Text, Text))
+ensurePartyWithAccount mName emailAddr mPhone = do
   now <- liftIO getCurrentTime
+  let display = case fmap T.strip mName of
+        Just nameTxt | not (T.null nameTxt) -> nameTxt
+        _                                   -> emailAddr
+      phoneClean = mPhone >>= normalizePhone
   partyId <- runDB $ do
     mParty <- selectFirst [PartyPrimaryEmail ==. Just emailAddr] []
     case mParty of
-      Just (Entity pid _) -> pure pid
-      Nothing -> do
-        let display = fromMaybe emailAddr mName
-        insert Party
-          { partyLegalName = Nothing
-          , partyDisplayName = display
-          , partyIsOrg = False
-          , partyTaxId = Nothing
-          , partyPrimaryEmail = Just emailAddr
-          , partyPrimaryPhone = Nothing
-          , partyWhatsapp = Nothing
-          , partyInstagram = Nothing
-          , partyEmergencyContact = Nothing
-          , partyNotes = Nothing
-          , partyCreatedAt = now
-          }
+      Just (Entity pid party) -> do
+        let updates = catMaybes
+              [ if not (T.null (M.partyDisplayName party)) || T.null display
+                  then Nothing
+                  else Just (PartyDisplayName =. display)
+              , case phoneClean of
+                  Just phone | isNothing (partyPrimaryPhone party) -> Just (PartyPrimaryPhone =. Just phone)
+                  _ -> Nothing
+              ]
+        unless (null updates) (update pid updates)
+        pure pid
+      Nothing -> insert Party
+        { partyLegalName = Nothing
+        , partyDisplayName = display
+        , partyIsOrg = False
+        , partyTaxId = Nothing
+        , partyPrimaryEmail = Just emailAddr
+        , partyPrimaryPhone = phoneClean
+        , partyWhatsapp = Nothing
+        , partyInstagram = Nothing
+        , partyEmergencyContact = Nothing
+        , partyNotes = Nothing
+        , partyCreatedAt = now
+        }
   mCred <- runDB $ selectFirst [UserCredentialPartyId ==. partyId] []
-  case mCred of
+  newCred <- case mCred of
     Just _ -> pure Nothing
     Nothing -> do
       username <- runDB (generateUniqueUsername (deriveBaseUsername mName emailAddr) partyId)
@@ -1120,6 +1521,7 @@ ensureUserAccount mName emailAddr = do
         _ <- upsert (PartyRole partyId Fan True) [PartyRoleActive =. True]
         pure ()
       pure (Just (username, tempPassword))
+  pure (partyId, newCred)
 
 deriveBaseUsername :: Maybe Text -> Text -> Text
 deriveBaseUsername mName emailAddr =
@@ -1189,6 +1591,111 @@ login LoginRequest{..} = do
     Right res -> pure res
   where
     throwAuthError msg = throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+
+googleLogin :: GoogleLoginRequest -> AppM LoginResponse
+googleLogin GoogleLoginRequest{..} = do
+  let tokenClean = T.strip idToken
+  when (T.null tokenClean) $ throwBadRequest "Google idToken is required"
+  Env pool cfg <- ask
+  let mClientId = googleClientId cfg
+  when (isNothing mClientId) $
+    throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 "Google Sign-In is not configured") }
+  manager <- liftIO $ newManager tlsManagerSettings
+  verification <- liftIO $ verifyGoogleIdToken manager tokenClean mClientId
+  case verification of
+    Left msg -> throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+    Right profile -> do
+      result <- liftIO $ flip runSqlPool pool (completeGoogleLogin profile)
+      case result of
+        Left err -> throwError err401 { errBody = BL.fromStrict (TE.encodeUtf8 err) }
+        Right resp -> pure resp
+
+verifyGoogleIdToken :: Manager -> Text -> Maybe Text -> IO (Either Text GoogleProfile)
+verifyGoogleIdToken manager rawToken mExpectedClientId = do
+  let encoded = BS8.unpack (urlEncode True (TE.encodeUtf8 rawToken))
+  req <- parseRequest ("https://oauth2.googleapis.com/tokeninfo?id_token=" <> encoded)
+  respResult <- try (httpLbs req manager)
+    :: IO (Either SomeException (Response BL.ByteString))
+  case respResult of
+    Left _ ->
+      pure (Left "No pudimos validar tu sesión con Google. Intenta nuevamente.")
+    Right resp ->
+      let status = statusCode (responseStatus resp)
+      in if status /= 200
+         then pure (Left "Tu sesión de Google es inválida o expiró.")
+         else case eitherDecode (responseBody resp) of
+           Left _ -> pure (Left "No pudimos validar tu sesión con Google.")
+           Right info -> pure (validate info)
+  where
+    validate info
+      | not (gitEmailVerified info) =
+          Left "Tu correo de Google debe estar verificado."
+      | Just expected <- mExpectedClientId
+      , gitAud info /= expected =
+          Left "El token de Google no coincide con el cliente configurado."
+      | not (issuerAllowed (gitIss info)) =
+          Left "El token de Google proviene de un emisor no permitido."
+      | otherwise =
+          let normalizedEmail = T.toLower (T.strip (gitEmail info))
+              normalizedName  = cleanOptional (gitName info)
+              profile = GoogleProfile
+                { gpEmail   = normalizedEmail
+                , gpName    = normalizedName <|> Just normalizedEmail
+                , gpPicture = gitPicture info
+                }
+          in Right profile
+
+issuerAllowed :: Maybe Text -> Bool
+issuerAllowed Nothing = True
+issuerAllowed (Just issRaw) =
+  let issuer = T.toLower (T.strip issRaw)
+  in "accounts.google.com" `T.isInfixOf` issuer
+
+completeGoogleLogin :: GoogleProfile -> SqlPersistT IO (Either Text LoginResponse)
+completeGoogleLogin GoogleProfile{..} = do
+  mExisting <- lookupByEmail gpEmail
+  case mExisting of
+    Just (Entity _ cred)
+      | not (userCredentialActive cred) ->
+          pure (Left "Cuenta deshabilitada. Contacta a soporte.")
+      | otherwise -> do
+          token <- createTokenWithLabel (userCredentialPartyId cred) (Just ("google-login:" <> gpEmail))
+          mUser <- loadAuthedUser token
+          case mUser of
+            Nothing   -> pure (Left "No pudimos cargar tu perfil.")
+            Just user -> pure (Right (toLoginResponse token user))
+    Nothing -> do
+      now <- liftIO getCurrentTime
+      let displayName = fromMaybe gpEmail (cleanOptional gpName)
+          partyRecord = Party
+            { partyLegalName        = Nothing
+            , partyDisplayName      = displayName
+            , partyIsOrg            = False
+            , partyTaxId            = Nothing
+            , partyPrimaryEmail     = Just gpEmail
+            , partyPrimaryPhone     = Nothing
+            , partyWhatsapp         = Nothing
+            , partyInstagram        = Nothing
+            , partyEmergencyContact = Nothing
+            , partyNotes            = Nothing
+            , partyCreatedAt        = now
+            }
+      pid <- insert partyRecord
+      applyRoles pid [Customer, Fan]
+      ensureFanProfileIfMissing pid displayName now
+      tempPassword <- liftIO generateTemporaryPassword
+      hashed <- liftIO (hashPasswordText tempPassword)
+      _ <- insert UserCredential
+        { userCredentialPartyId      = pid
+        , userCredentialUsername     = gpEmail
+        , userCredentialPasswordHash = hashed
+        , userCredentialActive       = True
+        }
+      token <- createTokenWithLabel pid (Just ("google-login:" <> gpEmail))
+      mUser <- loadAuthedUser token
+      case mUser of
+        Nothing   -> pure (Left "No pudimos cargar tu perfil.")
+        Just user -> pure (Right (toLoginResponse token user))
 
 runLogin :: Text -> Text -> SqlPersistT IO (Either Text LoginResponse)
 runLogin identifier pwd = do
@@ -1340,7 +1847,7 @@ signup SignupRequest
                 , userCredentialPasswordHash = hashed
                 , userCredentialActive       = True
                 }
-              ensureFanProfile pid partyLabel nowVal
+              ensureFanProfileIfMissing pid partyLabel nowVal
               token <- createSessionToken pid emailVal
               mUser <- loadAuthedUser token
               case mUser of
@@ -1397,21 +1904,6 @@ signup SignupRequest
                   let existingRoles = map (partyRoleRole . entityVal) activeRoles
                       label = M.partyDisplayName party
                   pure (Right (artistKey, label, existingRoles))
-
-    ensureFanProfile pid label nowVal = do
-      mProfile <- getBy (UniqueFanProfile pid)
-      case mProfile of
-        Just _ -> pure ()
-        Nothing -> insert_ FanProfile
-          { fanProfileFanPartyId     = pid
-          , fanProfileDisplayName    = Just label
-          , fanProfileAvatarUrl      = Nothing
-          , fanProfileFavoriteGenres = Nothing
-          , fanProfileBio            = Nothing
-          , fanProfileCity           = Nothing
-          , fanProfileCreatedAt      = nowVal
-          , fanProfileUpdatedAt      = Nothing
-          }
 
 data PasswordChangeError
   = PasswordInvalid
@@ -1689,6 +2181,99 @@ socialListFollowing user = do
     rows <- selectList [PartyFollowFollowerPartyId ==. auPartyId user] [Desc PartyFollowCreatedAt]
     pure (map partyFollowEntityToDTO rows)
 
+socialListFriends :: AuthedUser -> AppM [PartyFollowDTO]
+socialListFriends user = do
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    following <- selectList [PartyFollowFollowerPartyId ==. auPartyId user] []
+    let otherIds = map (partyFollowFollowingPartyId . entityVal) following
+    reverseRows <- if null otherIds
+      then pure []
+      else selectList
+             [ PartyFollowFollowerPartyId <-. otherIds
+             , PartyFollowFollowingPartyId ==. auPartyId user
+             ] []
+    let mutualIds = Set.fromList (map (partyFollowFollowerPartyId . entityVal) reverseRows)
+        mutual = filter (\(Entity _ pf) -> partyFollowFollowingPartyId pf `Set.member` mutualIds) following
+    pure (map partyFollowEntityToDTO mutual)
+
+-- Suggest friends-of-friends that are not already connected to the user.
+socialListSuggestedFriends :: AuthedUser -> AppM [SuggestedFriendDTO]
+socialListSuggestedFriends user = do
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    following <- selectList [PartyFollowFollowerPartyId ==. auPartyId user] []
+    followers <- selectList [PartyFollowFollowingPartyId ==. auPartyId user] []
+    let followingIds = map (partyFollowFollowingPartyId . entityVal) following
+        followerIds  = map (partyFollowFollowerPartyId . entityVal) followers
+        directSet    = Set.fromList (auPartyId user : followingIds ++ followerIds)
+        seeds        = Set.toList (Set.delete (auPartyId user) directSet)
+    if null seeds
+      then pure []
+      else do
+        secondDegree <- selectList [PartyFollowFollowerPartyId <-. seeds] []
+        let counts = foldl' (\acc (Entity _ pf) ->
+                              let candidate = partyFollowFollowingPartyId pf
+                              in if Set.member candidate directSet
+                                   then acc
+                                   else Map.insertWith (+) candidate 1 acc
+                            ) Map.empty secondDegree
+            ordered = take 20 $ sortOn (Down . snd) (Map.toList counts)
+        pure
+          [ SuggestedFriendDTO
+              { sfPartyId = fromSqlKey candidateId
+              , sfMutualCount = mutuals
+              }
+          | (candidateId, mutuals) <- ordered
+          ]
+
+socialAddFriend :: AuthedUser -> Int64 -> AppM [PartyFollowDTO]
+socialAddFriend user targetId = do
+  when (targetId <= 0) $ throwBadRequest "Invalid party id"
+  let followerKey = auPartyId user
+      targetKey   = toSqlKey targetId :: PartyId
+  when (followerKey == targetKey) $
+    throwBadRequest "No puedes agregarte como amigo"
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    mTarget <- get targetKey
+    case mTarget of
+      Nothing -> pure []
+      Just _ -> do
+        now <- liftIO getCurrentTime
+        _ <- upsert PartyFollow
+          { partyFollowFollowerPartyId  = followerKey
+          , partyFollowFollowingPartyId = targetKey
+          , partyFollowViaNfc           = False
+          , partyFollowCreatedAt        = now
+          }
+          [ PartyFollowViaNfc =. False ]
+        _ <- upsert PartyFollow
+          { partyFollowFollowerPartyId  = targetKey
+          , partyFollowFollowingPartyId = followerKey
+          , partyFollowViaNfc           = False
+          , partyFollowCreatedAt        = now
+          }
+          [ PartyFollowViaNfc =. False ]
+        rows <- selectList
+          [ PartyFollowFollowerPartyId ==. followerKey
+          , PartyFollowFollowingPartyId ==. targetKey
+          ] []
+        pure (map partyFollowEntityToDTO rows)
+
+socialRemoveFriend :: AuthedUser -> Int64 -> AppM NoContent
+socialRemoveFriend user targetId = do
+  when (targetId <= 0) $ throwBadRequest "Invalid party id"
+  let followerKey = auPartyId user
+      targetKey   = toSqlKey targetId :: PartyId
+  when (followerKey == targetKey) $
+    throwBadRequest "No puedes eliminarte como amigo"
+  Env pool _ <- ask
+  liftIO $ flip runSqlPool pool $ do
+    deleteBy (UniquePartyFollow followerKey targetKey)
+    deleteBy (UniquePartyFollow targetKey followerKey)
+  pure NoContent
+
 vcardExchange :: AuthedUser -> VCardExchangeRequest -> AppM [PartyFollowDTO]
 vcardExchange user VCardExchangeRequest{..} = do
   when (vcerPartyId <= 0) $ throwBadRequest "Invalid party id"
@@ -1844,6 +2429,27 @@ toLoginResponse token AuthedUser{..} = LoginResponse
   , roles   = auRoles
   , modules = map moduleName (Set.toList auModules)
   }
+
+ensureFanProfileIfMissing :: PartyId -> Text -> UTCTime -> SqlPersistT IO ()
+ensureFanProfileIfMissing pid label nowVal = do
+  mProfile <- getBy (UniqueFanProfile pid)
+  case mProfile of
+    Just _ -> pure ()
+    Nothing -> insert_ FanProfile
+      { fanProfileFanPartyId     = pid
+      , fanProfileDisplayName    = Just label
+      , fanProfileAvatarUrl      = Nothing
+      , fanProfileFavoriteGenres = Nothing
+      , fanProfileBio            = Nothing
+      , fanProfileCity           = Nothing
+      , fanProfileCreatedAt      = nowVal
+      , fanProfileUpdatedAt      = Nothing
+      }
+
+generateTemporaryPassword :: IO Text
+generateTemporaryPassword = do
+  randomUuid <- nextRandom
+  pure ("google-" <> toText randomUuid)
 
 createSessionToken :: PartyId -> Text -> SqlPersistT IO Text
 createSessionToken pid uname =
@@ -2148,6 +2754,9 @@ addRole user pidI (RolePayload roleTxt) = do
         Nothing -> ReadOnly
 
 -- Bookings
+bookingPublicServer :: ServerT Api.BookingPublicAPI AppM
+bookingPublicServer = createPublicBooking
+
 bookingServer :: AuthedUser -> ServerT BookingAPI AppM
 bookingServer user =
        listBookings user
@@ -2158,9 +2767,139 @@ listBookings :: AuthedUser -> AppM [BookingDTO]
 listBookings user = do
   requireModule user ModuleScheduling
   Env pool _ <- ask
-  liftIO $ flip runSqlPool pool $ do
-    bookings <- selectList [] [Desc BookingId]
-    buildBookingDTOs bookings
+  liftIO $ do
+    dbBookings <- flip runSqlPool pool $ do
+      bookings <- selectList [] [Desc BookingId]
+      buildBookingDTOs bookings
+    courseSessions <- flip runSqlPool pool courseCalendarBookings
+    pure (dbBookings ++ courseSessions)
+
+courseCalendarBookings :: SqlPersistT IO [BookingDTO]
+courseCalendarBookings = do
+  courses <- selectList [] []
+  fmap concat $ forM courses $ \(Entity courseId course) -> do
+    regCount <- count
+      [ ME.CourseRegistrationCourseSlug ==. Trials.courseSlug course
+      , ME.CourseRegistrationStatus !=. "cancelled"
+      ]
+    sessions <- selectList [Trials.CourseSessionModelCourseId ==. courseId] [Asc Trials.CourseSessionModelOrder, Asc Trials.CourseSessionModelDate]
+    let metaTitle = Trials.courseTitle course
+        slugVal = Trials.courseSlug course
+        capacityVal = Trials.courseCapacity course
+        remainingVal = max 0 (capacityVal - fromIntegral regCount)
+        startHour = fromMaybe 0 (Trials.courseSessionStartHour course)
+        durationHours = fromMaybe 0 (Trials.courseSessionDurationHours course)
+        coursePriceD = fromIntegral (Trials.coursePriceCents course) / 100
+        mkBooking idx (Entity _ s) =
+          let dateVal = Trials.courseSessionModelDate s
+              startUtc = UTCTime dateVal (secondsToDiffTime (fromIntegral startHour * 60 * 60))
+              endUtc   = addUTCTime (fromIntegral durationHours * 60 * 60) startUtc
+          in BookingDTO
+               { bookingId          = negate (fromIntegral (1000 + idx))
+               , title              = "Curso: " <> Trials.courseSessionModelLabel s
+               , startsAt           = startUtc
+               , endsAt             = endUtc
+               , status             = "course"
+               , notes              = Just ("Curso: " <> metaTitle)
+               , partyId            = Nothing
+               , engineerPartyId    = Nothing
+               , engineerName       = Nothing
+               , serviceType        = Just "Curso"
+               , serviceOrderId     = Nothing
+               , serviceOrderTitle  = Nothing
+               , customerName       = Nothing
+               , partyDisplayName   = Nothing
+               , resources          = []
+               , courseSlug         = Just slugVal
+               , coursePrice        = Just coursePriceD
+               , courseCapacity     = Just capacityVal
+               , courseRemaining    = Just remainingVal
+               , courseLocation     = Trials.courseLocationLabel course
+               }
+    pure (zipWith mkBooking [1..] sessions)
+
+createPublicBooking :: PublicBookingReq -> AppM BookingDTO
+createPublicBooking PublicBookingReq{..} = do
+  when (T.null (T.strip pbFullName)) (throwBadRequest "nombre requerido")
+  when (T.null (T.strip pbEmail)) (throwBadRequest "email requerido")
+  let serviceTypeClean = normalizeOptionalInput (Just pbServiceType)
+  when (isNothing serviceTypeClean) (throwBadRequest "serviceType requerido")
+  let engineerIdClean  = pbEngineerPartyId >>= (\i -> if i > 0 then Just i else Nothing)
+      engineerNameClean = normalizeOptionalInput pbEngineerName
+  case validateEngineer serviceTypeClean engineerIdClean engineerNameClean of
+    Left msg -> throwBadRequest msg
+    Right () -> pure ()
+  let durationMins = max 30 (fromMaybe 60 pbDurationMinutes)
+      endsAt       = addUTCTime (fromIntegral durationMins * 60) pbStartsAt
+      notesClean   = normalizeOptionalInput pbNotes
+  (partyId, _) <- ensurePartyWithAccount (Just (T.strip pbFullName)) (T.strip pbEmail) pbPhone
+  Env pool _ <- ask
+  resourceKeys <- liftIO $ flip runSqlPool pool $
+    resolveResourcesForBooking serviceTypeClean (fromMaybe [] pbResourceIds) pbStartsAt endsAt
+  mEngineerParty <- case engineerIdClean of
+    Nothing -> pure Nothing
+    Just pid -> liftIO $ flip runSqlPool pool $ get (toSqlKey (fromIntegral pid) :: Key Party)
+  let resolvedEngineerName =
+        engineerNameClean
+          <|> (M.partyDisplayName <$> mEngineerParty)
+  now <- liftIO getCurrentTime
+  let bookingRecord = Booking
+        { bookingTitle          = buildTitle serviceTypeClean pbFullName
+        , bookingServiceOrderId = Nothing
+        , bookingPartyId        = Just partyId
+        , bookingServiceType    = serviceTypeClean
+        , bookingEngineerPartyId = engineerIdClean >>= (Just . toSqlKey . fromIntegral)
+        , bookingEngineerName    = resolvedEngineerName
+        , bookingStartsAt       = pbStartsAt
+        , bookingEndsAt         = endsAt
+        , bookingStatus         = Tentative
+        , bookingCreatedBy      = Nothing
+        , bookingNotes          = notesClean
+        , bookingCreatedAt      = now
+        }
+  dto <- liftIO $ flip runSqlPool pool $ do
+    bookingId <- insert bookingRecord
+    let uniqueResources = nub resourceKeys
+    forM_ (zip [0 :: Int ..] uniqueResources) $ \(idx, key) ->
+      insert_ BookingResource
+        { bookingResourceBookingId = bookingId
+        , bookingResourceResourceId = key
+        , bookingResourceRole = if idx == 0 then "primary" else "secondary"
+        }
+    created <- getJustEntity bookingId
+    dtos <- buildBookingDTOs [created]
+    let fallback = BookingDTO
+          { bookingId          = fromSqlKey bookingId
+          , title              = bookingTitle bookingRecord
+          , startsAt           = bookingStartsAt bookingRecord
+          , endsAt             = bookingEndsAt bookingRecord
+          , status             = T.pack (show (bookingStatus bookingRecord))
+          , notes              = bookingNotes bookingRecord
+          , partyId            = Just (fromSqlKey partyId)
+          , engineerPartyId    = fmap fromSqlKey (bookingEngineerPartyId bookingRecord)
+          , engineerName       = bookingEngineerName bookingRecord
+          , serviceType        = bookingServiceType bookingRecord
+          , serviceOrderId     = Nothing
+          , serviceOrderTitle  = Nothing
+          , customerName       = Just pbFullName
+          , partyDisplayName   = Just pbFullName
+          , resources          = []
+          , courseSlug         = Nothing
+          , coursePrice        = Nothing
+          , courseCapacity     = Nothing
+          , courseRemaining    = Nothing
+          , courseLocation     = Nothing
+          }
+    pure (headDef fallback dtos)
+  notifyEngineerIfNeeded dto
+  pure dto
+  where
+    headDef defVal xs =
+      case xs of
+        (y:_) -> y
+        []    -> defVal
+    buildTitle (Just svc) nameTxt = svc <> " · " <> nameTxt
+    buildTitle Nothing nameTxt    = "Reserva · " <> nameTxt
 
 createBooking :: AuthedUser -> CreateBookingReq -> AppM BookingDTO
 createBooking user req = do
@@ -2170,17 +2909,30 @@ createBooking user req = do
 
   let status'          = parseStatusWithDefault Confirmed (cbStatus req)
       serviceTypeClean = normalizeOptionalInput (cbServiceType req)
+      engineerIdClean  = cbEngineerPartyId req >>= (\i -> if i > 0 then Just i else Nothing)
+      engineerNameClean = normalizeOptionalInput (cbEngineerName req)
       partyKey         = fmap (toSqlKey . fromIntegral) (cbPartyId req)
       requestedRooms   = fromMaybe [] (cbResourceIds req)
+  case validateEngineer serviceTypeClean engineerIdClean engineerNameClean of
+    Left msg -> throwBadRequest msg
+    Right () -> pure ()
 
   resourceKeys <- liftIO $ flip runSqlPool pool $
     resolveResourcesForBooking serviceTypeClean requestedRooms (cbStartsAt req) (cbEndsAt req)
+  mEngineerParty <- case engineerIdClean of
+    Nothing -> pure Nothing
+    Just pid -> liftIO $ flip runSqlPool pool $ get (toSqlKey (fromIntegral pid) :: Key Party)
+  let resolvedEngineerName =
+        engineerNameClean
+          <|> (M.partyDisplayName <$> mEngineerParty)
 
   let bookingRecord = Booking
         { bookingTitle          = cbTitle req
         , bookingServiceOrderId = Nothing
         , bookingPartyId        = partyKey
         , bookingServiceType    = serviceTypeClean
+        , bookingEngineerPartyId = engineerIdClean >>= (Just . toSqlKey . fromIntegral)
+        , bookingEngineerName    = resolvedEngineerName
         , bookingStartsAt       = cbStartsAt req
         , bookingEndsAt         = cbEndsAt req
         , bookingStatus         = status'
@@ -2208,14 +2960,22 @@ createBooking user req = do
           , status      = T.pack (show (bookingStatus bookingRecord))
           , notes       = bookingNotes bookingRecord
           , partyId     = fmap fromSqlKey partyKey
+          , engineerPartyId = fmap fromSqlKey (bookingEngineerPartyId bookingRecord)
+          , engineerName = bookingEngineerName bookingRecord
           , serviceType = bookingServiceType bookingRecord
           , serviceOrderId = Nothing
           , serviceOrderTitle = Nothing
           , customerName = Nothing
           , partyDisplayName = Nothing
           , resources   = []
+          , courseSlug = Nothing
+          , coursePrice = Nothing
+          , courseCapacity = Nothing
+          , courseRemaining = Nothing
+          , courseLocation = Nothing
           }
     pure (headDef fallback dtos)
+  notifyEngineerIfNeeded dto
   pure dto
   where
     headDef defVal xs =
@@ -2231,7 +2991,7 @@ updateBooking user bookingIdI req = do
   result <- liftIO $ flip runSqlPool pool $ do
     mBooking <- getEntity bookingId
     case mBooking of
-      Nothing -> pure Nothing
+      Nothing -> pure (Left err404)
       Just (Entity _ current) -> do
         let applyText fallback Nothing = fallback
             applyText fallback (Just val) =
@@ -2246,11 +3006,19 @@ updateBooking user bookingIdI req = do
               , bookingStatus      = maybe (bookingStatus current) (parseStatusWithDefault (bookingStatus current)) (ubStatus req)
               , bookingStartsAt    = fromMaybe (bookingStartsAt current) (ubStartsAt req)
               , bookingEndsAt      = fromMaybe (bookingEndsAt current) (ubEndsAt req)
+              , bookingEngineerPartyId = maybe (bookingEngineerPartyId current) (Just . toSqlKey . fromIntegral) (ubEngineerPartyId req)
+              , bookingEngineerName    = maybe (bookingEngineerName current) (normalizeOptionalInput . Just) (ubEngineerName req)
               }
-        replace bookingId updated
-        dtos <- buildBookingDTOs [Entity bookingId updated]
-        pure (listToMaybe dtos)
-  maybe (throwError err404) pure result
+            missingEngineer = requiresEngineer (bookingServiceType updated)
+              && isNothing (bookingEngineerPartyId updated)
+              && isNothing (bookingEngineerName updated)
+        case validateEngineer (bookingServiceType updated) (fmap fromSqlKey (bookingEngineerPartyId updated)) (bookingEngineerName updated) of
+          Left msg -> pure (Left err400 { errBody = BL8.fromStrict (TE.encodeUtf8 msg) })
+          Right () -> do
+            replace bookingId updated
+            dtos <- buildBookingDTOs [Entity bookingId updated]
+            pure (maybe (Left err500) Right (listToMaybe dtos))
+  either throwError pure result
 
 
 loadBookingResourceMap :: [Key Booking] -> SqlPersistT IO (Map.Map (Key Booking) [BookingResourceDTO])
@@ -2306,12 +3074,19 @@ buildBookingDTOs bookings = do
         , status      = T.pack (show (bookingStatus b))
         , notes       = bookingNotes b
         , partyId     = fmap fromSqlKey (bookingPartyId b)
+        , engineerPartyId = fmap fromSqlKey (bookingEngineerPartyId b)
+        , engineerName    = bookingEngineerName b
         , serviceType = bookingServiceType b
         , serviceOrderId    = fmap fromSqlKey (bookingServiceOrderId b)
         , serviceOrderTitle = serviceOrderTitleText <|> fallbackOrderTitle
         , customerName      = customerNameText <|> fallbackCustomer
         , partyDisplayName  = partyDisplay
         , resources   = resources
+        , courseSlug        = Nothing
+        , coursePrice       = Nothing
+        , courseCapacity    = Nothing
+        , courseRemaining   = Nothing
+        , courseLocation    = Nothing
         }
 
 loadPartyDisplayMap :: [Key Party] -> SqlPersistT IO (Map.Map (Key Party) Text)
@@ -2342,6 +3117,47 @@ parseStatusWithDefault fallback raw =
        Just s  -> s
        Nothing -> fallback
 
+requiresEngineer :: Maybe Text -> Bool
+requiresEngineer Nothing = False
+requiresEngineer (Just svc) =
+  let lowered = T.toLower (T.strip svc)
+  in any (`T.isInfixOf` lowered) ["graba", "mezcl", "master"]
+
+validateEngineer :: Maybe Text -> Maybe Int64 -> Maybe Text -> Either Text ()
+validateEngineer svc mEngineerId mEngineerName
+  | requiresEngineer svc && isNothing mEngineerId && maybe True T.null (fmap T.strip mEngineerName) =
+      Left "Selecciona un ingeniero para grabación/mezcla/mastering"
+  | otherwise = Right ()
+
+notifyEngineerIfNeeded :: BookingDTO -> AppM ()
+notifyEngineerIfNeeded BookingDTO{engineerPartyId = Nothing, engineerName = Nothing} = pure ()
+notifyEngineerIfNeeded booking = do
+  Env pool cfg <- ask
+  mEngineer <- liftIO $ flip runSqlPool pool $ case engineerPartyId booking of
+    Just pid -> get (toSqlKey (fromIntegral pid) :: Key Party)
+    Nothing  -> pure Nothing
+  let displayName = DTO.engineerName booking
+        <|> (M.partyDisplayName <$> mEngineer)
+      emailAddr = mEngineer >>= partyPrimaryEmail
+  case emailAddr of
+    Nothing -> pure ()
+    Just engineerEmail -> do
+      let name = fromMaybe engineerEmail displayName
+          emailSvc = EmailSvc.mkEmailService cfg
+          subjectSvc = fromMaybe "Reserva" (DTO.serviceType booking)
+          startTxt = T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M UTC" (DTO.startsAt booking))
+          customer = DTO.customerName booking <|> DTO.partyDisplayName booking
+          noteText = case booking of DTO.BookingDTO{DTO.notes = ns} -> ns
+      liftIO $
+        EmailSvc.sendEngineerBooking
+          emailSvc
+          name
+          engineerEmail
+          subjectSvc
+          startTxt
+          customer
+          noteText
+
 resolveResourcesForBooking :: Maybe Text -> [Text] -> UTCTime -> UTCTime -> SqlPersistT IO [Key Resource]
 resolveResourcesForBooking service requested start end = do
   explicit <- resolveRequestedResources requested
@@ -2350,17 +3166,18 @@ resolveResourcesForBooking service requested start end = do
     else defaultResourcesForService service start end
 
 resolveRequestedResources :: [Text] -> SqlPersistT IO [Key Resource]
-resolveRequestedResources ids = fmap catMaybes $ mapM lookupResource ids
-  where
-    lookupResource :: Text -> SqlPersistT IO (Maybe (Key Resource))
-    lookupResource rid =
-      case fromPathPiece rid of
-        Nothing  -> pure Nothing
-        Just key -> do
-          mRes <- get key
-          case mRes of
-            Just res | resourceResourceType res == Room && resourceActive res -> pure (Just key)
-            _        -> pure Nothing
+resolveRequestedResources rawIds = do
+  rooms <- selectList [ResourceResourceType ==. Room, ResourceActive ==. True] [Asc ResourceId]
+  let indexById = Map.fromList $ map (\(Entity k room) -> (k, room)) rooms
+      indexByName = Map.fromList $ map (\(Entity k room) -> (T.toLower (resourceName room), k)) rooms
+      resolveOne rid =
+        case fromPathPiece rid of
+          Just key | Map.member key indexById -> Just key
+          _ ->
+            let normalized = T.toLower (T.strip rid)
+            in Map.lookup normalized indexByName
+      dedupKeys = Set.toList . Set.fromList
+  pure $ dedupKeys (mapMaybe resolveOne rawIds)
 
 defaultResourcesForService :: Maybe Text -> UTCTime -> UTCTime -> SqlPersistT IO [Key Resource]
 defaultResourcesForService Nothing _ _ = pure []
@@ -2369,21 +3186,32 @@ defaultResourcesForService (Just service) start end = do
   rooms <- selectList [ResourceResourceType ==. Room, ResourceActive ==. True] [Asc ResourceId]
   let findByName name = find (\(Entity _ room) -> T.toLower (resourceName room) == T.toLower name) rooms
       boothPredicate (Entity _ room) = "booth" `T.isInfixOf` T.toLower (resourceName room)
-  case normalized of
-    "band recording" ->
+      controlRoom = findByName "Control Room"
+      liveRoom    = findByName "Live Room"
+      vocalBooth  =
+        findByName "Vocal Booth"
+          <|> find (\(Entity _ room) ->
+                let lower = T.toLower (resourceName room)
+                in "vocal" `T.isInfixOf` lower || "booth" `T.isInfixOf` lower) rooms
+      djBooths =
+        let candidateNames = ["Booth 1","Booth 2","Booth A","Booth B","DJ Booth 1","DJ Booth 2","DJ Booth"]
+            nameMatches = mapMaybe findByName candidateNames
+            boothMatches = filter boothPredicate rooms
+        in dedupeEntities (nameMatches ++ boothMatches)
+  case () of
+    _ | normalized `elem` ["band recording", "grabacion banda", "grabación banda"] ->
       pure $ map entityKey $ catMaybes (map findByName ["Live Room", "Control Room"])
-    "vocal recording" ->
-      let vocal = findByName "Vocal Booth" <|> find (\(Entity _ room) -> let lower = T.toLower (resourceName room) in "vocal" `T.isInfixOf` lower || "booth" `T.isInfixOf` lower) rooms
-          control = findByName "Control Room"
-      in pure $ map entityKey $ catMaybes [vocal, control]
-    "band rehearsal" ->
+    _ | normalized `elem` ["vocal recording", "grabacion vocal", "grabación vocal"] ->
+      pure $ map entityKey $ catMaybes [vocalBooth, controlRoom]
+    _ | "mix" `T.isInfixOf` normalized || "mezcla" `T.isInfixOf` normalized ->
+      pure $ maybe [] (pure . entityKey) controlRoom
+    _ | "master" `T.isInfixOf` normalized ->
+      pure $ maybe [] (pure . entityKey) controlRoom
+    _ | normalized `elem` ["band rehearsal", "ensayo banda"] ->
       pure $ maybe [] (pure . entityKey) (findByName "Live Room")
-    "dj booth rental" -> do
-      let candidateNames = ["Booth 1","Booth 2","Booth A","Booth B","DJ Booth 1","DJ Booth 2"]
-          nameMatches = mapMaybe findByName candidateNames
-          boothMatches = filter boothPredicate rooms
-          candidates = dedupeEntities (nameMatches ++ boothMatches)
-      pickBooth candidates
+    _ | normalized `elem` ["dj booth rental", "practica de dj", "práctica de dj", "dj practice"] ||
+        "dj" `T.isInfixOf` normalized -> do
+      pickBooth djBooths
     _ -> pure []
   where
     pickBooth [] = pure []
@@ -3126,8 +3954,17 @@ marketplaceAdminServer user =
        listMarketplaceOrders user
   :<|> updateMarketplaceOrder user
 
-labelPublicServer :: ServerT LabelAPI AppM
-labelPublicServer = listLabelTracks :<|> createLabelTrack :<|> updateLabelTrack :<|> deleteLabelTrack
+labelServer :: AuthedUser -> ServerT LabelAPI AppM
+labelServer user =
+       listLabelTracks user
+  :<|> createLabelTrack user
+  :<|> updateLabelTrack user
+  :<|> deleteLabelTrack user
+
+contractsServer :: ServerT ContractsAPI AppM
+contractsServer = hoistServer contractsProxy lift Contracts.server
+  where
+    contractsProxy = Proxy :: Proxy ContractsAPI
 
 listMarketplace :: AppM [MarketplaceItemDTO]
 listMarketplace = do
@@ -4045,75 +4882,116 @@ assetConditionLabel cond =
     ME.Fair -> "Regular"
     ME.Poor -> "Usado"
 
-listLabelTracks :: AppM [LabelTrackDTO]
-listLabelTracks = do
-  Env{..} <- ask
-  rows <- liftIO $ flip runSqlPool envPool $ selectList [] [Desc ME.LabelTrackCreatedAt]
-  pure (map toLabelTrackDTO rows)
+data TrackScope = TrackScope
+  { tsOwner    :: Maybe PartyId
+  , tsAllowAny :: Bool
+  }
 
-createLabelTrack :: LabelTrackCreate -> AppM LabelTrackDTO
-createLabelTrack LabelTrackCreate{..} = do
+resolveTrackScope :: AuthedUser -> Maybe Int64 -> AppM TrackScope
+resolveTrackScope user mOwnerId = do
+  let isAdmin  = hasRole Admin user
+      isArtist = hasRole Artist user || hasRole Artista user
+  unless (isAdmin || isArtist) $
+    throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "Solo artistas o admins pueden gestionar operaciones.") }
+  let owner = if isAdmin then fmap toSqlKey mOwnerId else Just (auPartyId user)
+  pure TrackScope { tsOwner = owner, tsAllowAny = isAdmin }
+
+ownerFilter :: TrackScope -> [Filter ME.LabelTrack]
+ownerFilter TrackScope{..} =
+  case tsOwner of
+    Nothing    -> [ME.LabelTrackOwnerPartyId ==. Nothing]
+    Just owner -> [ME.LabelTrackOwnerPartyId ==. Just owner]
+
+canManageTrack :: TrackScope -> ME.LabelTrack -> Bool
+canManageTrack TrackScope{..} track =
+  tsAllowAny || ME.labelTrackOwnerPartyId track == tsOwner
+
+ensureTrackAccess :: TrackScope -> ME.LabelTrack -> AppM ()
+ensureTrackAccess scope track =
+  unless (canManageTrack scope track) $
+    throwError err403 { errBody = BL.fromStrict (TE.encodeUtf8 "No puedes modificar operaciones de otro artista.") }
+
+loadTrackOwnerNames :: [Entity ME.LabelTrack] -> AppM (Map.Map PartyId Text)
+loadTrackOwnerNames rows = do
+  let owners = mapMaybe (ME.labelTrackOwnerPartyId . entityVal) rows
+  if null owners
+    then pure Map.empty
+    else runDB (fetchPartyNameMap owners)
+
+listLabelTracks :: AuthedUser -> Maybe Int64 -> AppM [LabelTrackDTO]
+listLabelTracks user mOwnerId = do
+  scope <- resolveTrackScope user mOwnerId
+  rows <- runDB $ selectList (ownerFilter scope) [Desc ME.LabelTrackCreatedAt]
+  nameMap <- loadTrackOwnerNames rows
+  pure (map (toLabelTrackDTO nameMap) rows)
+
+createLabelTrack :: AuthedUser -> LabelTrackCreate -> AppM LabelTrackDTO
+createLabelTrack user LabelTrackCreate{..} = do
+  scope <- resolveTrackScope user ltcOwnerId
   when (T.null (T.strip ltcTitle)) $ throwBadRequest "Título requerido"
   now <- liftIO getCurrentTime
-  Env{..} <- ask
   let record = ME.LabelTrack
-        { ME.labelTrackTitle     = T.strip ltcTitle
-        , ME.labelTrackNote      = T.strip <$> ltcNote
-        , ME.labelTrackStatus    = "open"
-        , ME.labelTrackCreatedAt = now
-        , ME.labelTrackUpdatedAt = now
+        { ME.labelTrackTitle      = T.strip ltcTitle
+        , ME.labelTrackNote       = T.strip <$> ltcNote
+        , ME.labelTrackStatus     = "open"
+        , ME.labelTrackOwnerPartyId = tsOwner scope
+        , ME.labelTrackCreatedAt  = now
+        , ME.labelTrackUpdatedAt  = now
         }
-  dto <- liftIO $ flip runSqlPool envPool $ do
+  entity <- runDB $ do
     key <- insert record
-    pure (toLabelTrackDTO (Entity key record))
-  pure dto
+    pure (Entity key record)
+  nameMap <- loadTrackOwnerNames [entity]
+  pure (toLabelTrackDTO nameMap entity)
 
-updateLabelTrack :: Text -> LabelTrackUpdate -> AppM LabelTrackDTO
-updateLabelTrack rawId LabelTrackUpdate{..} = do
+updateLabelTrack :: AuthedUser -> Text -> LabelTrackUpdate -> AppM LabelTrackDTO
+updateLabelTrack user rawId LabelTrackUpdate{..} = do
   key <- case (fromPathPiece rawId :: Maybe (Key ME.LabelTrack)) of
     Nothing -> throwBadRequest "Invalid track id"
     Just k  -> pure k
+  scope <- resolveTrackScope user Nothing
   now <- liftIO getCurrentTime
-  Env{..} <- ask
-  mDto <- liftIO $ flip runSqlPool envPool $ do
-    mTrack <- get key
-    case mTrack of
-      Nothing -> pure Nothing
-      Just _ -> do
-        let updates = catMaybes
-              [ (ME.LabelTrackTitle =.) . T.strip <$> ltuTitle
-              , case ltuNote of
-                  Nothing -> Nothing
-                  Just n  -> Just (ME.LabelTrackNote =. if T.null (T.strip n) then Nothing else Just (T.strip n))
-              , (ME.LabelTrackStatus =.) <$> ltuStatus
-              , Just (ME.LabelTrackUpdatedAt =. now)
-              ]
-        unless (null updates) (update key updates)
-        track' <- getJustEntity key
-        pure (Just (toLabelTrackDTO track'))
-  maybe (throwError err404) pure mDto
+  mTrack <- runDB $ getEntity key
+  case mTrack of
+    Nothing -> throwError err404
+    Just (Entity _ track) -> do
+      ensureTrackAccess scope track
+      let updates = catMaybes
+            [ (ME.LabelTrackTitle =.) . T.strip <$> ltuTitle
+            , case ltuNote of
+                Nothing -> Nothing
+                Just n  -> Just (ME.LabelTrackNote =. if T.null (T.strip n) then Nothing else Just (T.strip n))
+            , (ME.LabelTrackStatus =.) <$> ltuStatus
+            , Just (ME.LabelTrackUpdatedAt =. now)
+            ]
+      unless (null updates) (runDB $ update key updates)
+      updated <- runDB $ getJustEntity key
+      nameMap <- loadTrackOwnerNames [updated]
+      pure (toLabelTrackDTO nameMap updated)
 
-deleteLabelTrack :: Text -> AppM NoContent
-deleteLabelTrack rawId = do
+deleteLabelTrack :: AuthedUser -> Text -> AppM NoContent
+deleteLabelTrack user rawId = do
   key <- case (fromPathPiece rawId :: Maybe (Key ME.LabelTrack)) of
     Nothing -> throwBadRequest "Invalid track id"
     Just k  -> pure k
-  Env{..} <- ask
-  deleted <- liftIO $ flip runSqlPool envPool $ do
-    mTrack <- get key
-    case mTrack of
-      Nothing -> pure False
-      Just _  -> delete key >> pure True
-  unless deleted (throwError err404)
-  pure NoContent
+  scope <- resolveTrackScope user Nothing
+  mTrack <- runDB $ getEntity key
+  case mTrack of
+    Nothing -> throwError err404
+    Just (Entity _ track) -> do
+      ensureTrackAccess scope track
+      runDB $ delete key
+      pure NoContent
 
-toLabelTrackDTO :: Entity ME.LabelTrack -> LabelTrackDTO
-toLabelTrackDTO (Entity key t) =
+toLabelTrackDTO :: Map.Map PartyId Text -> Entity ME.LabelTrack -> LabelTrackDTO
+toLabelTrackDTO nameMap (Entity key t) =
   LabelTrackDTO
     { ltId        = toPathPiece key
     , ltTitle     = ME.labelTrackTitle t
     , ltNote      = ME.labelTrackNote t
     , ltStatus    = ME.labelTrackStatus t
+    , ltOwnerId   = fromSqlKey <$> ME.labelTrackOwnerPartyId t
+    , ltOwnerName = ME.labelTrackOwnerPartyId t >>= (`Map.lookup` nameMap)
     , ltCreatedAt = ME.labelTrackCreatedAt t
     , ltUpdatedAt = ME.labelTrackUpdatedAt t
     }

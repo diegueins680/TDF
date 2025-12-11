@@ -1,5 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 module TDF.DTO where
@@ -118,6 +118,19 @@ data FanProfileUpdate = FanProfileUpdate
   } deriving (Show, Generic)
 instance FromJSON FanProfileUpdate
 
+data CountryDTO = CountryDTO
+  { countryCode :: Text
+  , countryName :: Text
+  } deriving (Show, Generic)
+instance ToJSON CountryDTO
+instance FromJSON CountryDTO
+
+toCountryDTO :: Entity Country -> CountryDTO
+toCountryDTO (Entity _ Country{..}) = CountryDTO
+  { countryCode = countryCode
+  , countryName = countryName
+  }
+
 data FanFollowDTO = FanFollowDTO
   { ffArtistId      :: Int64
   , ffArtistName    :: Text
@@ -136,6 +149,28 @@ data PartyFollowDTO = PartyFollowDTO
   , pfStartedAt    :: Day
   } deriving (Show, Generic)
 instance ToJSON PartyFollowDTO
+
+data SuggestedFriendDTO = SuggestedFriendDTO
+  { sfPartyId       :: Int64
+  , sfMutualCount   :: Int
+  } deriving (Show, Generic)
+instance ToJSON SuggestedFriendDTO
+
+data RadioPresenceDTO = RadioPresenceDTO
+  { rpPartyId     :: Int64
+  , rpStreamUrl   :: Text
+  , rpStationName :: Maybe Text
+  , rpStationId   :: Maybe Text
+  , rpUpdatedAt   :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON RadioPresenceDTO
+
+data RadioPresenceUpsert = RadioPresenceUpsert
+  { rpuStreamUrl   :: Text
+  , rpuStationName :: Maybe Text
+  , rpuStationId   :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON RadioPresenceUpsert
 
 data VCardExchangeRequest = VCardExchangeRequest
   { vcerPartyId :: Int64
@@ -238,12 +273,19 @@ data BookingDTO = BookingDTO
   , status      :: Text
   , notes       :: Maybe Text
   , partyId     :: Maybe Int64
+  , engineerPartyId :: Maybe Int64
+  , engineerName :: Maybe Text
   , serviceType :: Maybe Text
   , serviceOrderId    :: Maybe Int64
   , serviceOrderTitle :: Maybe Text
   , customerName      :: Maybe Text
   , partyDisplayName  :: Maybe Text
   , resources   :: [BookingResourceDTO]
+  , courseSlug        :: Maybe Text
+  , coursePrice       :: Maybe Double
+  , courseCapacity    :: Maybe Int
+  , courseRemaining   :: Maybe Int
+  , courseLocation    :: Maybe Text
   } deriving (Show, Generic)
 instance ToJSON BookingDTO
 
@@ -355,6 +397,11 @@ data LoginRequest = LoginRequest
   , password :: Text
   } deriving (Show, Generic)
 instance FromJSON LoginRequest
+
+data GoogleLoginRequest = GoogleLoginRequest
+  { idToken :: Text
+  } deriving (Show, Generic)
+instance FromJSON GoogleLoginRequest
 
 data SignupRequest = SignupRequest
   { firstName       :: Text

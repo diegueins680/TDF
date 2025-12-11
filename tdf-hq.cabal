@@ -26,7 +26,14 @@ executable tdf-hq-exe
     TDF.API.Label
     TDF.API.Drive
     TDF.API.Rooms
+    TDF.API.Services
     TDF.API.Sessions
+    TDF.API.Radio
+    TDF.API.SocialSyncAPI
+    TDF.Contracts.API
+    TDF.Contracts.Server
+    TDF.Contracts.Types
+    TDF.API.SocialEventsAPI
     TDF.API.Types
     TDF.API.WhatsApp
     TDF.Auth
@@ -35,24 +42,31 @@ executable tdf-hq-exe
     TDF.Cors
     TDF.DB
     TDF.DTO
+    TDF.DTO.SocialEventsDTO
+    TDF.DTO.SocialSyncDTO
     TDF.Email
     TDF.Handlers.InputList
     TDF.LogBuffer
     TDF.Meta
     TDF.Models
     TDF.ModelsExtra
+    TDF.Models.SocialEventsModels
     TDF.UUIDInstances
     TDF.Leads.Model
     TDF.Email.Service
     TDF.Services
+    TDF.Services.InstagramSync
     TDF.Pipelines
     TDF.Routes.Academy
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin
+    TDF.Server.SocialSync
     TDF.ServerExtra
+    TDF.Server.SocialEventsHandlers
     TDF.ServerLiveSessions
     TDF.ServerFeedback
+    TDF.ServerRadio
     TDF.ServerFuture
     TDF.Routes.Courses
     TDF.Trials.API
@@ -74,6 +88,7 @@ executable tdf-hq-exe
       base                 >=4.14 && <5
     , aeson                >=2.0
     , bytestring
+    , case-insensitive
     , text
     , time
     , random
@@ -134,13 +149,21 @@ test-suite tdf-hq-test
     TDF.API.Feedback
     TDF.API.Inventory
     TDF.API.Instagram
+    TDF.API.SocialSyncAPI
     TDF.API.Calendar
+    TDF.API.Label
+    TDF.API.Services
+    TDF.Contracts.API
+    TDF.Contracts.Server
+    TDF.Contracts.Types
     TDF.API.Marketplace
     TDF.API.LiveSessions
+    TDF.API.Radio
     TDF.Calendar.Models
     TDF.API.Pipelines
     TDF.API.Rooms
     TDF.API.Sessions
+    TDF.API.SocialEventsAPI
     TDF.API.Types
     TDF.APITypesSpec
     TDF.Auth
@@ -148,6 +171,8 @@ test-suite tdf-hq-test
     TDF.Cron
     TDF.DB
     TDF.DTO
+    TDF.DTO.SocialEventsDTO
+    TDF.DTO.SocialSyncDTO
     TDF.Email
     TDF.Email.Service
     TDF.Handlers.InputList
@@ -155,6 +180,8 @@ test-suite tdf-hq-test
     TDF.Meta
     TDF.Models
     TDF.ModelsExtra
+    TDF.Models.SocialEventsModels
+    TDF.CMS.Models
     TDF.Pipelines
     TDF.Profiles.Artist
     TDF.Profiles.ArtistSpec
@@ -164,11 +191,15 @@ test-suite tdf-hq-test
     TDF.Server
     TDF.ServerAdmin
     TDF.ServerExtra
+    TDF.Server.SocialSync
+    TDF.Server.SocialEventsHandlers
     TDF.ServerFuture
     TDF.ServerLiveSessions
     TDF.ServerFeedback
+    TDF.ServerRadio
     TDF.ServerSpec
     TDF.Services
+    TDF.Services.InstagramSync
     TDF.Trials.API
     TDF.Trials.DTO
     TDF.Trials.Models

@@ -18,7 +18,7 @@ import           GHC.Generics (Generic)
 import           Network.HTTP.Media ((//))
 import           Servant.API  (Accept(..), MimeUnrender(..), OctetStream, PlainText)
 
-import           TDF.Models   (RoleEnum)
+import           TDF.Models   (PricingModel, RoleEnum, ServiceKind)
 
 data Page a = Page
   { items    :: [a]
@@ -130,6 +130,49 @@ data UserRoleUpdatePayload = UserRoleUpdatePayload
 
 instance ToJSON UserRoleUpdatePayload
 instance FromJSON UserRoleUpdatePayload
+
+data ServiceCatalogDTO = ServiceCatalogDTO
+  { scId            :: Int64
+  , scName          :: Text
+  , scKind          :: ServiceKind
+  , scPricingModel  :: PricingModel
+  , scRateCents     :: Maybe Int
+  , scCurrency      :: Text
+  , scBillingUnit   :: Maybe Text
+  , scTaxBps        :: Maybe Int
+  , scActive        :: Bool
+  } deriving (Show, Generic)
+
+instance ToJSON ServiceCatalogDTO
+instance FromJSON ServiceCatalogDTO
+
+data ServiceCatalogCreate = ServiceCatalogCreate
+  { sccName         :: Text
+  , sccKind         :: Maybe ServiceKind
+  , sccPricingModel :: Maybe PricingModel
+  , sccRateCents    :: Maybe Int
+  , sccCurrency     :: Maybe Text
+  , sccBillingUnit  :: Maybe Text
+  , sccTaxBps       :: Maybe Int
+  , sccActive       :: Maybe Bool
+  } deriving (Show, Generic)
+
+instance ToJSON ServiceCatalogCreate
+instance FromJSON ServiceCatalogCreate
+
+data ServiceCatalogUpdate = ServiceCatalogUpdate
+  { scuName         :: Maybe Text
+  , scuKind         :: Maybe ServiceKind
+  , scuPricingModel :: Maybe PricingModel
+  , scuRateCents    :: Maybe (Maybe Int)
+  , scuCurrency     :: Maybe Text
+  , scuBillingUnit  :: Maybe (Maybe Text)
+  , scuTaxBps       :: Maybe (Maybe Int)
+  , scuActive       :: Maybe Bool
+  } deriving (Show, Generic)
+
+instance ToJSON ServiceCatalogUpdate
+instance FromJSON ServiceCatalogUpdate
 
 data BandOptionsDTO = BandOptionsDTO
   { roles  :: [DropdownOptionDTO]
@@ -312,6 +355,8 @@ data LabelTrackDTO = LabelTrackDTO
   , ltTitle     :: Text
   , ltNote      :: Maybe Text
   , ltStatus    :: Text
+  , ltOwnerId   :: Maybe Int64
+  , ltOwnerName :: Maybe Text
   , ltCreatedAt :: UTCTime
   , ltUpdatedAt :: UTCTime
   } deriving (Show, Generic)
@@ -322,6 +367,7 @@ instance FromJSON LabelTrackDTO
 data LabelTrackCreate = LabelTrackCreate
   { ltcTitle :: Text
   , ltcNote  :: Maybe Text
+  , ltcOwnerId :: Maybe Int64
   } deriving (Show, Generic)
 
 instance ToJSON LabelTrackCreate
@@ -686,3 +732,93 @@ data BandCreate = BandCreate
 
 instance ToJSON BandCreate
 instance FromJSON BandCreate
+
+data RadioStreamDTO = RadioStreamDTO
+  { rsId            :: Int64
+  , rsName          :: Maybe Text
+  , rsStreamUrl     :: Text
+  , rsCountry       :: Maybe Text
+  , rsGenre         :: Maybe Text
+  , rsActive        :: Bool
+  , rsLastCheckedAt :: Maybe UTCTime
+  } deriving (Show, Generic)
+instance ToJSON RadioStreamDTO
+instance FromJSON RadioStreamDTO
+
+data RadioStreamUpsert = RadioStreamUpsert
+  { rsuStreamUrl :: Text
+  , rsuName      :: Maybe Text
+  , rsuCountry   :: Maybe Text
+  , rsuGenre     :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON RadioStreamUpsert
+instance FromJSON RadioStreamUpsert
+
+data RadioImportRequest = RadioImportRequest
+  { rirSources :: Maybe [Text]
+  , rirLimit   :: Maybe Int
+  } deriving (Show, Generic)
+instance ToJSON RadioImportRequest
+instance FromJSON RadioImportRequest
+
+data RadioImportResult = RadioImportResult
+  { rirProcessed :: Int
+  , rirInserted  :: Int
+  , rirUpdated   :: Int
+  , rirSources   :: [Text]
+  , rirFailed    :: Int
+  , rirFailedSources :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON RadioImportResult
+instance FromJSON RadioImportResult
+
+data RadioMetadataRefreshRequest = RadioMetadataRefreshRequest
+  { rmrLimit       :: Maybe Int
+  , rmrOnlyMissing :: Maybe Bool
+  } deriving (Show, Generic)
+instance ToJSON RadioMetadataRefreshRequest
+instance FromJSON RadioMetadataRefreshRequest
+
+data RadioMetadataRefreshResult = RadioMetadataRefreshResult
+  { rmrProcessed :: Int
+  , rmrUpdated   :: Int
+  , rmrFailed    :: Int
+  } deriving (Show, Generic)
+instance ToJSON RadioMetadataRefreshResult
+instance FromJSON RadioMetadataRefreshResult
+
+data RadioTransmissionRequest = RadioTransmissionRequest
+  { rtrName    :: Maybe Text
+  , rtrGenre   :: Maybe Text
+  , rtrCountry :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON RadioTransmissionRequest
+instance FromJSON RadioTransmissionRequest
+
+data RadioTransmissionInfo = RadioTransmissionInfo
+  { rtiStreamId  :: Int64
+  , rtiStreamUrl :: Text
+  , rtiIngestUrl :: Text
+  , rtiStreamKey :: Text
+  , rtiWhipUrl   :: Text
+  } deriving (Show, Generic)
+instance ToJSON RadioTransmissionInfo
+instance FromJSON RadioTransmissionInfo
+
+data RadioPresenceDTO = RadioPresenceDTO
+  { rpPartyId     :: Int64
+  , rpStreamUrl   :: Text
+  , rpStationName :: Maybe Text
+  , rpStationId   :: Maybe Text
+  , rpUpdatedAt   :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON RadioPresenceDTO
+instance FromJSON RadioPresenceDTO
+
+data RadioPresenceUpsert = RadioPresenceUpsert
+  { rpuStreamUrl   :: Text
+  , rpuStationName :: Maybe Text
+  , rpuStationId   :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON RadioPresenceUpsert
+instance FromJSON RadioPresenceUpsert

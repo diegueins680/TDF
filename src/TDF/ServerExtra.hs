@@ -8,7 +8,7 @@
 
 module TDF.ServerExtra where
 
-import           Control.Monad              (filterM, unless, when)
+import           Control.Monad              (filterM, unless, when, join)
 import           Control.Monad.Except       (MonadError)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Reader       (MonadReader, ask, asks)
@@ -34,8 +34,9 @@ import           Web.PathPieces             (PathPiece, fromPathPiece, toPathPie
 import           TDF.API.Inventory          (InventoryAPI)
 import           TDF.API.Bands              (BandsAPI)
 import           TDF.API.Pipelines          (PipelinesAPI)
-import           TDF.API.Rooms              (RoomsAPI)
+import           TDF.API.Rooms              (RoomsAPI, RoomsPublicAPI)
 import           TDF.API.Sessions           (SessionsAPI)
+import           TDF.API.Services           (ServiceCatalogAPI, ServiceCatalogPublicAPI)
 import           TDF.API.Types
 import           TDF.Auth                   (AuthedUser(..), ModuleAccess(..), hasModuleAccess)
 import           TDF.API.Payments          (PaymentDTO(..), PaymentCreate(..), PaymentsAPI)
@@ -828,11 +829,167 @@ roomsServer user = listRooms :<|> createRoomH :<|> patchRoomH
             getEntity roomKey
       maybe (throwError err404) (pure . toRoomDTO) result
 
-    toRoomDTO (Entity key room) = RoomDTO
-      { roomId    = toPathPiece key
-      , rName     = roomName room
-      , rBookable = roomIsBookable room
-      }
+toRoomDTO :: Entity Room -> RoomDTO
+toRoomDTO (Entity key room) = RoomDTO
+  { roomId    = toPathPiece key
+  , rName     = roomName room
+  , rBookable = roomIsBookable room
+  }
+
+roomsPublicServer
+  :: ( MonadReader Env m
+     , MonadIO m
+     )
+  => ServerT RoomsPublicAPI m
+roomsPublicServer = do
+  entities <- withPool $ selectList
+    [RoomIsBookable ==. True]
+    [Asc RoomName]
+  pure (map toRoomDTO entities)
+
+serviceCatalogPublicServer
+  :: ( MonadReader Env m
+     , MonadIO m
+     )
+  => ServerT ServiceCatalogPublicAPI m
+serviceCatalogPublicServer = do
+  entities <- withPool $ selectList
+    [M.ServiceCatalogActive ==. True]
+    [Asc M.ServiceCatalogName]
+  pure (map serviceCatalogToDTO entities)
+
+serviceCatalogServer
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => AuthedUser
+  -> ServerT ServiceCatalogAPI m
+serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
+  where
+    listH mIncludeInactive = do
+      ensureModule ModuleScheduling user
+      let filters = [M.ServiceCatalogActive ==. True | not (fromMaybe False mIncludeInactive)]
+      entities <- withPool $ selectList filters [Asc M.ServiceCatalogName]
+      pure (map serviceCatalogToDTO entities)
+
+    createH ServiceCatalogCreate{..} = do
+      ensureModule ModuleScheduling user
+      nameClean <- normalizeName sccName
+      when (maybe False (< 0) sccRateCents) $
+        throwError err400 { errBody = "La tarifa debe ser mayor o igual a cero" }
+      when (maybe False (< 0) sccTaxBps) $
+        throwError err400 { errBody = "Impuesto inválido" }
+      duplicate <- withPool $ selectFirst [M.ServiceCatalogName ==. nameClean] []
+      when (isJust duplicate) $
+        throwError err409 { errBody = "Ya existe un servicio con ese nombre" }
+      entity <- withPool $ do
+        let record = M.ServiceCatalog
+              { M.serviceCatalogName = nameClean
+              , M.serviceCatalogKind = fromMaybe M.Recording sccKind
+              , M.serviceCatalogPricingModel = fromMaybe M.Hourly sccPricingModel
+              , M.serviceCatalogDefaultRateCents = sccRateCents
+              , M.serviceCatalogTaxBps = sccTaxBps
+              , M.serviceCatalogCurrency = normalizeCurrency (fromMaybe "USD" sccCurrency)
+              , M.serviceCatalogBillingUnit = normalizeTextMaybe sccBillingUnit
+              , M.serviceCatalogActive = fromMaybe True sccActive
+              }
+        newId <- insert record
+        getJustEntity newId
+      pure (serviceCatalogToDTO entity)
+
+    updateH rawId ServiceCatalogUpdate{..} = do
+      ensureModule ModuleScheduling user
+      let svcKey = toSqlKey rawId :: Key M.ServiceCatalog
+      let rateCandidate = join scuRateCents
+          taxCandidate  = join scuTaxBps
+      when (maybe False (< 0) rateCandidate) $
+        throwError err400 { errBody = "La tarifa debe ser mayor o igual a cero" }
+      when (maybe False (< 0) taxCandidate) $
+        throwError err400 { errBody = "Impuesto inválido" }
+      let nameClean :: Maybe Text
+          nameClean = case scuName of
+            Nothing   -> Nothing
+            Just nm ->
+              let trimmed = T.strip nm
+              in if T.null trimmed then Nothing else Just trimmed
+      case nameClean of
+        Just nm -> do
+          conflict <- withPool $ selectFirst
+            [ M.ServiceCatalogName ==. nm
+            , M.ServiceCatalogId !=. svcKey
+            ]
+            []
+          when (isJust conflict) $
+            throwError err409 { errBody = "Ya existe un servicio con ese nombre" }
+        Nothing -> pure ()
+      updated <- withPool $ do
+        mExisting <- getEntity svcKey
+        case mExisting of
+          Nothing -> pure Nothing
+          Just _ -> do
+            let billingClean :: Maybe (Maybe Text)
+                billingClean = case scuBillingUnit of
+                  Nothing -> Nothing
+                  Just inner -> case inner of
+                    Nothing -> Just Nothing
+                    Just val ->
+                      let trimmed = T.strip val
+                      in Just (if T.null trimmed then Nothing else Just trimmed)
+                updates = catMaybes
+                  [ (M.ServiceCatalogName =.) <$> nameClean
+                  , (M.ServiceCatalogKind =.) <$> scuKind
+                  , (M.ServiceCatalogPricingModel =.) <$> scuPricingModel
+                  , (M.ServiceCatalogDefaultRateCents =.) <$> scuRateCents
+                  , (M.ServiceCatalogTaxBps =.) <$> scuTaxBps
+                  , (M.ServiceCatalogCurrency =.) . normalizeCurrency <$> scuCurrency
+                  , (M.ServiceCatalogBillingUnit =.) <$> billingClean
+                  , (M.ServiceCatalogActive =.) <$> scuActive
+                  ]
+            unless (null updates) (update svcKey updates)
+            getEntity svcKey
+      maybe (throwError err404) (pure . serviceCatalogToDTO) updated
+
+    deleteH rawId = do
+      ensureModule ModuleScheduling user
+      let svcKey = toSqlKey rawId :: Key M.ServiceCatalog
+      found <- withPool $ do
+        mSvc <- getEntity svcKey
+        case mSvc of
+          Nothing -> pure False
+          Just _ -> update svcKey [M.ServiceCatalogActive =. False] >> pure True
+      if found then pure NoContent else throwError err404
+
+    normalizeName txt =
+      let trimmed = T.strip txt
+      in if T.null trimmed then throwError err400 { errBody = "Nombre requerido" } else pure trimmed
+
+    normalizeNameMaybe txt =
+      let trimmed = T.strip txt
+      in if T.null trimmed then pure Nothing else pure (Just trimmed)
+
+    normalizeCurrency txt =
+      let trimmed = T.toUpper (T.strip txt)
+      in if T.null trimmed then "USD" else trimmed
+
+    normalizeTextMaybe mTxt = case mTxt of
+      Nothing -> Nothing
+      Just raw ->
+        let trimmed = T.strip raw
+        in if T.null trimmed then Nothing else Just trimmed
+
+serviceCatalogToDTO :: Entity M.ServiceCatalog -> ServiceCatalogDTO
+serviceCatalogToDTO (Entity key svc) = ServiceCatalogDTO
+  { scId           = fromSqlKey key
+  , scName         = M.serviceCatalogName svc
+  , scKind         = M.serviceCatalogKind svc
+  , scPricingModel = M.serviceCatalogPricingModel svc
+  , scRateCents    = M.serviceCatalogDefaultRateCents svc
+  , scCurrency     = M.serviceCatalogCurrency svc
+  , scBillingUnit  = M.serviceCatalogBillingUnit svc
+  , scTaxBps       = M.serviceCatalogTaxBps svc
+  , scActive       = M.serviceCatalogActive svc
+  }
 
 mkPage :: Int -> Int -> Int -> [a] -> Page a
 mkPage current size totalCount values =

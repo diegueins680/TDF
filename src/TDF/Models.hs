@@ -292,12 +292,22 @@ PartyFollow
     createdAt        UTCTime
     UniquePartyFollow followerPartyId followingPartyId
     deriving Show Generic
+PartyRadioPresence
+    partyId          PartyId
+    streamUrl        Text
+    stationName      Text Maybe
+    stationId        Text Maybe
+    updatedAt        UTCTime
+    UniquePartyPresence partyId
+    deriving Show Generic
 ServiceCatalog
     name             Text
     kind             ServiceKind
     pricingModel     PricingModel
     defaultRateCents Int Maybe
     taxBps           Int Maybe
+    currency         Text default='USD'
+    billingUnit      Text Maybe
     active           Bool
     deriving Show Generic
 ServiceOrder
@@ -334,6 +344,8 @@ Booking
     serviceOrderId   ServiceOrderId Maybe
     partyId          PartyId Maybe
     serviceType      Text Maybe
+    engineerPartyId  PartyId Maybe
+    engineerName     Text Maybe
     startsAt         UTCTime
     endsAt           UTCTime
     status           BookingStatus
@@ -459,6 +471,52 @@ InstagramMessage
     createdAt        UTCTime
     UniqueInstagramMessage externalId
     deriving Show Generic
+SocialSyncAccount
+    partyId          PartyId Maybe
+    artistProfileId  ArtistProfileId Maybe
+    platform         Text
+    externalUserId   Text
+    handle           Text Maybe
+    accessToken      Text Maybe
+    tokenExpiresAt   UTCTime Maybe
+    status           Text
+    lastSyncedAt     UTCTime Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime Maybe
+    UniqueSocialSyncAccount platform externalUserId
+    deriving Show Generic
+SocialSyncPost
+    accountId        SocialSyncAccountId Maybe
+    platform         Text
+    externalPostId   Text
+    artistPartyId    PartyId Maybe
+    artistProfileId  ArtistProfileId Maybe
+    caption          Text Maybe
+    permalink        Text Maybe
+    mediaUrls        Text Maybe
+    postedAt         UTCTime Maybe
+    fetchedAt        UTCTime
+    tags             Text Maybe
+    summary          Text Maybe
+    ingestSource     Text
+    likeCount        Int Maybe
+    commentCount     Int Maybe
+    shareCount       Int Maybe
+    viewCount        Int Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime
+    UniqueSocialSyncPost platform externalPostId
+    deriving Show Generic
+SocialSyncRun
+    platform         Text
+    ingestSource     Text
+    startedAt        UTCTime
+    endedAt          UTCTime Maybe
+    status           Text
+    newPosts         Int
+    updatedPosts     Int
+    errorMessage     Text Maybe
+    deriving Show Generic
 ExternalCalendarMapping
     resourceId       ResourceId
     googleCalendarId Text
@@ -523,6 +581,12 @@ ReferralClaim
     UniqueReferralClaim codeId email
     deriving Show Generic
 
+Country
+    code Text
+    name Text
+    UniqueCountryCode code
+    deriving Show Generic
+
 Cohort
     Id UUID default=gen_random_uuid()
     slug     Text
@@ -538,5 +602,17 @@ CohortEnrollment
     userId   AcademyUserId
     createdAt UTCTime default=now()
     Primary cohortId userId
+    deriving Show Generic
+
+RadioStream
+    streamUrl      Text
+    name           Text Maybe
+    country        Text Maybe
+    genre          Text Maybe
+    isActive       Bool
+    lastCheckedAt  UTCTime Maybe
+    createdAt      UTCTime default=now()
+    updatedAt      UTCTime default=now()
+    UniqueRadioStreamUrl streamUrl
     deriving Show Generic
 |]

@@ -12,6 +12,9 @@ module TDF.Routes.Courses
   , CourseRegistrationRequest(..)
   , CourseRegistrationResponse(..)
   , CourseRegistrationStatusUpdate(..)
+  , CourseUpsert(..)
+  , CourseSessionIn(..)
+  , CourseSyllabusIn(..)
   , CoursesPublicAPI
   , CoursesAdminAPI
   , WhatsAppWebhookAPI
@@ -33,6 +36,7 @@ data CourseSession = CourseSession
   } deriving (Show, Generic)
 
 instance ToJSON CourseSession
+instance FromJSON CourseSession
 
 data SyllabusItem = SyllabusItem
   { title  :: Text
@@ -40,6 +44,7 @@ data SyllabusItem = SyllabusItem
   } deriving (Show, Generic)
 
 instance ToJSON SyllabusItem
+instance FromJSON SyllabusItem
 
 data CourseMetadata = CourseMetadata
   { slug           :: Text
@@ -50,10 +55,16 @@ data CourseMetadata = CourseMetadata
   , price          :: Double
   , currency       :: Text
   , capacity       :: Int
+  , remaining      :: Int
+  , sessionStartHour :: Int
+  , sessionDurationHours :: Int
   , locationLabel  :: Text
   , locationMapUrl :: Text
   , daws           :: [Text]
   , includes       :: [Text]
+  , instructorName :: Maybe Text
+  , instructorBio  :: Maybe Text
+  , instructorAvatarUrl :: Maybe Text
   , sessions       :: [CourseSession]
   , syllabus       :: [SyllabusItem]
   , whatsappCtaUrl :: Text
@@ -61,6 +72,7 @@ data CourseMetadata = CourseMetadata
   } deriving (Show, Generic)
 
 instance ToJSON CourseMetadata
+instance FromJSON CourseMetadata
 
 data UTMTags = UTMTags
   { source   :: Maybe Text
@@ -96,13 +108,57 @@ data CourseRegistrationStatusUpdate = CourseRegistrationStatusUpdate
   } deriving (Show, Generic)
 
 instance FromJSON CourseRegistrationStatusUpdate
+instance ToJSON CourseRegistrationStatusUpdate
+
+data CourseSessionIn = CourseSessionIn
+  { label :: Text
+  , date  :: Day
+  , order :: Maybe Int
+  } deriving (Show, Generic)
+instance FromJSON CourseSessionIn
+instance ToJSON CourseSessionIn
+
+data CourseSyllabusIn = CourseSyllabusIn
+  { title  :: Text
+  , topics :: [Text]
+  , order  :: Maybe Int
+  } deriving (Show, Generic)
+instance FromJSON CourseSyllabusIn
+instance ToJSON CourseSyllabusIn
+
+data CourseUpsert = CourseUpsert
+  { slug                 :: Text
+  , title                :: Text
+  , subtitle             :: Maybe Text
+  , format               :: Maybe Text
+  , duration             :: Maybe Text
+  , priceCents           :: Int
+  , currency             :: Text
+  , capacity             :: Int
+  , sessionStartHour     :: Maybe Int
+  , sessionDurationHours :: Maybe Int
+  , locationLabel        :: Maybe Text
+  , locationMapUrl       :: Maybe Text
+  , whatsappCtaUrl       :: Maybe Text
+  , landingUrl           :: Maybe Text
+  , daws                 :: [Text]
+  , includes             :: [Text]
+  , instructorName       :: Maybe Text
+  , instructorBio        :: Maybe Text
+  , instructorAvatarUrl  :: Maybe Text
+  , sessions             :: [CourseSessionIn]
+  , syllabus             :: [CourseSyllabusIn]
+  } deriving (Show, Generic)
+instance FromJSON CourseUpsert
+instance ToJSON CourseUpsert
 
 type CoursesPublicAPI =
        "public" :> "courses" :> Capture "slug" Text :> Get '[JSON] CourseMetadata
   :<|> "public" :> "courses" :> Capture "slug" Text :> "registrations" :> ReqBody '[JSON] CourseRegistrationRequest :> PostCreated '[JSON] CourseRegistrationResponse
 
 type CoursesAdminAPI =
-       "courses" :> "registrations" :>
+       "courses" :> ReqBody '[JSON] CourseUpsert :> Post '[JSON] CourseMetadata
+  :<|> "courses" :> "registrations" :>
          QueryParam "slug" Text :>
          QueryParam "status" Text :>
          QueryParam "limit" Int :>

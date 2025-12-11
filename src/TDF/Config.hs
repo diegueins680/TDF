@@ -31,6 +31,9 @@ data AppConfig = AppConfig
   , seedTriggerToken :: Maybe Text
   , appBaseUrl      :: Maybe Text
   , emailConfig     :: Maybe EmailConfig
+  , googleClientId  :: Maybe Text
+  , instagramAppToken :: Maybe Text
+  , instagramGraphBase :: Text
   } deriving (Show)
 
 dbConnString :: AppConfig -> String
@@ -54,6 +57,7 @@ loadConfig = do
   mig        <- get "RUN_MIGRATIONS" "true"
   seedEnv    <- lookupEnv "SEED_TRIGGER_TOKEN"
   baseUrlEnv <- lookupEnv "HQ_APP_URL"
+  googleClientIdEnv <- lookupEnv "GOOGLE_CLIENT_ID"
   smtpHostEnv <- lookupEnv "SMTP_HOST"
   smtpPortEnv <- lookupEnv "SMTP_PORT"
   smtpUserEnv <- lookupEnv "SMTP_USERNAME" <|> lookupEnv "SMTP_USER"
@@ -61,6 +65,8 @@ loadConfig = do
   smtpFromEnv <- lookupEnv "SMTP_FROM"
   smtpFromNameEnv <- lookupEnv "SMTP_FROM_NAME"
   smtpTlsEnv  <- lookupEnv "SMTP_TLS"
+  igTokenEnv <- lookupEnv "INSTAGRAM_APP_TOKEN"
+  igBaseEnv <- lookupEnv "INSTAGRAM_GRAPH_BASE"
   pure AppConfig
     { dbHost = h
     , dbPort = p
@@ -74,6 +80,9 @@ loadConfig = do
     , seedTriggerToken = mkSeedToken seedEnv
     , appBaseUrl = fmap (T.strip . T.pack) baseUrlEnv
     , emailConfig = mkEmailConfig smtpHostEnv smtpUserEnv smtpPassEnv smtpFromEnv smtpFromNameEnv smtpPortEnv smtpTlsEnv
+    , googleClientId = fmap (T.strip . T.pack) googleClientIdEnv
+    , instagramAppToken = fmap (T.strip . T.pack) igTokenEnv
+    , instagramGraphBase = maybe "https://graph.instagram.com" (T.strip . T.pack) igBaseEnv
     }
   where
     get k def = fmap (fromMaybe def) (lookupEnv k)

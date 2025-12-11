@@ -23,23 +23,28 @@ import           TDF.API.Inventory (InventoryAPI)
 import           TDF.API.Payments (PaymentsAPI)
 import           TDF.API.Instagram (InstagramAPI)
 import           TDF.API.Pipelines (PipelinesAPI)
-import           TDF.API.Rooms     (RoomsAPI)
+import           TDF.API.Rooms     (RoomsAPI, RoomsPublicAPI)
 import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Drive     (DriveAPI)
 import           TDF.API.Types     (LooseJSON, RolePayload, UserRoleSummaryDTO, UserRoleUpdatePayload)
+import           TDF.API.Radio     (RadioAPI)
 import           TDF.Models        (RoleEnum)
 import           TDF.DTO
 import           TDF.Meta         (MetaAPI)
 import           TDF.Version      (VersionInfo)
 import qualified TDF.ModelsExtra  as ME
 import           TDF.Routes.Academy (AcademyAPI)
-import           TDF.Routes.Courses (CoursesPublicAPI, WhatsAppWebhookAPI)
+import           TDF.Routes.Courses (CoursesPublicAPI, CoursesAdminAPI, WhatsAppWebhookAPI)
 import           TDF.API.LiveSessions (LiveSessionsAPI)
 import           TDF.API.Feedback    (FeedbackAPI)
 import           TDF.API.Calendar    (CalendarAPI)
 import           TDF.API.Marketplace (MarketplaceAPI, MarketplaceAdminAPI)
 import           TDF.API.Label (LabelAPI)
+import           TDF.API.Services (ServiceCatalogAPI, ServiceCatalogPublicAPI)
 import           TDF.API.SocialEventsAPI (SocialEventsAPI)
+import           TDF.API.SocialSyncAPI (SocialSyncAPI)
+import           TDF.Contracts.API (ContractsAPI)
+import           TDF.DTO (CountryDTO)
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
@@ -72,7 +77,7 @@ type CmsPublicAPI =
   :<|> "cms" :> "contents" :> QueryParam "locale" Text :> QueryParam "slugPrefix" Text :> Get '[JSON] [CmsContentDTO]
 
 type CmsAdminAPI =
-       "cms" :> "content" :>
+       "cms" :> "admin" :> "content" :>
          ( QueryParam "slug" Text :> QueryParam "locale" Text :> Get '[JSON] [CmsContentDTO]
       :<|> ReqBody '[JSON] CmsContentIn :> Post '[JSON] CmsContentDTO
       :<|> Capture "id" Int :> "publish" :> Post '[JSON] CmsContentDTO
@@ -92,11 +97,18 @@ type SocialAPI =
        "followers" :> Get '[JSON] [PartyFollowDTO]
   :<|> "following" :> Get '[JSON] [PartyFollowDTO]
   :<|> "vcard-exchange" :> ReqBody '[JSON] VCardExchangeRequest :> Post '[JSON] [PartyFollowDTO]
+  :<|> "friends" :> Get '[JSON] [PartyFollowDTO]
+  :<|> "friends" :> Capture "partyId" Int64 :> Post '[JSON] [PartyFollowDTO]
+  :<|> "friends" :> Capture "partyId" Int64 :> Delete '[JSON] NoContent
+  :<|> "suggestions" :> Get '[JSON] [SuggestedFriendDTO]
 
 type BookingAPI =
        Get '[JSON] [BookingDTO]
   :<|> ReqBody '[JSON] CreateBookingReq :> Post '[JSON] BookingDTO
   :<|> Capture "bookingId" Int64 :> ReqBody '[JSON] UpdateBookingReq :> Put '[JSON] BookingDTO
+
+type BookingPublicAPI =
+       "bookings" :> "public" :> ReqBody '[JSON] PublicBookingReq :> Post '[JSON] BookingDTO
 
 type PackageAPI =
        "products" :> Get '[JSON] [PackageProductDTO]
@@ -117,6 +129,7 @@ type ReceiptAPI =
 type HealthAPI = Get '[JSON] HealthStatus
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
+type GoogleLoginAPI = ReqBody '[JSON] GoogleLoginRequest :> Post '[JSON] LoginResponse
 
 type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] LoginResponse
 
@@ -144,6 +157,11 @@ type FanPublicAPI =
   :<|> "artists" :> Capture "artistId" Int64 :> Get '[JSON] ArtistProfileDTO
   :<|> "artists" :> Capture "artistId" Int64 :> "releases" :> Get '[JSON] [ArtistReleaseDTO]
 
+type RadioPublicAPI =
+       "radio" :> "presence" :> Capture "partyId" Int64 :> Get '[JSON] (Maybe RadioPresenceDTO)
+
+type CountryAPI = "countries" :> Get '[JSON] [CountryDTO]
+
 type FanSecureAPI =
        "me" :> "profile" :>
          ( Get '[JSON] FanProfileDTO
@@ -164,6 +182,7 @@ type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 type ProtectedAPI =
        "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
+  :<|> ServiceCatalogAPI
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
   :<|> "receipts" :> ReceiptAPI
@@ -181,16 +200,22 @@ type ProtectedAPI =
   :<|> "payments" :> PaymentsAPI
   :<|> "instagram" :> InstagramAPI
   :<|> "social" :> SocialAPI
+  :<|> "social-sync" :> SocialSyncAPI
   :<|> AdsAdminAPI
+  :<|> "admin" :> CoursesAdminAPI
+  :<|> "label" :> LabelAPI
   :<|> "calendar" :> CalendarAPI
   :<|> CmsAdminAPI
   :<|> DriveAPI
+  :<|> RadioAPI
+  :<|> CountryAPI
   :<|> "stubs"    :> FutureAPI
 
 type API =
        VersionAPI
   :<|> "health" :> HealthAPI
   :<|> "login"  :> LoginAPI
+  :<|> "login"  :> "google" :> GoogleLoginAPI
   :<|> "signup" :> SignupAPI
   :<|> "password" :> PasswordAPI
   :<|> "v1" :> AuthV1API
@@ -204,8 +229,13 @@ type API =
   :<|> AdsPublicAPI
   :<|> CmsPublicAPI
   :<|> "marketplace" :> MarketplaceAPI
-  :<|> "label" :> LabelAPI
+  :<|> "contracts" :> ContractsAPI
   :<|> "social-events" :> SocialEventsAPI
+  :<|> RadioPublicAPI
+  :<|> RoomsPublicAPI
+  :<|> ServiceCatalogPublicAPI
+  :<|> "engineers" :> Get '[JSON] [PublicEngineerDTO]
+  :<|> BookingPublicAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
@@ -220,6 +250,8 @@ data CreateBookingReq = CreateBookingReq
   , cbStatus      :: Text
   , cbNotes       :: Maybe Text
   , cbPartyId     :: Maybe Int64
+  , cbEngineerPartyId :: Maybe Int64
+  , cbEngineerName :: Maybe Text
   , cbServiceType :: Maybe Text
   , cbResourceIds :: Maybe [Text]
   } deriving (Show, Generic)
@@ -232,8 +264,30 @@ data UpdateBookingReq = UpdateBookingReq
   , ubNotes       :: Maybe Text
   , ubStartsAt    :: Maybe UTCTime
   , ubEndsAt      :: Maybe UTCTime
+  , ubEngineerPartyId :: Maybe Int64
+  , ubEngineerName :: Maybe Text
   } deriving (Show, Generic)
 instance FromJSON UpdateBookingReq
+
+data PublicBookingReq = PublicBookingReq
+  { pbFullName         :: Text
+  , pbEmail            :: Text
+  , pbPhone            :: Maybe Text
+  , pbServiceType      :: Text
+  , pbStartsAt         :: UTCTime
+  , pbDurationMinutes  :: Maybe Int
+  , pbNotes            :: Maybe Text
+  , pbEngineerPartyId  :: Maybe Int64
+  , pbEngineerName     :: Maybe Text
+  , pbResourceIds      :: Maybe [Text]
+  } deriving (Show, Generic)
+instance FromJSON PublicBookingReq
+
+data PublicEngineerDTO = PublicEngineerDTO
+  { peId   :: Int64
+  , peName :: Text
+  } deriving (Show, Generic)
+instance ToJSON PublicEngineerDTO
 
 data AdsInquiry = AdsInquiry
   { aiName    :: Maybe Text
