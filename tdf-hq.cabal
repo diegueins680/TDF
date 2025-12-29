@@ -15,6 +15,7 @@ executable tdf-hq-exe
     TDF.API
     TDF.API.Bands
     TDF.API.Instagram
+    TDF.API.Internships
     TDF.API.Future
     TDF.API.LiveSessions
     TDF.API.Feedback
@@ -56,13 +57,16 @@ executable tdf-hq-exe
     TDF.Email.Service
     TDF.Services
     TDF.Services.InstagramSync
+    TDF.Services.InstagramMessaging
     TDF.Pipelines
+    TDF.RagStore
     TDF.Routes.Academy
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin
     TDF.Server.SocialSync
     TDF.ServerExtra
+    TDF.ServerInternships
     TDF.Server.SocialEventsHandlers
     TDF.ServerLiveSessions
     TDF.ServerFeedback
@@ -134,6 +138,7 @@ executable tdf-hq-exe
     , template-haskell
     , file-embed
     , smtp-mail
+    , tagged
 
 test-suite tdf-hq-test
   type:              exitcode-stdio-1.0
@@ -149,6 +154,7 @@ test-suite tdf-hq-test
     TDF.API.Feedback
     TDF.API.Inventory
     TDF.API.Instagram
+    TDF.API.Internships
     TDF.API.SocialSyncAPI
     TDF.API.Calendar
     TDF.API.Label
@@ -159,6 +165,7 @@ test-suite tdf-hq-test
     TDF.API.Marketplace
     TDF.API.LiveSessions
     TDF.API.Radio
+    TDF.API.Drive
     TDF.Calendar.Models
     TDF.API.Pipelines
     TDF.API.Rooms
@@ -191,6 +198,7 @@ test-suite tdf-hq-test
     TDF.Server
     TDF.ServerAdmin
     TDF.ServerExtra
+    TDF.ServerInternships
     TDF.Server.SocialSync
     TDF.Server.SocialEventsHandlers
     TDF.ServerFuture
@@ -216,6 +224,8 @@ test-suite tdf-hq-test
       base                 >=4.14 && <5
     , aeson                >=2.0
     , bytestring
+    , case-insensitive
+    , case-insensitive
     , text
     , time
     , containers
@@ -247,6 +257,7 @@ test-suite tdf-hq-test
     , transformers
     , mtl
     , mime-mail
+    , tagged
     , unordered-containers
     , uuid-types
     , scientific

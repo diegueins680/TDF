@@ -15,12 +15,17 @@ module TDF.API.SocialEventsAPI
 import Servant
 import Data.Text (Text)
 
-import TDF.DTO.SocialEventsDTO (EventDTO, VenueDTO, ArtistDTO, RsvpDTO, InvitationDTO)
+import TDF.DTO.SocialEventsDTO (EventDTO, VenueDTO, ArtistDTO, ArtistFollowerDTO, ArtistFollowRequest, RsvpDTO, InvitationDTO)
 
 type IdParam = Capture "id" Text
 
 type EventsRoutes =
-       "events" :> QueryParam "city" Text :> QueryParam "start_after" Text :> Get '[JSON] [EventDTO]
+       "events"
+         :> QueryParam "city" Text
+         :> QueryParam "start_after" Text
+         :> QueryParam "artistId" Text
+         :> QueryParam "venueId" Text
+         :> Get '[JSON] [EventDTO]
   :<|> "events" :> ReqBody '[JSON] EventDTO :> Post '[JSON] EventDTO
   :<|> "events" :> IdParam :> Get '[JSON] EventDTO
   :<|> "events" :> IdParam :> ReqBody '[JSON] EventDTO :> Put '[JSON] EventDTO
@@ -37,6 +42,9 @@ type ArtistsRoutes =
   :<|> "artists" :> ReqBody '[JSON] ArtistDTO :> Post '[JSON] ArtistDTO
   :<|> "artists" :> IdParam :> Get '[JSON] ArtistDTO
   :<|> "artists" :> IdParam :> ReqBody '[JSON] ArtistDTO :> Put '[JSON] ArtistDTO
+  :<|> "artists" :> Capture "artistId" Text :> "followers" :> Get '[JSON] [ArtistFollowerDTO]
+  :<|> "artists" :> Capture "artistId" Text :> "follow" :> ReqBody '[JSON] ArtistFollowRequest :> Post '[JSON] ArtistFollowerDTO
+  :<|> "artists" :> Capture "artistId" Text :> "follow" :> QueryParam "follower" Text :> DeleteNoContent
 
 type RsvpRoutes =
        "events" :> Capture "eventId" Text :> "rsvps" :> Get '[JSON] [RsvpDTO]

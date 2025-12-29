@@ -156,6 +156,114 @@ data SuggestedFriendDTO = SuggestedFriendDTO
   } deriving (Show, Generic)
 instance ToJSON SuggestedFriendDTO
 
+data ChatThreadDTO = ChatThreadDTO
+  { ctThreadId         :: Int64
+  , ctOtherPartyId     :: Int64
+  , ctOtherDisplayName :: Text
+  , ctLastMessage      :: Maybe Text
+  , ctLastMessageAt    :: Maybe UTCTime
+  , ctUpdatedAt        :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON ChatThreadDTO
+
+data ChatMessageDTO = ChatMessageDTO
+  { cmId            :: Int64
+  , cmThreadId      :: Int64
+  , cmSenderPartyId :: Int64
+  , cmBody          :: Text
+  , cmCreatedAt     :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON ChatMessageDTO
+
+data ChatSendMessageRequest = ChatSendMessageRequest
+  { csmBody :: Text
+  } deriving (Show, Generic)
+instance FromJSON ChatSendMessageRequest
+
+data CampaignDTO = CampaignDTO
+  { campId        :: Int64
+  , campName      :: Text
+  , campObjective :: Maybe Text
+  , campPlatform  :: Maybe Text
+  , campStatus    :: Text
+  , campBudgetCents :: Maybe Int
+  , campStartDate :: Maybe Day
+  , campEndDate   :: Maybe Day
+  } deriving (Show, Generic)
+instance ToJSON CampaignDTO
+
+data CampaignUpsert = CampaignUpsert
+  { cuId          :: Maybe Int64
+  , cuName        :: Text
+  , cuObjective   :: Maybe Text
+  , cuPlatform    :: Maybe Text
+  , cuStatus      :: Maybe Text
+  , cuBudgetCents :: Maybe Int
+  , cuStartDate   :: Maybe Day
+  , cuEndDate     :: Maybe Day
+  } deriving (Show, Generic)
+instance FromJSON CampaignUpsert
+
+data AdCreativeDTO = AdCreativeDTO
+  { adId        :: Int64
+  , adCampaignId :: Maybe Int64
+  , adExternalId :: Maybe Text
+  , adName      :: Text
+  , adChannel   :: Maybe Text
+  , adAudience  :: Maybe Text
+  , adLandingUrl :: Maybe Text
+  , adCta       :: Maybe Text
+  , adStatus    :: Text
+  , adNotes     :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON AdCreativeDTO
+
+data AdCreativeUpsert = AdCreativeUpsert
+  { acuId         :: Maybe Int64
+  , acuCampaignId :: Maybe Int64
+  , acuExternalId :: Maybe Text
+  , acuName       :: Text
+  , acuChannel    :: Maybe Text
+  , acuAudience   :: Maybe Text
+  , acuLandingUrl :: Maybe Text
+  , acuCta        :: Maybe Text
+  , acuStatus     :: Maybe Text
+  , acuNotes      :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON AdCreativeUpsert
+
+data AdConversationExampleDTO = AdConversationExampleDTO
+  { aceId              :: Int64
+  , aceAdId            :: Int64
+  , aceUserMessage     :: Text
+  , aceAssistantMessage :: Text
+  , aceTags            :: Maybe [Text]
+  } deriving (Show, Generic)
+instance ToJSON AdConversationExampleDTO
+
+data AdConversationExampleCreate = AdConversationExampleCreate
+  { aecUserMessage     :: Text
+  , aecAssistantMessage :: Text
+  , aecTags            :: Maybe [Text]
+  } deriving (Show, Generic)
+instance FromJSON AdConversationExampleCreate
+
+data AdsAssistRequest = AdsAssistRequest
+  { aarAdId       :: Maybe Int64
+  , aarCampaignId :: Maybe Int64
+  , aarMessage    :: Text
+  , aarChannel    :: Maybe Text
+  , aarPartyId    :: Maybe Int64
+  } deriving (Show, Generic)
+instance FromJSON AdsAssistRequest
+
+data AdsAssistResponse = AdsAssistResponse
+  { aasReply         :: Text
+  , aasUsedExamples  :: [AdConversationExampleDTO]
+  , aasKnowledgeUsed :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON AdsAssistResponse
+
 data RadioPresenceDTO = RadioPresenceDTO
   { rpPartyId     :: Int64
   , rpStreamUrl   :: Text
@@ -411,6 +519,11 @@ data SignupRequest = SignupRequest
   , password        :: Text
   , googleIdToken   :: Maybe Text
   , marketingOptIn  :: Maybe Bool
+  , internshipStartAt :: Maybe Day
+  , internshipEndAt   :: Maybe Day
+  , internshipRequiredHours :: Maybe Int
+  , internshipSkills  :: Maybe Text
+  , internshipAreas   :: Maybe Text
   , roles           :: Maybe [RoleEnum]
   , fanArtistIds    :: Maybe [Int64]
   , claimArtistId   :: Maybe Int64

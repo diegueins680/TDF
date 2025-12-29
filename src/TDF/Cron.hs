@@ -1,19 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
 module TDF.Cron
   ( startCoursePaymentReminderJob
   , startInstagramSyncJob
+  , startSocialAutoReplyJob
   ) where
 
 import           Control.Concurrent      (forkIO, threadDelay)
-import           Control.Exception       (SomeException, catch, try)
+import           Control.Exception       (SomeException, try)
 import           Control.Applicative    ((<|>))
 import           Control.Monad           (forever, void, when, foldM)
 import           Control.Monad.IO.Class  (liftIO)
 import           Data.Foldable           (for_)
-import           Data.List               (foldl')
+import           Data.List               (find, foldl')
 import qualified Data.Map.Strict         as Map
-import           Data.Maybe              (catMaybes, fromMaybe)
+import           Data.Maybe              (catMaybes, fromMaybe, isJust)
 import           Data.Text               (Text)
 import qualified Data.Text               as T
 import           Data.Time               ( LocalTime(..)
@@ -32,7 +34,9 @@ import           Database.Persist        ( (!=.)
                                          , SelectOpt(..)
                                          , count
                                          , selectList
+                                         , selectFirst
                                          , getBy
+                                         , get
                                          , insert
                                          , insert_
                                          , insertEntity
@@ -42,25 +46,33 @@ import           Database.Persist        ( (!=.)
 import           Database.Persist.Sql    (SqlPersistT, runSqlPool)
 import           System.Random           (randomRIO)
 import           System.IO               (hPutStrLn, stderr)
+import           Network.HTTP.Client     (newManager)
+import           Network.HTTP.Client.TLS (tlsManagerSettings)
 
-import           TDF.DB                  (Env(..))
+import           TDF.DB                  (Env(..), ConnectionPool)
 import qualified TDF.Email.Service       as EmailSvc
 import qualified TDF.LogBuffer           as LogBuf
 import qualified TDF.ModelsExtra         as ME
 import           TDF.Models
+import           TDF.Services.InstagramMessaging (sendInstagramText)
 import           TDF.Services.InstagramSync (InstagramMedia(..), fetchUserMedia)
 import           TDF.Routes.Courses      (CourseMetadata(..))
 import           TDF.Server              ( buildLandingUrl
+                                         , loadAdExamples
+                                         , runRagChatWithStatus
                                          , courseMetadataFor
                                          , loadWhatsAppEnv
+                                         , WhatsAppEnv(..)
                                          , toCourseMetadata
                                          , normalizeSlug
                                          , productionCourseSlug
                                          , productionCoursePrice
                                          , productionCourseCapacity
                                          )
+import           TDF.RagStore            (ensureRagIndex, retrieveRagContext)
 import qualified TDF.Trials.Models       as Trials
-import           TDF.Config              (instagramAppToken)
+import           TDF.Config              (AppConfig, instagramAppToken)
+import           TDF.WhatsApp.Client     (sendText)
 
 -- | Launch a background thread that sends payment reminders every day at 09:00 (server local time).
 startCoursePaymentReminderJob :: Env -> IO ()
@@ -83,14 +95,18 @@ cronLoop env = forever $ do
 
 -- | Compute the next 09:00 in UTC, based on the server's local timezone.
 nextNineAMUtc :: IO UTCTime
-nextNineAMUtc = do
+nextNineAMUtc = nextLocalTimeUtc (TimeOfDay 9 0 0)
+
+nextTenThirtyAMUtc :: IO UTCTime
+nextTenThirtyAMUtc = nextLocalTimeUtc (TimeOfDay 10 30 0)
+
+nextLocalTimeUtc :: TimeOfDay -> IO UTCTime
+nextLocalTimeUtc targetTime = do
   now <- getZonedTime
   let ZonedTime (LocalTime day tod) tz = now
-      targetDay = if tod < nineAM then day else addDays 1 day
-      targetZoned = ZonedTime (LocalTime targetDay nineAM) tz
+      targetDay = if tod < targetTime then day else addDays 1 day
+      targetZoned = ZonedTime (LocalTime targetDay targetTime) tz
   pure (zonedTimeToUTC targetZoned)
-  where
-    nineAM = TimeOfDay 9 0 0
 
 waitUntil :: UTCTime -> IO ()
 waitUntil targetUtc = do
@@ -193,6 +209,272 @@ dedupeByEmail =
     nonEmpty txt =
       let trimmed = T.strip txt
       in if T.null trimmed then Nothing else Just trimmed
+
+-- | Launch a background thread that sends daily auto replies for social inbox messages.
+startSocialAutoReplyJob :: Env -> IO ()
+startSocialAutoReplyJob env = do
+  void (forkIO (socialReplyLoop env))
+  LogBuf.addLog LogBuf.LogInfo "[Cron][SocialAutoReply] Scheduled daily replies at 10:30 local time."
+
+socialReplyLoop :: Env -> IO ()
+socialReplyLoop env = forever $ do
+  target <- nextTenThirtyAMUtc
+  waitUntil target
+  result <- try (sendSocialAutoReplies env) :: IO (Either SomeException ())
+  case result of
+    Left err -> do
+      let msg = "[Cron][SocialAutoReply] Job failed: " <> T.pack (show err)
+      hPutStrLn stderr (T.unpack msg)
+      LogBuf.addLog LogBuf.LogError msg
+    Right () ->
+      LogBuf.addLog LogBuf.LogInfo "[Cron][SocialAutoReply] Reply job finished."
+
+sendSocialAutoReplies :: Env -> IO ()
+sendSocialAutoReplies env@Env{envPool, envConfig} = do
+  refreshAttempt <- try (ensureRagIndex envConfig envPool) :: IO (Either SomeException (Either Text Bool))
+  case refreshAttempt of
+    Left err ->
+      LogBuf.addLog LogBuf.LogWarning ("[Cron][SocialAutoReply] RAG refresh crashed: " <> T.pack (show err))
+    Right (Left err) ->
+      LogBuf.addLog LogBuf.LogWarning ("[Cron][SocialAutoReply] RAG refresh failed: " <> err)
+    Right (Right True) ->
+      LogBuf.addLog LogBuf.LogInfo "[Cron][SocialAutoReply] RAG index refreshed."
+    Right (Right False) ->
+      pure ()
+  igCount <- processInstagramReplies env
+  waCount <- processWhatsAppReplies env
+  LogBuf.addLog LogBuf.LogInfo
+    ("[Cron][SocialAutoReply] Instagram replies: " <> T.pack (show igCount)
+      <> " | WhatsApp replies: " <> T.pack (show waCount))
+
+data AdContext = AdContext
+  { acAdId :: Maybe ME.AdCreativeId
+  , acAdName :: Maybe Text
+  , acCampaignName :: Maybe Text
+  } deriving (Show)
+
+resolveAdContext
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> SqlPersistT IO AdContext
+resolveAdContext mAdExternal mAdName mCampaignName = do
+  mAd <- resolveAd mAdExternal mAdName
+  mCampaign <- case mAd >>= (ME.adCreativeCampaignId . entityVal) of
+    Nothing -> resolveCampaignByName mCampaignName
+    Just cid -> fmap (Entity cid) <$> get cid
+  let acAdId = fmap entityKey mAd
+      acAdName = fmap (ME.adCreativeName . entityVal) mAd <|> mAdName
+      acCampaignName = fmap (ME.campaignName . entityVal) mCampaign <|> mCampaignName
+  pure AdContext{..}
+  where
+    resolveAd Nothing Nothing = pure Nothing
+    resolveAd (Just extId) _ = selectFirst [ME.AdCreativeExternalId ==. Just extId] []
+    resolveAd Nothing (Just nameTxt) = do
+      rows <- selectList [] [Desc ME.AdCreativeUpdatedAt, LimitTo 200]
+      pure $ find (\(Entity _ a) -> T.toCaseFold (ME.adCreativeName a) == T.toCaseFold nameTxt) rows
+
+    resolveCampaignByName Nothing = pure Nothing
+    resolveCampaignByName (Just nameTxt) = do
+      rows <- selectList [] [Desc ME.CampaignUpdatedAt, LimitTo 200]
+      pure $ find (\(Entity _ c) -> T.toCaseFold (ME.campaignName c) == T.toCaseFold nameTxt) rows
+
+buildChannelNote :: Text -> Maybe Text -> Maybe Text -> Text
+buildChannelNote channel mAd mCampaign =
+  T.intercalate " · " (catMaybes
+    [ Just channel
+    , ("ad=" <>) <$> mAd
+    , ("campaña=" <>) <$> mCampaign
+    ])
+
+processInstagramReplies :: Env -> IO Int
+processInstagramReplies Env{envPool, envConfig} = do
+  pending <- runSqlPool
+    (selectList
+      [ InstagramMessageDirection ==. "incoming"
+      , InstagramMessageRepliedAt ==. Nothing
+      ]
+      [Asc InstagramMessageCreatedAt, LimitTo 200])
+    envPool
+  foldM (replyInstagramOne envConfig envPool) 0 pending
+
+replyInstagramOne :: AppConfig -> ConnectionPool -> Int -> Entity InstagramMessage -> IO Int
+replyInstagramOne cfg pool acc (Entity key msg) = do
+  now <- getCurrentTime
+  let body = fromMaybe "" (instagramMessageText msg)
+  if T.null (T.strip body)
+    then pure acc
+    else do
+      adContext <- runSqlPool
+        (resolveAdContext (instagramMessageAdExternalId msg) (instagramMessageAdName msg) (instagramMessageCampaignName msg))
+        pool
+      let channelNote = buildChannelNote "instagram" (acAdName adContext) (acCampaignName adContext)
+      examples <- runSqlPool
+        (loadAdExamples (isJust (acAdId adContext)) (maybe [] pure (acAdId adContext)))
+        pool
+      kb <- retrieveRagContext cfg pool body
+      replyRes <- runRagChatWithStatus cfg kb examples body (Just channelNote)
+      case replyRes of
+        Left err -> do
+          runSqlPool
+            (update key
+              [ InstagramMessageReplyError =. Just err
+              , InstagramMessageAdName =. acAdName adContext
+              , InstagramMessageCampaignName =. acCampaignName adContext
+              ])
+            pool
+          pure acc
+        Right replyRaw -> do
+          let reply = T.strip replyRaw
+          if T.null reply
+            then do
+              runSqlPool
+                (update key
+                  [ InstagramMessageReplyError =. Just "OpenAI response empty"
+                  , InstagramMessageAdName =. acAdName adContext
+                  , InstagramMessageCampaignName =. acCampaignName adContext
+                  ])
+                pool
+              pure acc
+            else do
+              sendResult <- sendInstagramText cfg (instagramMessageSenderId msg) reply
+              case sendResult of
+                Left err -> do
+                  runSqlPool
+                    (update key
+                      [ InstagramMessageReplyError =. Just err
+                      , InstagramMessageAdName =. acAdName adContext
+                      , InstagramMessageCampaignName =. acCampaignName adContext
+                      ])
+                    pool
+                  pure acc
+                Right _ -> do
+                  runSqlPool
+                    (do
+                      update key
+                        [ InstagramMessageRepliedAt =. Just now
+                        , InstagramMessageReplyText =. Just reply
+                        , InstagramMessageReplyError =. Nothing
+                        , InstagramMessageAdName =. acAdName adContext
+                        , InstagramMessageCampaignName =. acCampaignName adContext
+                        ]
+                      insert_ (InstagramMessage (instagramMessageExternalId msg <> "-out-" <> T.pack (show now))
+                                (instagramMessageSenderId msg)
+                                (instagramMessageSenderName msg)
+                                (Just reply)
+                                "outgoing"
+                                (instagramMessageAdExternalId msg)
+                                (acAdName adContext)
+                                (instagramMessageCampaignExternalId msg)
+                                (acCampaignName adContext)
+                                Nothing
+                                Nothing
+                                Nothing
+                                Nothing
+                                now)
+                    )
+                    pool
+                  pure (acc + 1)
+
+processWhatsAppReplies :: Env -> IO Int
+processWhatsAppReplies Env{envPool, envConfig} = do
+  waEnv <- loadWhatsAppEnv
+  pending <- runSqlPool
+    (selectList
+      [ ME.WhatsAppMessageDirection ==. "incoming"
+      , ME.WhatsAppMessageRepliedAt ==. Nothing
+      ]
+      [Asc ME.WhatsAppMessageCreatedAt, LimitTo 200])
+    envPool
+  foldM (replyWhatsAppOne envConfig envPool waEnv) 0 pending
+
+replyWhatsAppOne :: AppConfig -> ConnectionPool -> WhatsAppEnv -> Int -> Entity ME.WhatsAppMessage -> IO Int
+replyWhatsAppOne cfg pool waEnv acc (Entity key msg) = do
+  now <- getCurrentTime
+  let body = fromMaybe "" (ME.whatsAppMessageText msg)
+  if T.null (T.strip body)
+    then pure acc
+    else do
+      adContext <- runSqlPool
+        (resolveAdContext (ME.whatsAppMessageAdExternalId msg) (ME.whatsAppMessageAdName msg) (ME.whatsAppMessageCampaignName msg))
+        pool
+      let channelNote = buildChannelNote "whatsapp" (acAdName adContext) (acCampaignName adContext)
+      examples <- runSqlPool
+        (loadAdExamples (isJust (acAdId adContext)) (maybe [] pure (acAdId adContext)))
+        pool
+      kb <- retrieveRagContext cfg pool body
+      replyRes <- runRagChatWithStatus cfg kb examples body (Just channelNote)
+      case replyRes of
+        Left err -> do
+          runSqlPool
+            (update key
+              [ ME.WhatsAppMessageReplyError =. Just err
+              , ME.WhatsAppMessageAdName =. acAdName adContext
+              , ME.WhatsAppMessageCampaignName =. acCampaignName adContext
+              ])
+            pool
+          pure acc
+        Right replyRaw -> do
+          let reply = T.strip replyRaw
+          if T.null reply
+            then do
+              runSqlPool
+                (update key
+                  [ ME.WhatsAppMessageReplyError =. Just "OpenAI response empty"
+                  , ME.WhatsAppMessageAdName =. acAdName adContext
+                  , ME.WhatsAppMessageCampaignName =. acCampaignName adContext
+                  ])
+                pool
+              pure acc
+            else do
+              sendResult <- sendWhatsAppAutoReply waEnv (ME.whatsAppMessageSenderId msg) reply
+              case sendResult of
+                Left err -> do
+                  runSqlPool
+                    (update key
+                      [ ME.WhatsAppMessageReplyError =. Just err
+                      , ME.WhatsAppMessageAdName =. acAdName adContext
+                      , ME.WhatsAppMessageCampaignName =. acCampaignName adContext
+                      ])
+                    pool
+                  pure acc
+                Right _ -> do
+                  runSqlPool
+                    (do
+                      update key
+                        [ ME.WhatsAppMessageRepliedAt =. Just now
+                        , ME.WhatsAppMessageReplyText =. Just reply
+                        , ME.WhatsAppMessageReplyError =. Nothing
+                        , ME.WhatsAppMessageAdName =. acAdName adContext
+                        , ME.WhatsAppMessageCampaignName =. acCampaignName adContext
+                        ]
+                      insert_ (ME.WhatsAppMessage (ME.whatsAppMessageExternalId msg <> "-out-" <> T.pack (show now))
+                                (ME.whatsAppMessageSenderId msg)
+                                (ME.whatsAppMessageSenderName msg)
+                                (Just reply)
+                                "outgoing"
+                                (ME.whatsAppMessageAdExternalId msg)
+                                (acAdName adContext)
+                                (ME.whatsAppMessageCampaignExternalId msg)
+                                (acCampaignName adContext)
+                                Nothing
+                                Nothing
+                                Nothing
+                                Nothing
+                                now)
+                    )
+                    pool
+                  pure (acc + 1)
+
+sendWhatsAppAutoReply :: WhatsAppEnv -> Text -> Text -> IO (Either Text ())
+sendWhatsAppAutoReply WhatsAppEnv{waToken = Just tok, waPhoneId = Just pid, waApiVersion = mVersion} phone reply = do
+  manager <- newManager tlsManagerSettings
+  let version = fromMaybe "v20.0" mVersion
+  res <- sendText manager version tok pid phone reply
+  pure $ case res of
+    Left err -> Left (T.pack err)
+    Right _ -> Right ()
+sendWhatsAppAutoReply _ _ _ = pure (Left "WhatsApp config not available")
 
 -- | Instagram sync: schedule one fetch per handle per day at a random time.
 startInstagramSyncJob :: Env -> IO ()
@@ -306,21 +588,20 @@ upsertMedia now accId acc medias = foldM go (0, 0) medias
       let mediaTxt = nonEmptyText (imMediaUrl media)
           tagsTxt = nonEmptyText (Just (T.intercalate "," (classifyTags (imCaption media))))
           summaryTxt = buildSummary (imCaption media)
-          baseFields = concat
-            [ setMaybe SocialSyncPostCaption (imCaption media)
-            , setMaybe SocialSyncPostPermalink (imPermalink media)
-            , setMaybe SocialSyncPostMediaUrls mediaTxt
-            , setMaybe SocialSyncPostPostedAt (imTimestamp media)
-            , [ SocialSyncPostFetchedAt =. now
-              , SocialSyncPostUpdatedAt =. now
-              , SocialSyncPostIngestSource =. "cron"
-              ]
-            , setMaybe SocialSyncPostTags tagsTxt
-            , setMaybe SocialSyncPostSummary summaryTxt
+          baseFields = catMaybes
+            [ (\v -> SocialSyncPostCaption =. Just v) <$> imCaption media
+            , (\v -> SocialSyncPostPermalink =. Just v) <$> imPermalink media
+            , (\v -> SocialSyncPostMediaUrls =. Just v) <$> mediaTxt
+            , (\v -> SocialSyncPostPostedAt =. Just v) <$> imTimestamp media
+            , Just (SocialSyncPostFetchedAt =. now)
+            , Just (SocialSyncPostUpdatedAt =. now)
+            , Just (SocialSyncPostIngestSource =. "cron")
+            , (\v -> SocialSyncPostTags =. Just v) <$> tagsTxt
+            , (\v -> SocialSyncPostSummary =. Just v) <$> summaryTxt
             ]
-          artistFields = concat
-            [ setMaybe SocialSyncPostArtistPartyId (socialSyncAccountPartyId acc)
-            , setMaybe SocialSyncPostArtistProfileId (socialSyncAccountArtistProfileId acc)
+          artistFields = catMaybes
+            [ (\v -> SocialSyncPostArtistPartyId =. Just v) <$> socialSyncAccountPartyId acc
+            , (\v -> SocialSyncPostArtistProfileId =. Just v) <$> socialSyncAccountArtistProfileId acc
             ]
       case mExisting of
         Just (Entity key _) -> do

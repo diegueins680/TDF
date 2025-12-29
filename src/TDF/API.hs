@@ -22,11 +22,12 @@ import           TDF.API.Bands     (BandsAPI)
 import           TDF.API.Inventory (InventoryAPI)
 import           TDF.API.Payments (PaymentsAPI)
 import           TDF.API.Instagram (InstagramAPI)
+import           TDF.API.Internships (InternshipsAPI)
 import           TDF.API.Pipelines (PipelinesAPI)
 import           TDF.API.Rooms     (RoomsAPI, RoomsPublicAPI)
 import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Drive     (DriveAPI)
-import           TDF.API.Types     (LooseJSON, RolePayload, UserRoleSummaryDTO, UserRoleUpdatePayload)
+import           TDF.API.Types     (LooseJSON, PartyRelatedDTO, RolePayload, UserRoleSummaryDTO, UserRoleUpdatePayload)
 import           TDF.API.Radio     (RadioAPI)
 import           TDF.Models        (RoleEnum)
 import           TDF.DTO
@@ -44,12 +45,12 @@ import           TDF.API.Services (ServiceCatalogAPI, ServiceCatalogPublicAPI)
 import           TDF.API.SocialEventsAPI (SocialEventsAPI)
 import           TDF.API.SocialSyncAPI (SocialSyncAPI)
 import           TDF.Contracts.API (ContractsAPI)
-import           TDF.DTO (CountryDTO)
 
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
 
 type VersionAPI = "version" :> Get '[JSON] VersionInfo
+type AssetsAPI  = "inventory" :> Raw
 
 type InputListPublicAPI =
        "inventory"
@@ -68,9 +69,17 @@ type InputListAPI = InputListPublicAPI :<|> InputListSeedAPI
 
 type AdsPublicAPI =
        "ads" :> "inquiry" :> ReqBody '[JSON] AdsInquiry :> Post '[JSON] AdsInquiryOut
+  :<|> "ads" :> "assist" :> ReqBody '[JSON] AdsAssistRequest :> Post '[JSON] AdsAssistResponse
 
 type AdsAdminAPI =
        "ads" :> "inquiries" :> Get '[JSON] [AdsInquiryDTO]
+  :<|> "ads" :> "campaigns" :> Get '[JSON] [CampaignDTO]
+  :<|> "ads" :> "campaigns" :> ReqBody '[JSON] CampaignUpsert :> Post '[JSON] CampaignDTO
+  :<|> "ads" :> "campaigns" :> Capture "campaignId" Int64 :> Get '[JSON] CampaignDTO
+  :<|> "ads" :> "ads" :> ReqBody '[JSON] AdCreativeUpsert :> Post '[JSON] AdCreativeDTO
+  :<|> "ads" :> "campaigns" :> Capture "campaignId" Int64 :> "ads" :> Get '[JSON] [AdCreativeDTO]
+  :<|> "ads" :> Capture "adId" Int64 :> "examples" :> Get '[JSON] [AdConversationExampleDTO]
+  :<|> "ads" :> Capture "adId" Int64 :> "examples" :> ReqBody '[JSON] AdConversationExampleCreate :> Post '[JSON] AdConversationExampleDTO
 
 type CmsPublicAPI =
        "cms" :> "content" :> QueryParam "slug" Text :> QueryParam "locale" Text :> Get '[JSON] CmsContentDTO
@@ -91,6 +100,7 @@ type PartyAPI =
            Get '[JSON] PartyDTO
       :<|> ReqBody '[JSON] PartyUpdate :> Put '[JSON] PartyDTO
       :<|> "roles" :> ReqBody '[LooseJSON, PlainText, OctetStream] RolePayload :> Post '[JSON] NoContent
+      :<|> "related" :> Get '[JSON] PartyRelatedDTO
       )
 
 type SocialAPI =
@@ -102,8 +112,29 @@ type SocialAPI =
   :<|> "friends" :> Capture "partyId" Int64 :> Delete '[JSON] NoContent
   :<|> "suggestions" :> Get '[JSON] [SuggestedFriendDTO]
 
+type ChatAPI =
+       "chat" :> "threads" :> Get '[JSON] [ChatThreadDTO]
+  :<|> "chat" :> "threads" :> "dm" :> Capture "otherPartyId" Int64 :> Post '[JSON] ChatThreadDTO
+  :<|> "chat" :> "threads" :> Capture "threadId" Int64 :> "messages"
+         :> QueryParam "limit" Int
+         :> QueryParam "beforeId" Int64
+         :> QueryParam "afterId" Int64
+         :> Get '[JSON] [ChatMessageDTO]
+  :<|> "chat" :> "threads" :> Capture "threadId" Int64 :> "messages"
+         :> ReqBody '[JSON] ChatSendMessageRequest
+         :> Post '[JSON] ChatMessageDTO
+
+type WhatsAppMessagesAPI =
+       "whatsapp" :> "messages"
+         :> QueryParam "limit" Int
+         :> QueryParam "repliedOnly" Bool
+         :> Get '[JSON] Value
+
 type BookingAPI =
-       Get '[JSON] [BookingDTO]
+       QueryParam "bookingId" Int64
+         :> QueryParam "partyId" Int64
+         :> QueryParam "engineerPartyId" Int64
+         :> Get '[JSON] [BookingDTO]
   :<|> ReqBody '[JSON] CreateBookingReq :> Post '[JSON] BookingDTO
   :<|> Capture "bookingId" Int64 :> ReqBody '[JSON] UpdateBookingReq :> Put '[JSON] BookingDTO
 
@@ -199,8 +230,12 @@ type ProtectedAPI =
   :<|> "marketplace" :> MarketplaceAdminAPI
   :<|> "payments" :> PaymentsAPI
   :<|> "instagram" :> InstagramAPI
+  :<|> WhatsAppMessagesAPI
   :<|> "social" :> SocialAPI
+  :<|> ChatAPI
   :<|> "social-sync" :> SocialSyncAPI
+  :<|> "social-events" :> SocialEventsAPI
+  :<|> InternshipsAPI
   :<|> AdsAdminAPI
   :<|> "admin" :> CoursesAdminAPI
   :<|> "label" :> LabelAPI
@@ -230,12 +265,12 @@ type API =
   :<|> CmsPublicAPI
   :<|> "marketplace" :> MarketplaceAPI
   :<|> "contracts" :> ContractsAPI
-  :<|> "social-events" :> SocialEventsAPI
   :<|> RadioPublicAPI
   :<|> RoomsPublicAPI
   :<|> ServiceCatalogPublicAPI
   :<|> "engineers" :> Get '[JSON] [PublicEngineerDTO]
   :<|> BookingPublicAPI
+  :<|> AssetsAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }

@@ -3,11 +3,12 @@
 module Main where
 
 import qualified Network.Wai.Handler.Warp as Warp
-import           Control.Concurrent      (threadDelay)
-import           Control.Exception       (SomeException, handle, try)
+import           Control.Concurrent      (forkFinally, myThreadId, throwTo, threadDelay)
+import           Control.Exception       (SomeException, handle, throwIO, try)
 import           Control.Monad            (forM_, when)
 import qualified Data.ByteString.Char8    as BS
 import           Data.Int                (Int64)
+import           Data.IORef              (newIORef, readIORef, writeIORef)
 import           Data.Maybe               (mapMaybe)
 import           Data.Text                (Text)
 import qualified Data.Text               as T
@@ -15,8 +16,8 @@ import           Database.Persist         ( (=.), upsert )
 import           Database.Persist.Sql     (SqlPersistT, Single(..), rawExecute, rawSql, runMigration,
                                            runSqlPool, toSqlKey)
 import           Database.Persist.Types   (PersistValue (PersistText))
-import           Network.HTTP.Types       (RequestHeaders, status500)
-import           Network.Wai              (Middleware, mapResponseHeaders, requestHeaders, responseHeaders,
+import           Network.HTTP.Types       (RequestHeaders, status200, status500, status503)
+import           Network.Wai              (Application, Middleware, mapResponseHeaders, pathInfo, requestHeaders, responseHeaders,
                                            responseLBS)
 import           System.IO                (hSetEncoding, stdout, stderr)
 import           GHC.IO.Encoding          (utf8, setLocaleEncoding)
@@ -25,11 +26,12 @@ import           Text.Read                (readMaybe)
 import           TDF.Cors                 (corsPolicy)
 
 import           TDF.Config     (appPort, dbConnString, loadConfig, resetDb, runMigrations, seedDatabase)
-import           TDF.Cron       (startCoursePaymentReminderJob, startInstagramSyncJob)
+import           TDF.Cron       (startCoursePaymentReminderJob, startInstagramSyncJob, startSocialAutoReplyJob)
 import           TDF.DB         (Env(..), ConnectionPool, makePool)
 import           TDF.Models     (EntityField (PartyRoleActive), PartyId, PartyRole(..), RoleEnum, migrateAll)
 import           TDF.ModelsExtra (migrateExtra)
 import           TDF.Trials.Models (migrateTrials)
+import           TDF.Models.SocialEventsModels (migrateSocialEvents)
 import           TDF.Server     (mkApp)
 import           TDF.Seed       (seedAll)
 main :: IO ()
@@ -37,29 +39,10 @@ main = do
   setLocaleEncoding utf8
   hSetEncoding stdout utf8
   hSetEncoding stderr utf8
-  cfg  <- loadConfig
-  pool <- makePoolWithRetry 5 (BS.pack (dbConnString cfg))
-  if resetDb cfg
-    then do
-      putStrLn "Resetting DB schema..."
-      runSqlPool resetSchema pool
-    else
-      putStrLn "RESET_DB disabled, preserving existing schema."
-  if runMigrations cfg
-    then do
-      putStrLn "Running DB migrations..."
-      runSqlPool runAllMigrations pool
-    else
-      putStrLn "RUN_MIGRATIONS disabled (using pre-initialized schema)."
-  when (seedDatabase cfg) $ do
-    putStrLn "Seeding initial data..."
-    runSqlPool seedAll pool
-  putStrLn ("Starting server on port " <> show (appPort cfg))
-
-  let env = Env{ envPool = pool, envConfig = cfg }
+  cfg <- loadConfig
   appCors <- corsPolicy
-  let app = mkApp env
-      -- Ensure Warp-generated exception responses still carry CORS headers so browsers don't block them.
+
+  let -- Ensure Warp-generated exception responses still carry CORS headers so browsers don't block them.
       addCorsToExceptionResponse ex =
         let base = Warp.defaultOnExceptionResponse ex
             hs = responseHeaders base
@@ -71,7 +54,8 @@ main = do
         in mapResponseHeaders (const merged) base
       warpSettings =
         Warp.setPort (appPort cfg) $
-          Warp.setOnExceptionResponse addCorsToExceptionResponse Warp.defaultSettings
+          Warp.setHost "0.0.0.0" $
+            Warp.setOnExceptionResponse addCorsToExceptionResponse Warp.defaultSettings
       addCorsFallback :: Middleware
       addCorsFallback next req send =
         let originHeader = lookup "origin" (requestHeaders req :: RequestHeaders)
@@ -86,10 +70,60 @@ main = do
               in mapResponseHeaders (const merged) res
         in handle (\(_ :: SomeException) -> send (responseLBS status500 extra "Internal server error")) $
              next req (\res -> send (applyHeaders res))
+      rootOk :: Middleware
+      rootOk next req send =
+        if null (pathInfo req)
+          then send (responseLBS status200 [("Content-Type", "text/plain")] "ok")
+          else next req send
+      wrapApp :: Application -> Application
+      wrapApp = addCorsFallback . appCors . rootOk
+      bootApp :: Application
+      bootApp req send =
+        case pathInfo req of
+          ["health"] ->
+            send
+              (responseLBS status200 [("Content-Type", "application/json")] "{\"status\":\"starting\",\"db\":\"starting\"}")
+          _ ->
+            send (responseLBS status503 [("Content-Type", "application/json")] "{\"error\":\"starting\"}")
 
-  startCoursePaymentReminderJob env
-  startInstagramSyncJob env
-  Warp.runSettings warpSettings (addCorsFallback (appCors app))
+  appRef <- newIORef (wrapApp bootApp)
+
+  mainThread <- myThreadId
+  let setupApp = do
+        pool <- makePoolWithRetry 5 (BS.pack (dbConnString cfg))
+        if resetDb cfg
+          then do
+            putStrLn "Resetting DB schema..."
+            runSqlPool resetSchema pool
+          else
+            putStrLn "RESET_DB disabled, preserving existing schema."
+        if runMigrations cfg
+          then do
+            putStrLn "Running DB migrations..."
+            runSqlPool runAllMigrations pool
+          else
+            putStrLn "RUN_MIGRATIONS disabled (using pre-initialized schema)."
+        when (seedDatabase cfg) $ do
+          putStrLn "Seeding initial data..."
+          runSqlPool seedAll pool
+        putStrLn ("Starting server on port " <> show (appPort cfg))
+        let env = Env{ envPool = pool, envConfig = cfg }
+        writeIORef appRef (wrapApp (mkApp env))
+        startCoursePaymentReminderJob env
+        startInstagramSyncJob env
+        startSocialAutoReplyJob env
+
+  _ <-
+    forkFinally
+      setupApp
+      (\res -> case res of
+        Left err -> throwTo mainThread err
+        Right _ -> pure ()
+      )
+
+  Warp.runSettings warpSettings $ \req send -> do
+    app <- readIORef appRef
+    app req send
 
 resetSchema :: SqlPersistT IO ()
 resetSchema = do
@@ -102,11 +136,35 @@ resetSchema = do
 runAllMigrations :: SqlPersistT IO ()
 runAllMigrations = do
   rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
+  rawExecute "CREATE EXTENSION IF NOT EXISTS vector" []
+  rawExecute
+    "CREATE TABLE IF NOT EXISTS rag_chunk ( \
+    \  id BIGSERIAL PRIMARY KEY, \
+    \  source TEXT NOT NULL, \
+    \  source_id TEXT, \
+    \  chunk_index INT NOT NULL, \
+    \  content TEXT NOT NULL, \
+    \  metadata JSONB, \
+    \  embedding vector(1536) NOT NULL, \
+    \  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+    \  updated_at TIMESTAMPTZ NOT NULL DEFAULT now() \
+    \)" []
+  rawExecute
+    "CREATE UNIQUE INDEX IF NOT EXISTS rag_chunk_source_key \
+    \ON rag_chunk (source, source_id, chunk_index)" []
+  rawExecute
+    "CREATE INDEX IF NOT EXISTS rag_chunk_embedding_idx \
+    \ON rag_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)" []
+  rawExecute
+    "CREATE INDEX IF NOT EXISTS rag_chunk_source_idx ON rag_chunk (source)" []
+  rawExecute
+    "CREATE INDEX IF NOT EXISTS rag_chunk_source_id_idx ON rag_chunk (source_id)" []
   renameLegacyPartyRoleConstraint
   legacyRoles <- captureLegacyPartyRoles
   dropLegacyPartyColumns
   runMigration migrateAll
   runMigration migrateExtra
+  runMigration migrateSocialEvents
   runMigration migrateTrials
   restoreLegacyPartyRoles legacyRoles
 
@@ -167,7 +225,7 @@ makePoolWithRetry retries connStr = do
       if retries <= 0
         then do
           putStrLn "Failed to connect to database after retries. Crashing."
-          error (show err)
+          throwIO err
         else do
           putStrLn $ "DB connection failed, retrying... attempts left: " <> show retries
           threadDelay (5 * 1000 * 1000)

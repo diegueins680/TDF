@@ -21,7 +21,7 @@ import           GHC.Generics       (Generic)
 import           Database.Persist.TH
 
 share [mkPersist sqlSettings, mkMigrate "migrateSocialEvents"] [persistLowerCase|
-ArtistProfile
+ArtistProfile sql=social_artist_profile
     partyId Text Maybe
     name Text
     bio Text Maybe
@@ -89,5 +89,12 @@ ArtistGenre
     artistId ArtistProfileId
     genre Text
     Primary artistId genre
+    deriving Show Generic
+
+ArtistFollow
+    artistId ArtistProfileId
+    followerPartyId Text
+    createdAt UTCTime default=now()
+    Primary artistId followerPartyId
     deriving Show Generic
 |]

@@ -7,6 +7,7 @@ import           Data.Maybe         (fromMaybe)
 import           Data.Text          (Text)
 import qualified Data.Text          as T
 import           System.Environment (lookupEnv)
+import           Text.Read          (readMaybe)
 
 data EmailConfig = EmailConfig
   { emailFromName    :: Text
@@ -30,13 +31,27 @@ data AppConfig = AppConfig
   , runMigrations   :: Bool
   , seedTriggerToken :: Maybe Text
   , appBaseUrl      :: Maybe Text
+  , assetsBaseUrl   :: Maybe Text
   , courseDefaultSlug :: Text
   , courseDefaultMapUrl :: Maybe Text
   , courseDefaultInstructorAvatar :: Maybe Text
+  , openAiApiKey    :: Maybe Text
+  , openAiModel     :: Text
+  , openAiEmbedModel :: Text
+  , ragTopK         :: Int
+  , ragChunkWords   :: Int
+  , ragChunkOverlap :: Int
+  , ragAvailabilityDays :: Int
+  , ragAvailabilityPerResource :: Int
+  , ragRefreshHours :: Int
+  , ragEmbedBatchSize :: Int
   , emailConfig     :: Maybe EmailConfig
   , googleClientId  :: Maybe Text
   , instagramAppToken :: Maybe Text
   , instagramGraphBase :: Text
+  , instagramMessagingToken :: Maybe Text
+  , instagramMessagingAccountId :: Maybe Text
+  , instagramMessagingApiBase :: Text
   } deriving (Show)
 
 dbConnString :: AppConfig -> String
@@ -60,10 +75,21 @@ loadConfig = do
   mig        <- get "RUN_MIGRATIONS" "true"
   seedEnv    <- lookupEnv "SEED_TRIGGER_TOKEN"
   baseUrlEnv <- lookupEnv "HQ_APP_URL"
+  assetsBaseEnv <- lookupEnv "HQ_ASSETS_BASE_URL"
   googleClientIdEnv <- lookupEnv "GOOGLE_CLIENT_ID"
   courseSlugEnv <- lookupEnv "COURSE_DEFAULT_SLUG"
   courseMapEnv <- lookupEnv "COURSE_DEFAULT_MAP_URL"
   courseInstructorAvatarEnv <- lookupEnv "COURSE_DEFAULT_INSTRUCTOR_AVATAR"
+  openAiKeyEnv <- lookupEnv "OPENAI_API_KEY"
+  openAiModelEnv <- lookupEnv "OPENAI_MODEL"
+  openAiEmbedModelEnv <- lookupEnv "OPENAI_EMBED_MODEL"
+  ragTopKEnv <- lookupEnv "RAG_TOP_K"
+  ragChunkWordsEnv <- lookupEnv "RAG_CHUNK_WORDS"
+  ragChunkOverlapEnv <- lookupEnv "RAG_CHUNK_OVERLAP"
+  ragAvailabilityDaysEnv <- lookupEnv "RAG_AVAILABILITY_DAYS"
+  ragAvailabilityPerResourceEnv <- lookupEnv "RAG_AVAILABILITY_PER_RESOURCE"
+  ragRefreshHoursEnv <- lookupEnv "RAG_REFRESH_HOURS"
+  ragEmbedBatchSizeEnv <- lookupEnv "RAG_EMBED_BATCH_SIZE"
   smtpHostEnv <- lookupEnv "SMTP_HOST"
   smtpPortEnv <- lookupEnv "SMTP_PORT"
   smtpUserEnv <- lookupEnv "SMTP_USERNAME" <|> lookupEnv "SMTP_USER"
@@ -73,6 +99,9 @@ loadConfig = do
   smtpTlsEnv  <- lookupEnv "SMTP_TLS"
   igTokenEnv <- lookupEnv "INSTAGRAM_APP_TOKEN"
   igBaseEnv <- lookupEnv "INSTAGRAM_GRAPH_BASE"
+  igMsgTokenEnv <- lookupEnv "INSTAGRAM_MESSAGING_TOKEN"
+  igMsgAccountEnv <- lookupEnv "INSTAGRAM_MESSAGING_ACCOUNT_ID"
+  igMsgBaseEnv <- lookupEnv "INSTAGRAM_MESSAGING_API_BASE"
   pure AppConfig
     { dbHost = h
     , dbPort = p
@@ -85,13 +114,30 @@ loadConfig = do
     , runMigrations = asBool mig
     , seedTriggerToken = mkSeedToken seedEnv
     , appBaseUrl = fmap (T.strip . T.pack) baseUrlEnv
+    , assetsBaseUrl = fmap (T.strip . T.pack) assetsBaseEnv
     , courseDefaultSlug = maybe "produccion-musical-dic-2025" (T.strip . T.pack) courseSlugEnv
     , courseDefaultMapUrl = fmap (T.strip . T.pack) courseMapEnv
     , courseDefaultInstructorAvatar = fmap (T.strip . T.pack) courseInstructorAvatarEnv
+    , openAiApiKey = openAiKeyEnv >>= nonEmpty . T.pack
+    , openAiModel = fromMaybe "gpt-4o-mini" (openAiModelEnv >>= nonEmpty . T.pack)
+    , openAiEmbedModel = fromMaybe "text-embedding-3-small" (openAiEmbedModelEnv >>= nonEmpty . T.pack)
+    , ragTopK = parseInt 8 ragTopKEnv
+    , ragChunkWords = parseInt 220 ragChunkWordsEnv
+    , ragChunkOverlap = parseInt 40 ragChunkOverlapEnv
+    , ragAvailabilityDays = parseInt 14 ragAvailabilityDaysEnv
+    , ragAvailabilityPerResource = parseInt 6 ragAvailabilityPerResourceEnv
+    , ragRefreshHours = parseInt 24 ragRefreshHoursEnv
+    , ragEmbedBatchSize = parseInt 64 ragEmbedBatchSizeEnv
     , emailConfig = mkEmailConfig smtpHostEnv smtpUserEnv smtpPassEnv smtpFromEnv smtpFromNameEnv smtpPortEnv smtpTlsEnv
     , googleClientId = fmap (T.strip . T.pack) googleClientIdEnv
     , instagramAppToken = fmap (T.strip . T.pack) igTokenEnv
     , instagramGraphBase = maybe "https://graph.instagram.com" (T.strip . T.pack) igBaseEnv
+    , instagramMessagingToken =
+        case fmap (T.strip . T.pack) igMsgTokenEnv of
+          Just val | not (T.null val) -> Just val
+          _ -> fmap (T.strip . T.pack) igTokenEnv
+    , instagramMessagingAccountId = fmap (T.strip . T.pack) igMsgAccountEnv
+    , instagramMessagingApiBase = maybe "https://graph.facebook.com/v20.0" (T.strip . T.pack) igMsgBaseEnv
     }
   where
     get k def = fmap (fromMaybe def) (lookupEnv k)
@@ -101,6 +147,10 @@ loadConfig = do
       "yes"   -> True
       "on"    -> True
       _       -> False
+    parseInt def mVal =
+      case mVal >>= readMaybe of
+        Just n | n > 0 -> n
+        _ -> def
     mkSeedToken mVal =
       case fmap (T.strip . T.pack) mVal of
         Nothing -> Just defaultSeed
@@ -126,7 +176,9 @@ loadConfig = do
         }
 
 defaultAppBase :: Text
-defaultAppBase = "http://localhost:5173"
+defaultAppBase = "https://tdf-app.pages.dev"
+defaultAssetsBase :: Text
+defaultAssetsBase = "https://tdf-hq.fly.dev"
 
 sanitizeBaseUrl :: Text -> Text
 sanitizeBaseUrl base =
@@ -138,6 +190,8 @@ resolveAppBase = sanitizeBaseUrl . fromMaybe defaultAppBase
 
 resolveConfiguredAppBase :: AppConfig -> Text
 resolveConfiguredAppBase cfg = resolveAppBase (appBaseUrl cfg)
+resolveConfiguredAssetsBase :: AppConfig -> Text
+resolveConfiguredAssetsBase cfg = sanitizeBaseUrl (fromMaybe defaultAssetsBase (assetsBaseUrl cfg))
 
 courseSlugFallback :: AppConfig -> Text
 courseSlugFallback cfg =

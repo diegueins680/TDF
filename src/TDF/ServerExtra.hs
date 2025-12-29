@@ -8,13 +8,15 @@
 
 module TDF.ServerExtra where
 
-import           Control.Monad              (filterM, unless, when, join)
+import           Control.Monad              (filterM, unless, when, join, guard)
+import           Control.Applicative        ((<|>))
 import           Control.Monad.Except       (MonadError)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Reader       (MonadReader, ask, asks)
 import           Data.Foldable              (for_)
+import           Data.List                  (sortOn)
 import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (catMaybes, fromMaybe, isJust, isNothing)
+import           Data.Maybe                 (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set                   as Set
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
@@ -23,7 +25,8 @@ import qualified Data.ByteString.Lazy       as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import           Data.Time                  (Day, UTCTime(..), defaultTimeLocale, getCurrentTime, parseTimeM)
 import           Data.UUID.V4               (nextRandom)
-import           Data.Aeson                 (object, (.=))
+import           Data.Aeson                 (object, (.:), (.:?), (.=))
+import           Data.Aeson.Types           (parseMaybe, withObject, (.!=))
 import qualified Data.Aeson                as A
 import           System.IO                  (hPutStrLn, stderr)
 import           Database.Persist        hiding (Active)
@@ -856,10 +859,48 @@ serviceCatalogPublicServer
      )
   => ServerT ServiceCatalogPublicAPI m
 serviceCatalogPublicServer = do
-  entities <- withPool $ selectList
-    [M.ServiceCatalogActive ==. True]
-    [Asc M.ServiceCatalogName]
-  pure (map serviceCatalogToDTO entities)
+  entities <- withPool $ selectList [M.ServiceCatalogActive ==. True] []
+  let sorted = sortOn serviceCatalogSortKey entities
+  pure (map serviceCatalogToDTO sorted)
+  where
+    serviceCatalogSortKey (Entity _ svc) =
+      let nameNorm = normalizeServiceName (M.serviceCatalogName svc)
+      in ( groupRank (M.serviceCatalogKind svc) nameNorm
+         , nameRank nameNorm
+         , nameNorm
+         )
+    groupRank kind nameNorm
+      | nameNorm == "podcast" = 0 :: Int
+      | otherwise =
+          case kind of
+            M.Recording       -> 0
+            M.Rehearsal       -> 1
+            M.Mixing          -> 2
+            M.Mastering       -> 3
+            M.Classes         -> 4
+            M.EventProduction -> 5
+    nameRank nameNorm =
+      case nameNorm of
+        "grabacion de banda"     -> 0 :: Int
+        "grabacion de voz"       -> 1
+        "podcast"                -> 2
+        "ensayo"                 -> 0
+        "practica en dj booth"   -> 1
+        _                        -> 999
+    normalizeServiceName =
+      stripDiacritics . T.unwords . T.words . T.toLower . T.strip
+    stripDiacritics = T.map replaceChar
+      where
+        replaceChar c =
+          case c of
+            'á' -> 'a'
+            'é' -> 'e'
+            'í' -> 'i'
+            'ó' -> 'o'
+            'ú' -> 'u'
+            'ü' -> 'u'
+            'ñ' -> 'n'
+            _   -> c
 
 serviceCatalogServer
   :: ( MonadReader Env m
@@ -1133,6 +1174,136 @@ parseMethod t =
     _ -> BankTransferM
 
 -- Minimal Instagram server (stub): logs webhook payload, stores messages, returns canned responses.
+data IGWebhook = IGWebhook
+  { igEntries :: [IGEntry]
+  } deriving (Show)
+
+data IGEntry = IGEntry
+  { igMessaging :: [IGMessaging]
+  } deriving (Show)
+
+data IGActor = IGActor
+  { igId :: Text
+  } deriving (Show)
+
+data IGMessage = IGMessage
+  { igMid    :: Maybe Text
+  , igText   :: Maybe Text
+  , igIsEcho :: Maybe Bool
+  , igReferral :: Maybe IGReferral
+  } deriving (Show)
+
+data IGReferral = IGReferral
+  { igRefAdId        :: Maybe Text
+  , igRefAdTitle     :: Maybe Text
+  , igRefCampaignId  :: Maybe Text
+  , igRefCampaignName :: Maybe Text
+  , igRefSourceType  :: Maybe Text
+  , igRefSourceId    :: Maybe Text
+  } deriving (Show)
+
+data IGMessaging = IGMessaging
+  { igSender    :: IGActor
+  , igMessage   :: Maybe IGMessage
+  , igReferral  :: Maybe IGReferral
+  , igTimestamp :: Maybe Int
+  } deriving (Show)
+
+instance A.FromJSON IGWebhook where
+  parseJSON = withObject "IGWebhook" $ \o -> do
+    igEntries <- o .:? "entry" .!= []
+    pure IGWebhook{..}
+
+instance A.FromJSON IGEntry where
+  parseJSON = withObject "IGEntry" $ \o -> do
+    igMessaging <- o .:? "messaging" .!= []
+    pure IGEntry{..}
+
+instance A.FromJSON IGActor where
+  parseJSON = withObject "IGActor" $ \o -> do
+    igId <- o .: "id"
+    pure IGActor{..}
+
+instance A.FromJSON IGMessage where
+  parseJSON = withObject "IGMessage" $ \o -> do
+    igMid <- o .:? "mid"
+    igText <- o .:? "text"
+    igIsEcho <- o .:? "is_echo"
+    igReferral <- o .:? "referral"
+    pure IGMessage{..}
+
+instance A.FromJSON IGReferral where
+  parseJSON = withObject "IGReferral" $ \o -> do
+    igRefAdId <- o .:? "ad_id"
+    igRefAdTitle <- o .:? "ad_title"
+    igRefCampaignId <- o .:? "campaign_id"
+    igRefCampaignName <- o .:? "campaign_name"
+    igRefSourceType <- o .:? "source_type"
+    igRefSourceId <- o .:? "source_id"
+    pure IGReferral{..}
+
+instance A.FromJSON IGMessaging where
+  parseJSON = withObject "IGMessaging" $ \o -> do
+    igSender <- o .: "sender"
+    igMessage <- o .:? "message"
+    igReferral <- o .:? "referral"
+    igTimestamp <- o .:? "timestamp"
+    pure IGMessaging{..}
+
+data IGInbound = IGInbound
+  { igInboundExternalId :: Text
+  , igInboundSenderId   :: Text
+  , igInboundText       :: Text
+  , igInboundAdExternalId :: Maybe Text
+  , igInboundAdName     :: Maybe Text
+  , igInboundCampaignExternalId :: Maybe Text
+  , igInboundCampaignName :: Maybe Text
+  , igInboundMetadata   :: Maybe Text
+  } deriving (Show)
+
+extractInstagramInbound :: A.Value -> [IGInbound]
+extractInstagramInbound payload =
+  case parseMaybe A.parseJSON payload of
+    Nothing -> []
+    Just IGWebhook{igEntries} -> concatMap extractEntry igEntries
+  where
+    extractEntry IGEntry{igMessaging} = mapMaybe extractEvent igMessaging
+    extractEvent IGMessaging{igSender, igMessage, igReferral = eventReferral, igTimestamp} = do
+      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral} <- igMessage
+      guard (not (fromMaybe False igIsEcho))
+      body <- igText
+      let ref = eventReferral <|> msgReferral
+          fallbackId = igId igSender <> "-" <> maybe "0" (T.pack . show) igTimestamp
+          externalId = fromMaybe fallbackId igMid
+          (adExt, adName, campExt, campName, meta) = toReferralMeta ref
+      pure IGInbound
+        { igInboundExternalId = externalId
+        , igInboundSenderId = igId igSender
+        , igInboundText = body
+        , igInboundAdExternalId = adExt
+        , igInboundAdName = adName
+        , igInboundCampaignExternalId = campExt
+        , igInboundCampaignName = campName
+        , igInboundMetadata = meta
+        }
+
+    toReferralMeta Nothing = (Nothing, Nothing, Nothing, Nothing, Nothing)
+    toReferralMeta (Just IGReferral{..}) =
+      let adExt = igRefAdId <|> igRefSourceId
+          adName = igRefAdTitle
+          campExt = igRefCampaignId
+          campName = igRefCampaignName
+          metaObj = object
+            [ "ad_id" .= igRefAdId
+            , "ad_title" .= igRefAdTitle
+            , "campaign_id" .= igRefCampaignId
+            , "campaign_name" .= igRefCampaignName
+            , "source_type" .= igRefSourceType
+            , "source_id" .= igRefSourceId
+            ]
+          metaTxt = TE.decodeUtf8 (BL.toStrict (A.encode metaObj))
+      in (adExt, adName, campExt, campName, Just metaTxt)
+
 instagramServer
   :: ( MonadIO m
      , MonadReader Env m
@@ -1143,9 +1314,38 @@ instagramServer =
   :<|> handleReply
   :<|> listMessages
   where
-    handleWebhook payload = liftIO $ do
-      hPutStrLn stderr "[instagram] received webhook payload"
-      BL8.hPutStrLn stderr (A.encode payload)
+    handleWebhook payload = do
+      Env{..} <- ask
+      now <- liftIO getCurrentTime
+      let incoming = extractInstagramInbound payload
+      liftIO $ do
+        hPutStrLn stderr "[instagram] received webhook payload"
+        BL8.hPutStrLn stderr (A.encode payload)
+        flip runSqlPool envPool $ do
+          for_ incoming $ \IGInbound{..} -> do
+            _ <- upsert (M.InstagramMessage igInboundExternalId
+                          igInboundSenderId
+                          Nothing
+                          (Just igInboundText)
+                          "incoming"
+                          igInboundAdExternalId
+                          igInboundAdName
+                          igInboundCampaignExternalId
+                          igInboundCampaignName
+                          igInboundMetadata
+                          Nothing
+                          Nothing
+                          Nothing
+                          now)
+                 [ M.InstagramMessageText =. Just igInboundText
+                 , M.InstagramMessageDirection =. "incoming"
+                 , M.InstagramMessageAdExternalId =. igInboundAdExternalId
+                 , M.InstagramMessageAdName =. igInboundAdName
+                 , M.InstagramMessageCampaignExternalId =. igInboundCampaignExternalId
+                 , M.InstagramMessageCampaignName =. igInboundCampaignName
+                 , M.InstagramMessageMetadata =. igInboundMetadata
+                 ]
+            pure ()
       pure NoContent
 
     handleReply req = do
@@ -1158,6 +1358,14 @@ instagramServer =
                          Nothing
                          (Just (IG.irMessage req))
                          "outgoing"
+                         Nothing
+                         Nothing
+                         Nothing
+                         Nothing
+                         Nothing
+                         Nothing
+                         Nothing
+                         Nothing
                          now)
              [ M.InstagramMessageText =. Just (IG.irMessage req)
              , M.InstagramMessageDirection =. "outgoing"
@@ -1170,18 +1378,30 @@ instagramServer =
             ]
       pure (object ["status" .= ("ok" :: Text), "message" .= msg, "echoRecipient" .= IG.irSenderId req])
 
-    listMessages = do
+    listMessages mLimit mRepliedOnly = do
       Env{..} <- ask
-      rows <- liftIO $ flip runSqlPool envPool $ selectList [] [Desc M.InstagramMessageCreatedAt, LimitTo 100]
+      let limit = normalizeLimit mLimit
+          filters =
+            case mRepliedOnly of
+              Just True -> [M.InstagramMessageRepliedAt !=. Nothing]
+              _ -> []
+      rows <- liftIO $
+        flip runSqlPool envPool $
+          selectList filters [Desc M.InstagramMessageCreatedAt, LimitTo limit]
       let toObj (Entity _ m) = object
             [ "externalId" .= M.instagramMessageExternalId m
             , "senderId"   .= M.instagramMessageSenderId m
             , "senderName" .= M.instagramMessageSenderName m
             , "text"       .= M.instagramMessageText m
             , "direction"  .= M.instagramMessageDirection m
+            , "repliedAt"  .= M.instagramMessageRepliedAt m
+            , "replyText"  .= M.instagramMessageReplyText m
+            , "replyError" .= M.instagramMessageReplyError m
             , "createdAt"  .= M.instagramMessageCreatedAt m
             ]
       pure (A.toJSON (map toObj rows))
+
+    normalizeLimit = max 1 . min 200 . fromMaybe 100
 
 -- Shared helpers ----------------------------------------------------------
 

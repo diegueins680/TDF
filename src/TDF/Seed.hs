@@ -59,11 +59,12 @@ seedAll = do
 
   -- Service Catalog
   let svcSeeds =
-        [ ("Grabación de Banda", Recording, Hourly, Just (50 * 100), Just 1200, "USD", Just "hora")
+        [ ("Grabación de Banda", Recording, Hourly, Just (25 * 100), Just 1200, "USD", Just "hora")
         , ("Grabación de Voz", Recording, Hourly, Just (35 * 100), Just 1200, "USD", Just "hora")
         , ("Mezcla", Mixing, PerSong, Just (120 * 100), Just 1200, "USD", Just "canción")
         , ("Mastering", Mastering, PerSong, Just (70 * 100), Just 1200, "USD", Just "canción")
         , ("Ensayo", Rehearsal, Hourly, Just (30 * 100), Just 1200, "USD", Just "hora")
+        , ("Práctica en DJ Booth", Rehearsal, Hourly, Just (15 * 100), Just 1200, "USD", Just "hora")
         , ("Podcast", EventProduction, PerSong, Just (80 * 100), Just 1200, "USD", Just "episodio")
         , ("Clases", Classes, Package, Nothing, Just 1200, "USD", Just "paquete")
         , ("Producción de eventos", EventProduction, Quote, Nothing, Just 1200, "USD", Nothing)
@@ -278,8 +279,8 @@ seedProductionCourse now = do
       , Trials.courseLocationMapUrl = locationMap
       , Trials.courseWhatsappCtaUrl = whatsappCta
       , Trials.courseLandingUrl = landingUrl
-      , Trials.courseDaws = dawsList
-      , Trials.courseIncludes = includesList
+      , Trials.courseDaws = Nothing
+      , Trials.courseIncludes = Nothing
       , Trials.courseInstructorName = instructorName
       , Trials.courseInstructorBio = instructorBio
       , Trials.courseInstructorAvatarUrl = instructorAvatar
@@ -301,8 +302,8 @@ seedProductionCourse now = do
         , Trials.courseLocationMapUrl = locationMap
         , Trials.courseWhatsappCtaUrl = whatsappCta
         , Trials.courseLandingUrl = landingUrl
-        , Trials.courseDaws = dawsList
-        , Trials.courseIncludes = includesList
+        , Trials.courseDaws = Nothing
+        , Trials.courseIncludes = Nothing
         , Trials.courseInstructorName = instructorName
         , Trials.courseInstructorBio = instructorBio
         , Trials.courseInstructorAvatarUrl = instructorAvatar
@@ -310,6 +311,11 @@ seedProductionCourse now = do
         , Trials.courseUpdatedAt = now
         }
       pure cid
+
+  -- Fuerza arrays como text[] para evitar literales heredados en formato JSON
+  rawExecute
+    "UPDATE course SET daws = ARRAY['Logic','Luna']::text[], includes = ARRAY['Acceso a grabaciones','Certificado de participación','Mentorías','Grupo de WhatsApp','Acceso a la plataforma de TDF Records']::text[] WHERE slug = ?"
+    [PersistText slugVal]
 
   deleteWhere [Trials.CourseSessionModelCourseId ==. courseId]
   forM_ (zip [1 :: Int ..] sessions) $ \(idx, (labelTxt, dayVal)) ->
@@ -599,6 +605,7 @@ roleSlug Teacher       = "teacher"
 roleSlug Reception     = "reception"
 roleSlug Accounting    = "accounting"
 roleSlug LiveSessionsProducer = "live-sessions-producer"
+roleSlug Intern        = "intern"
 roleSlug Artist        = "artist"
 roleSlug Artista       = "artista"
 roleSlug Webmaster     = "webmaster"
@@ -789,8 +796,16 @@ ensureTeacherAvailabilitySlot createdAt teacherId subjectId roomId startAt endAt
 seedInventoryAssets :: SqlPersistT IO ()
 seedInventoryAssets = mapM_ ensureInventoryAsset inventorySeeds
 
-ensureInventoryAsset :: (Text, Maybe Text, Maybe Text, Text) -> SqlPersistT IO ()
-ensureInventoryAsset (nameTxt, brandTxt, modelTxt, categoryTxt) = do
+ensureInventoryAsset :: (Text, Maybe Text, Maybe Text, Text, Maybe Text, Maybe Int, Maybe Text) -> SqlPersistT IO ()
+ensureInventoryAsset (nameTxt, brandTxt, modelTxt, categoryTxt, mDesc, mPriceCents, mPhotoUrl) = do
+  resolvedPhoto <- case mPhotoUrl of
+    Nothing -> pure Nothing
+    Just raw ->
+      if "inventory/" `T.isPrefixOf` raw
+        then do
+          fileExists <- liftIO $ doesFileExist ("assets/" <> T.unpack raw)
+          pure (if fileExists then Just raw else Nothing)
+        else pure (Just raw)
   existing <- selectFirst [ME.AssetName ==. nameTxt] []
   case existing of
     Just (Entity assetId asset) -> do
@@ -804,6 +819,9 @@ ensureInventoryAsset (nameTxt, brandTxt, modelTxt, categoryTxt) = do
             , case (ME.assetModel asset, modelTxt) of
                 (Nothing, Just modelVal) -> Just (ME.AssetModel =. Just modelVal)
                 _                        -> Nothing
+            , case (ME.assetPhotoUrl asset, mPhotoUrl, resolvedPhoto) of
+                (Just current, Just seeded, Nothing) | current == seeded -> Just (ME.AssetPhotoUrl =. Nothing)
+                _ -> Nothing
             ]
       unless (null updates) (update assetId updates)
     Nothing -> do
@@ -814,14 +832,14 @@ ensureInventoryAsset (nameTxt, brandTxt, modelTxt, categoryTxt) = do
         , ME.assetModel                 = modelTxt
         , ME.assetSerialNumber          = Nothing
         , ME.assetPurchaseDate          = Nothing
-        , ME.assetPurchasePriceUsdCents = Nothing
+        , ME.assetPurchasePriceUsdCents = mPriceCents
         , ME.assetCondition             = ME.Good
         , ME.assetStatus                = ME.Active
         , ME.assetLocationId            = Nothing
         , ME.assetOwner                 = "TDF"
         , ME.assetQrCode                = Nothing
-        , ME.assetPhotoUrl              = Nothing
-        , ME.assetNotes                 = Nothing
+        , ME.assetPhotoUrl              = resolvedPhoto
+        , ME.assetNotes                 = mDesc
         , ME.assetWarrantyExpires       = Nothing
         , ME.assetMaintenancePolicy     = ME.None
         , ME.assetNextMaintenanceDue    = Nothing
@@ -841,8 +859,8 @@ instance FromJSON RentSaleRow
 
 loadRentSaleRows :: IO (Maybe [RentSaleRow])
 loadRentSaleRows = do
-  exists <- doesFileExist "data/inventory_rent_sale.json"
-  if not exists
+  fileExists <- doesFileExist "data/inventory_rent_sale.json"
+  if not fileExists
     then pure Nothing
     else do
       raw <- BL.readFile "data/inventory_rent_sale.json"
@@ -921,8 +939,10 @@ seedMarketplaceListings = do
     seedFromStatic now = do
       assets <- selectList [] [Asc ME.AssetName]
       forM_ assets $ \(Entity assetId asset) -> do
-        case Map.lookup (ME.assetName asset) marketplacePriceCents of
-          Nothing -> pure ()
+        let basePrice = Map.lookup (ME.assetName asset) marketplacePriceCents
+                         <|> ME.assetPurchasePriceUsdCents asset
+        case basePrice of
+          Nothing         -> pure ()
           Just baseCents -> do
             let listingPrice = applyMarketplaceMarkup baseCents
                 titleTxt = ME.assetName asset
@@ -953,31 +973,65 @@ seedMarketplaceListings = do
                   }
         pure ()
 
-inventorySeeds :: [(Text, Maybe Text, Maybe Text, Text)]
+inventorySeeds :: [(Text, Maybe Text, Maybe Text, Text, Maybe Text, Maybe Int, Maybe Text)]
 inventorySeeds =
-  [ ("AKG D112", Just "AKG", Just "D112", "mic")
-  , ("Shure SM57", Just "Shure", Just "SM57", "mic")
-  , ("Sennheiser MD421", Just "Sennheiser", Just "MD421", "mic")
-  , ("AKG C414", Just "AKG", Just "C414", "mic")
-  , ("Electro-Voice RE20", Just "Electro-Voice", Just "RE20", "mic")
-  , ("Neumann KM184", Just "Neumann", Just "KM184", "mic")
-  , ("Royer R121", Just "Royer", Just "R121", "mic")
-  , ("Sennheiser e906", Just "Sennheiser", Just "e906", "mic")
-  , ("Sennheiser e835", Just "Sennheiser", Just "e835", "mic")
-  , ("Sennheiser MKE600", Just "Sennheiser", Just "MKE600", "mic")
-  , ("Neumann KU-100", Just "Neumann", Just "KU-100", "mic")
-  , ("Neve RNDI", Just "Rupert Neve Designs", Just "RNDI", "di")
-  , ("Aguilar ToneHammer", Just "Aguilar", Just "ToneHammer", "di/pre")
-  , ("Avalon 737sp", Just "Avalon", Just "VT-737sp", "pre")
-  , ("UA 2-610", Just "Universal Audio", Just "2-610", "pre")
-  , ("API 512v", Just "API", Just "512v", "pre")
-  , ("Chandler Limited REDD.47", Just "Chandler Limited", Just "REDD.47", "pre")
-  , ("Burl BAD8", Just "Burl", Just "BAD8", "converter-ad")
-  , ("Burl B4", Just "Burl", Just "B4", "pre/converter")
-  , ("RedNet MP8R", Just "Focusrite", Just "MP8R", "pre/dante")
-  , ("Red 8Pre", Just "Focusrite", Just "Red 8Pre", "interface")
-  , ("PSM-900", Just "Shure", Just "PSM-900", "iem")
-  , ("Shure SM58", Just "Shure", Just "SM58", "mic")
+  [ ("MXR Bass Envelope Filter M82", Just "MXR", Just "M82", "fx/pedal", Just "Bass envelope filter pedal with Dry/FX blend, Decay, Q, and Sensitivity controls.", Just 18000, Just "inventory/mxr-bass-envelope-filter.jpeg")
+  , ("Boss LMB-3 Bass Limiter Enhancer", Just "Boss", Just "LMB-3", "fx/pedal", Just "Bass limiter/enhancer pedal with threshold, enhance, level, and ratio controls.", Just 11000, Just "inventory/boss-lmb-3.jpeg")
+  , ("Boss BF-3 Flanger", Just "Boss", Just "BF-3", "fx/pedal", Just "Stereo flanger with guitar/bass inputs and gate/pan, ultra, and momentary modes.", Just 12000, Just "inventory/unknown-05dfa8a8.jpeg")
+  , ("Boss GEB-7 Bass Equalizer", Just "Boss", Just "GEB-7", "fx/pedal", Just "7-band bass EQ pedal (50Hz–10kHz) with level slider.", Just 11000, Just "inventory/boss-geb-7.jpeg")
+  , ("Electro-Harmonix Q-Tron Plus", Just "Electro-Harmonix", Just "Q-Tron Plus", "fx/pedal", Just "Envelope filter with LP/BP/HP modes, sweep range, peak/gain/boost controls, and effects loop.", Just 19000, Just "inventory/ehx-q-tron-plus.jpeg")
+  , ("Moog Minitaur Analog Bass Synthesizer", Just "Moog", Just "Minitaur", "synth", Just "Analog bass synth with dual oscillators, ladder filter, envelopes, modulation, and glide.", Just 65000, Just "inventory/moog-minitaur.jpeg")
+  , ("Boss OS-2 OverDrive/Distortion", Just "Boss", Just "OS-2", "fx/pedal", Just "Overdrive/distortion pedal with level, tone, drive, and OD/DS color blend.", Just 9000, Just "inventory/boss-os-2.jpeg")
+  , ("Custom Spring Reverb Filter Unit", Just "Custom", Just "Spring Filter FX", "fx/outboard", Just "Outboard spring reverb with voltage-controlled filter, LFO modulation, and wet/dry output mixer.", Just 35000, Just "inventory/custom-spring-filter.jpeg")
+  , ("Boss CH-1 Super Chorus", Just "Boss", Just "CH-1", "fx/pedal", Just "Stereo chorus pedal with level, EQ hi/lo, rate, and depth controls.", Just 9000, Just "inventory/boss-ch-1.jpeg")
+  , ("Electro-Harmonix V256 Vocoder", Just "Electro-Harmonix", Just "V256", "fx/pedal", Just "Vocoder with multiple robot/drone modes, blend, bands, tone, pitch, gender-bender, and mic gain.", Just 25000, Just "inventory/ehx-v256.jpeg")
+  , ("CMATMods Signa Drive", Just "CMATMods", Just "Signa Drive", "fx/pedal", Just "Overdrive pedal with gain/tone/level controls and mid-toggle voicing.", Just 14000, Just "inventory/custom-signa-drive.jpeg")
+  , ("EarthQuaker Devices Disaster Transport SR", Just "EarthQuaker Devices", Just "Disaster Transport SR", "fx/pedal", Just "Dual delay and reverb machine with modulation (depth/rate), blend, repeats, and independent delay channels.", Just 32000, Just "inventory/eqd-disaster-transport-sr.jpeg")
+  , ("Death By Audio Robot", Just "Death By Audio", Just "Robot", "fx/pedal", Just "8-bit/lo-fi pitch-shifting robot fuzz with volume, intensity, and 4-mode selector.", Just 24000, Just "inventory/death-by-audio-robot.jpeg")
+  , ("TC Electronic PolyTune", Just "TC Electronic", Just "PolyTune", "fx/pedal", Just "Polyphonic tuner pedal with true bypass and selectable display modes.", Just 9000, Just "inventory/tc-polytune.jpeg")
+  , ("Tech 21 SansAmp Bass Driver Deluxe", Just "Tech 21", Just "SansAmp Bass Driver Deluxe", "fx/pedal", Just "Bass preamp/DI with drive, 3-band EQ, presence, blend, dual inputs, and programmable channels.", Just 23000, Just "inventory/tech21-sansamp-bass-driver-deluxe.jpeg")
+  , ("Electro-Harmonix Q-Tron Plus (Large)", Just "Electro-Harmonix", Just "Q-Tron Plus", "fx/pedal", Just "Envelope filter with peak/gain/range controls, fast/slow response, and FX loop.", Just 19000, Just "inventory/ehx-q-tron-plus-large.jpeg")
+  , ("BBE Sonic Stomp Mini", Just "BBE", Just "Sonic Stomp Mini", "fx/pedal", Just "Sonic maximizer-style enhancer with process and low contour controls.", Just 9000, Just "inventory/bbe-sonic-stomp.jpeg")
+  , ("Electro-Harmonix HOG2 Harmonic Octave Generator", Just "Electro-Harmonix", Just "HOG2", "fx/pedal", Just "Harmonic octave generator with sliders for harmonic levels, envelope/filter, presets, and expression control.", Just 42000, Just "inventory/ehx-hog2.jpeg")
+  , ("Moog Moogerfooger Ring Modulator MF-102", Just "Moog", Just "MF-102", "fx/pedal", Just "Analog ring modulator with LFO amount/rate, drive, mix, and frequency controls.", Just 32000, Just "inventory/moog-moogerfooger-ring-mod.jpeg")
+  , ("EarthQuaker Devices Plumes", Just "EarthQuaker Devices", Just "Plumes", "fx/pedal", Just "Overdrive pedal with three clipping modes plus level/tone/gain controls.", Just 12000, Just "inventory/eqd-plumes.jpeg")
+  , ("Boss RC-20XL Loop Station", Just "Boss", Just "RC-20XL", "fx/looper", Just "Twin-pedal looper with phrase storage, tap tempo, reverse, auto start, and mic/inst inputs.", Just 22000, Just "inventory/boss-rc-20xl.jpeg")
+  , ("Moog CP-251 Control Processor", Just "Moog", Just "CP-251", "fx/outboard", Just "Control processor with mixer, lag, LFO, attenuators, S&H, noise, and multiples for CV routing.", Just 43000, Just "inventory/moog-cp251.jpeg")
+  , ("Chandler Limited Little Devil Colored Boost", Just "Chandler Limited", Just "Little Devil Boost", "fx/pedal", Just "Colored boost with color, feedback/bias controls and mids/highs/bright voicing toggles.", Just 25000, Just "inventory/chandler-limited-little-devil-boost.jpeg")
+  , ("DOD Meatbox SubSynth", Just "DOD", Just "Meatbox", "fx/pedal", Just "Sub-synth/low-end enhancer pedal with sub and low controls for deep bass reinforcement.", Just 18000, Just "inventory/dod-meatbox.jpeg")
+  , ("MFB Tanzbär Analog Drum Machine", Just "MFB", Just "Tanzbär", "synth/drum", Just "Analog drum machine with multiple drum voices, filters, modulation, and individual outs.", Just 70000, Just "inventory/mfb-tanzbar.jpeg")
+  , ("Moog MF Drive", Just "Moog", Just "MF Drive", "fx/pedal", Just "Ladder-filter drive pedal with gain, tone, output, filter, and peak switch; expression input.", Just 17000, Just "inventory/moog-mf-drive.jpeg")
+  , ("Musitronics Mu-Tron III", Just "Musitronics", Just "Mu-Tron III", "fx/pedal", Just "Classic envelope filter/auto-wah with LP/BP/HP modes, peak, gain, range, and drive switches.", Just 30000, Just "inventory/mutron-iii.jpeg")
+  , ("Moog Moogerfooger Bass MuRF", Just "Moog", Just "Bass MuRF", "fx/pedal", Just "Bass MuRF filter sequencer with animation patterns, envelope, mix, rate, and 8 filter sliders.", Just 48000, Just "inventory/moog-bass-murf.jpeg")
+  , ("Electro-Harmonix The Mole Bass Booster", Just "Electro-Harmonix", Just "The Mole", "fx/pedal", Just "Bass booster pedal with single boost control in nano form factor.", Just 7000, Just "inventory/ehx-the-mole.jpeg")
+  , ("Electro-Harmonix Deluxe Bass Big Muff Pi", Just "Electro-Harmonix", Just "Deluxe Bass Big Muff", "fx/pedal", Just "Bass fuzz with blend, tone, sustain, gate, and crossover controls plus crossover footswitch.", Just 17000, Just "inventory/ehx-deluxe-bass-big-muff.jpeg")
+  , ("Keeley Katana Clean Boost", Just "Keeley Electronics", Just "Katana", "fx/pedal", Just "Clean boost with pull-boost mode and external level control (trimpot).", Just 14000, Just "inventory/keeley-katana.jpeg")
+  , ("Boss DD-7 Digital Delay", Just "Boss", Just "DD-7", "fx/pedal", Just "Digital delay with multiple modes (analog, modulate, reverse), tap tempo/exp, stereo I/O.", Just 12000, Just "inventory/boss-dd-7.jpeg")
+  , ("Vertex Compressor", Just "Vertex Effects", Just "Compressor", "fx/pedal", Just "Compressor pedal with attack, clipping/ratio, and level controls.", Just 18000, Just "inventory/vertex-compressor.jpeg")
+  , ("QHA-4 4-Channel Headphone Amplifier", Just "QHA", Just "QHA-4", "amp/headphone", Just "Desktop 4-channel stereo headphone amplifier with independent level controls for each output.", Just 6000, Just "inventory/headphone-amp-qha.jpeg")
+  , ("AKG D112", Just "AKG", Just "D112", "mic", Nothing, Nothing, Nothing)
+  , ("Shure SM57", Just "Shure", Just "SM57", "mic", Nothing, Nothing, Nothing)
+  , ("Sennheiser MD421", Just "Sennheiser", Just "MD421", "mic", Nothing, Nothing, Nothing)
+  , ("AKG C414", Just "AKG", Just "C414", "mic", Nothing, Nothing, Nothing)
+  , ("Electro-Voice RE20", Just "Electro-Voice", Just "RE20", "mic", Nothing, Nothing, Nothing)
+  , ("Neumann KM184", Just "Neumann", Just "KM184", "mic", Nothing, Nothing, Nothing)
+  , ("Royer R121", Just "Royer", Just "R121", "mic", Nothing, Nothing, Nothing)
+  , ("Sennheiser e906", Just "Sennheiser", Just "e906", "mic", Nothing, Nothing, Nothing)
+  , ("Sennheiser e835", Just "Sennheiser", Just "e835", "mic", Nothing, Nothing, Nothing)
+  , ("Sennheiser MKE600", Just "Sennheiser", Just "MKE600", "mic", Nothing, Nothing, Nothing)
+  , ("Neumann KU-100", Just "Neumann", Just "KU-100", "mic", Nothing, Nothing, Nothing)
+  , ("Neve RNDI", Just "Rupert Neve Designs", Just "RNDI", "di", Nothing, Nothing, Nothing)
+  , ("Aguilar ToneHammer", Just "Aguilar", Just "ToneHammer", "di/pre", Nothing, Nothing, Nothing)
+  , ("Avalon 737sp", Just "Avalon", Just "VT-737sp", "pre", Nothing, Nothing, Nothing)
+  , ("UA 2-610", Just "Universal Audio", Just "2-610", "pre", Nothing, Nothing, Nothing)
+  , ("API 512v", Just "API", Just "512v", "pre", Nothing, Nothing, Nothing)
+  , ("Chandler Limited REDD.47", Just "Chandler Limited", Just "REDD.47", "pre", Nothing, Nothing, Nothing)
+  , ("Burl BAD8", Just "Burl", Just "BAD8", "converter-ad", Nothing, Nothing, Nothing)
+  , ("Burl B4", Just "Burl", Just "B4", "pre/converter", Nothing, Nothing, Nothing)
+  , ("RedNet MP8R", Just "Focusrite", Just "MP8R", "pre/dante", Nothing, Nothing, Nothing)
+  , ("Red 8Pre", Just "Focusrite", Just "Red 8Pre", "interface", Nothing, Nothing, Nothing)
+  , ("PSM-900", Just "Shure", Just "PSM-900", "iem", Nothing, Nothing, Nothing)
+  , ("Shure SM58", Just "Shure", Just "SM58", "mic", Nothing, Nothing, Nothing)
   ]
 
 -- Approximate 2025 USD street prices (before markup). Each listing is published at +25%.

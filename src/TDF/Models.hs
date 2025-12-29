@@ -42,6 +42,7 @@ data RoleEnum
   | Reception
   | Accounting
   | LiveSessionsProducer
+  | Intern
   | Artist
   | Artista
   | Webmaster
@@ -139,6 +140,7 @@ roleToText Teacher       = "Teacher"
 roleToText Reception     = "Reception"
 roleToText Accounting    = "Accounting"
 roleToText LiveSessionsProducer = "Live Sessions Producer"
+roleToText Intern        = "Intern"
 roleToText Artist        = "Artist"
 roleToText Artista       = "Artista"
 roleToText Webmaster     = "Webmaster"
@@ -179,6 +181,9 @@ roleFromText raw =
     "live-session-producer" -> Just LiveSessionsProducer
     "live sessions producer" -> Just LiveSessionsProducer
     "live session producer" -> Just LiveSessionsProducer
+    "intern"       -> Just Intern
+    "pasante"      -> Just Intern
+    "practicante"  -> Just Intern
     "artist"       -> Just Artist
     "artista"      -> Just Artista
     "webmaster"    -> Just Webmaster
@@ -292,6 +297,20 @@ PartyFollow
     createdAt        UTCTime
     UniquePartyFollow followerPartyId followingPartyId
     deriving Show Generic
+ChatThread
+    dmPartyA         PartyId
+    dmPartyB         PartyId
+    createdAt        UTCTime
+    updatedAt        UTCTime
+    UniqueChatThread dmPartyA dmPartyB
+    deriving Show Generic
+ChatMessage
+    threadId         ChatThreadId
+    senderPartyId    PartyId
+    body             Text
+    createdAt        UTCTime
+    deriving Show Generic
+    IndexChatMessageThread threadId
 PartyRadioPresence
     partyId          PartyId
     streamUrl        Text
@@ -468,6 +487,14 @@ InstagramMessage
     senderName       Text Maybe
     text             Text Maybe
     direction        Text
+    adExternalId     Text Maybe
+    adName           Text Maybe
+    campaignExternalId Text Maybe
+    campaignName     Text Maybe
+    metadata         Text Maybe
+    repliedAt        UTCTime Maybe
+    replyText        Text Maybe
+    replyError       Text Maybe
     createdAt        UTCTime
     UniqueInstagramMessage externalId
     deriving Show Generic
