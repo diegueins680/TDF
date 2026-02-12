@@ -4,8 +4,9 @@ module Main where
 
 import qualified Network.Wai.Handler.Warp as Warp
 import           Control.Concurrent      (forkFinally, myThreadId, throwTo, threadDelay)
-import           Control.Exception       (SomeException, handle, throwIO, try)
+import           Control.Exception       (SomeException, displayException, handle, throwIO, try)
 import           Control.Monad            (forM_, when)
+import           Control.Monad.IO.Class   (liftIO)
 import qualified Data.ByteString.Char8    as BS
 import           Data.Int                (Int64)
 import           Data.IORef              (newIORef, readIORef, writeIORef)
@@ -19,13 +20,13 @@ import           Database.Persist.Types   (PersistValue (PersistText))
 import           Network.HTTP.Types       (RequestHeaders, status200, status500, status503)
 import           Network.Wai              (Application, Middleware, mapResponseHeaders, pathInfo, requestHeaders, responseHeaders,
                                            responseLBS)
-import           System.IO                (hSetEncoding, stdout, stderr)
+import           System.IO                (hPutStrLn, hSetEncoding, stdout, stderr)
 import           GHC.IO.Encoding          (utf8, setLocaleEncoding)
 import           Text.Read                (readMaybe)
 
 import           TDF.Cors                 (corsPolicy)
 
-import           TDF.Config     (appPort, dbConnString, loadConfig, resetDb, runMigrations, seedDatabase)
+import           TDF.Config     (AppConfig, appPort, dbConnString, loadConfig, ragEmbeddingDim, resetDb, runMigrations, seedDatabase)
 import           TDF.Cron       (startCoursePaymentReminderJob, startInstagramSyncJob, startSocialAutoReplyJob)
 import           TDF.DB         (Env(..), ConnectionPool, makePool)
 import           TDF.Models     (EntityField (PartyRoleActive), PartyId, PartyRole(..), RoleEnum, migrateAll)
@@ -68,7 +69,10 @@ main = do
               let hs = responseHeaders res
                   merged = extra ++ filter (\(k, _) -> k /= "Access-Control-Allow-Origin" && k /= "Vary") hs
               in mapResponseHeaders (const merged) res
-        in handle (\(_ :: SomeException) -> send (responseLBS status500 extra "Internal server error")) $
+        in handle (\(ex :: SomeException) -> do
+              hPutStrLn stderr ("Unhandled exception: " <> displayException ex)
+              send (responseLBS status500 extra "Internal server error")
+           ) $
              next req (\res -> send (applyHeaders res))
       rootOk :: Middleware
       rootOk next req send =
@@ -100,7 +104,7 @@ main = do
         if runMigrations cfg
           then do
             putStrLn "Running DB migrations..."
-            runSqlPool runAllMigrations pool
+            runSqlPool (runAllMigrations cfg) pool
           else
             putStrLn "RUN_MIGRATIONS disabled (using pre-initialized schema)."
         when (seedDatabase cfg) $ do
@@ -133,40 +137,93 @@ resetSchema = do
   rawExecute "GRANT ALL ON SCHEMA public TO CURRENT_USER" []
   rawExecute "GRANT ALL ON SCHEMA public TO public" []
 
-runAllMigrations :: SqlPersistT IO ()
-runAllMigrations = do
+runAllMigrations :: AppConfig -> SqlPersistT IO ()
+runAllMigrations cfg = do
   rawExecute "CREATE EXTENSION IF NOT EXISTS pgcrypto" []
-  rawExecute "CREATE EXTENSION IF NOT EXISTS vector" []
-  rawExecute
-    "CREATE TABLE IF NOT EXISTS rag_chunk ( \
-    \  id BIGSERIAL PRIMARY KEY, \
-    \  source TEXT NOT NULL, \
-    \  source_id TEXT, \
-    \  chunk_index INT NOT NULL, \
-    \  content TEXT NOT NULL, \
-    \  metadata JSONB, \
-    \  embedding vector(1536) NOT NULL, \
-    \  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
-    \  updated_at TIMESTAMPTZ NOT NULL DEFAULT now() \
-    \)" []
-  rawExecute
-    "CREATE UNIQUE INDEX IF NOT EXISTS rag_chunk_source_key \
-    \ON rag_chunk (source, source_id, chunk_index)" []
-  rawExecute
-    "CREATE INDEX IF NOT EXISTS rag_chunk_embedding_idx \
-    \ON rag_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)" []
-  rawExecute
-    "CREATE INDEX IF NOT EXISTS rag_chunk_source_idx ON rag_chunk (source)" []
-  rawExecute
-    "CREATE INDEX IF NOT EXISTS rag_chunk_source_id_idx ON rag_chunk (source_id)" []
+  vectorAvailable <- hasVectorExtension
+  if vectorAvailable
+    then do
+      rawExecute "CREATE EXTENSION IF NOT EXISTS vector" []
+      let embeddingDim = ragEmbeddingDim cfg
+      rawExecute
+        (T.concat
+          [ "CREATE TABLE IF NOT EXISTS rag_chunk ( "
+          , " id BIGSERIAL PRIMARY KEY, "
+          , " source TEXT NOT NULL, "
+          , " source_id TEXT, "
+          , " chunk_index INT NOT NULL, "
+          , " content TEXT NOT NULL, "
+          , " metadata JSONB, "
+          , " embedding vector("
+          , T.pack (show embeddingDim)
+          , ") NOT NULL, "
+          , " created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+          , " updated_at TIMESTAMPTZ NOT NULL DEFAULT now() "
+          , ")"
+          ]) []
+      rawExecute
+        "CREATE UNIQUE INDEX IF NOT EXISTS rag_chunk_source_key \
+        \ON rag_chunk (source, source_id, chunk_index)" []
+      rawExecute
+        "CREATE INDEX IF NOT EXISTS rag_chunk_embedding_idx \
+        \ON rag_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)" []
+      rawExecute
+        "CREATE INDEX IF NOT EXISTS rag_chunk_source_idx ON rag_chunk (source)" []
+      rawExecute
+        "CREATE INDEX IF NOT EXISTS rag_chunk_source_id_idx ON rag_chunk (source_id)" []
+    else liftIO $ putStrLn "Vector extension not available; skipping rag_chunk setup."
   renameLegacyPartyRoleConstraint
   legacyRoles <- captureLegacyPartyRoles
   dropLegacyPartyColumns
   runMigration migrateAll
   runMigration migrateExtra
+  ensureBrainTagsArray
   runMigration migrateSocialEvents
   runMigration migrateTrials
   restoreLegacyPartyRoles legacyRoles
+
+hasVectorExtension :: SqlPersistT IO Bool
+hasVectorExtension = do
+  rows <- rawSql
+    "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
+    [] :: SqlPersistT IO [Single Int]
+  pure (not (null rows))
+
+ensureBrainTagsArray :: SqlPersistT IO ()
+ensureBrainTagsArray = do
+  mType <- lookupColumnType "studio_brain_entry" "tags"
+  case mType of
+    Nothing -> pure ()
+    Just (dataType, udtName) -> do
+      let normalizedType = T.toLower dataType
+          normalizedUdt = T.toLower udtName
+      if normalizedType == "array" && normalizedUdt == "_text"
+        then pure ()
+        else if normalizedType `elem` ["text", "character varying", "varchar"]
+          then rawExecute
+            "ALTER TABLE studio_brain_entry \
+            \ALTER COLUMN tags TYPE text[] \
+            \USING CASE \
+            \WHEN tags IS NULL OR tags = '' THEN NULL \
+            \ELSE string_to_array(tags, ',') \
+            \END"
+            []
+          else if normalizedType == "jsonb" || normalizedUdt == "jsonb"
+            then rawExecute
+              "ALTER TABLE studio_brain_entry \
+              \ALTER COLUMN tags TYPE text[] \
+              \USING CASE \
+              \WHEN tags IS NULL THEN NULL \
+              \WHEN jsonb_typeof(tags) = 'array' \
+              \  THEN ARRAY(SELECT jsonb_array_elements_text(tags)) \
+              \ELSE string_to_array(trim(both '\"' from tags::text), ',') \
+              \END"
+              []
+            else do
+              let message =
+                    "[migrations] studio_brain_entry.tags type=" <> T.unpack dataType
+                      <> " (" <> T.unpack udtName <> "); skipping conversion."
+              liftIO $ putStrLn message
 
 captureLegacyPartyRoles :: SqlPersistT IO [(PartyId, RoleEnum)]
 captureLegacyPartyRoles = do
@@ -242,3 +299,17 @@ columnExists column = do
     \LIMIT 1"
     [PersistText "party", PersistText column] :: SqlPersistT IO [Single Int]
   pure (not (null rows))
+
+lookupColumnType :: Text -> Text -> SqlPersistT IO (Maybe (Text, Text))
+lookupColumnType tableName columnName = do
+  rows <- rawSql
+    "SELECT data_type, udt_name \
+    \FROM information_schema.columns \
+    \WHERE table_schema = 'public' \
+    \  AND table_name = ? \
+    \  AND column_name = ? \
+    \LIMIT 1"
+    [PersistText tableName, PersistText columnName] :: SqlPersistT IO [(Single Text, Single Text)]
+  pure $ case rows of
+    (Single dataType, Single udtName) : _ -> Just (dataType, udtName)
+    _ -> Nothing

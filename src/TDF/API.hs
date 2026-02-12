@@ -6,6 +6,7 @@
 
 module TDF.API where
 
+import           Control.Applicative ((<|>))
 import           Servant
 import           Database.Persist          (Entity)
 import           Data.Int (Int64)
@@ -13,17 +14,21 @@ import           Data.Text (Text)
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
 import           Data.Char (toLower)
-import           Data.Aeson (ToJSON(..), FromJSON(..), Value, object, (.=), defaultOptions, genericParseJSON, genericToJSON, fieldLabelModifier)
+import           Data.Aeson (ToJSON(..), FromJSON(..), Value(..), object, (.=), defaultOptions, genericParseJSON, genericToJSON, fieldLabelModifier)
+import           Data.Aeson.Types (camelTo2, withObject, (.:?))
 import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
 import           TDF.API.Future    (FutureAPI)
 import           TDF.API.Bands     (BandsAPI)
+import           TDF.API.Facebook  (FacebookAPI, FacebookWebhookAPI)
 import           TDF.API.Inventory (InventoryAPI)
 import           TDF.API.Payments (PaymentsAPI)
-import           TDF.API.Instagram (InstagramAPI)
+import           TDF.API.Instagram (InstagramAPI, InstagramWebhookAPI)
+import           TDF.API.InstagramOAuth (InstagramOAuthAPI)
 import           TDF.API.Internships (InternshipsAPI)
 import           TDF.API.Pipelines (PipelinesAPI)
+import           TDF.API.Proposals (ProposalsAPI)
 import           TDF.API.Rooms     (RoomsAPI, RoomsPublicAPI)
 import           TDF.API.Sessions  (SessionsAPI)
 import           TDF.API.Drive     (DriveAPI)
@@ -35,7 +40,7 @@ import           TDF.Meta         (MetaAPI)
 import           TDF.Version      (VersionInfo)
 import qualified TDF.ModelsExtra  as ME
 import           TDF.Routes.Academy (AcademyAPI)
-import           TDF.Routes.Courses (CoursesPublicAPI, CoursesAdminAPI, WhatsAppWebhookAPI)
+import           TDF.Routes.Courses (CoursesPublicAPI, CoursesAdminAPI, WhatsAppHooksAPI, WhatsAppWebhookAPI)
 import           TDF.API.LiveSessions (LiveSessionsAPI)
 import           TDF.API.Feedback    (FeedbackAPI)
 import           TDF.API.Calendar    (CalendarAPI)
@@ -51,6 +56,7 @@ type InputListEntry = ME.InputRow
 
 type VersionAPI = "version" :> Get '[JSON] VersionInfo
 type AssetsAPI  = "inventory" :> Raw
+type AssetsServeAPI = "assets" :> "serve" :> Raw
 
 type InputListPublicAPI =
        "inventory"
@@ -124,11 +130,75 @@ type ChatAPI =
          :> ReqBody '[JSON] ChatSendMessageRequest
          :> Post '[JSON] ChatMessageDTO
 
+type ChatKitSessionAPI =
+       "chatkit" :> "sessions" :> ReqBody '[JSON] ChatKitSessionRequest :> Post '[JSON] ChatKitSessionResponse
+
+type TidalAgentAPI =
+       "tidal-agent" :> ReqBody '[JSON] TidalAgentRequest :> Post '[JSON] TidalAgentResponse
+
 type WhatsAppMessagesAPI =
        "whatsapp" :> "messages"
          :> QueryParam "limit" Int
-         :> QueryParam "repliedOnly" Bool
+         :> QueryParam "direction" Text
+         :> QueryParam "repliedOnly" Text
          :> Get '[JSON] Value
+
+type WhatsAppConsentRoutes =
+       "consent"
+         :> ReqBody '[JSON] WhatsAppConsentRequest
+         :> Post '[JSON] WhatsAppConsentResponse
+  :<|> "opt-out"
+         :> ReqBody '[JSON] WhatsAppOptOutRequest
+         :> Post '[JSON] WhatsAppConsentResponse
+  :<|> "consent"
+         :> QueryParam "phone" Text
+         :> Get '[JSON] WhatsAppConsentStatus
+
+type WhatsAppConsentAPI =
+       "whatsapp" :> WhatsAppConsentRoutes
+
+type WhatsAppConsentPublicAPI =
+       "public" :> "whatsapp" :> WhatsAppConsentRoutes
+
+data WhatsAppConsentRequest = WhatsAppConsentRequest
+  { wcrPhone       :: Text
+  , wcrName        :: Maybe Text
+  , wcrConsent     :: Bool
+  , wcrSource      :: Maybe Text
+  , wcrSendMessage :: Maybe Bool
+  } deriving (Show, Generic)
+
+instance FromJSON WhatsAppConsentRequest where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data WhatsAppOptOutRequest = WhatsAppOptOutRequest
+  { worPhone       :: Text
+  , worReason      :: Maybe Text
+  , worSendMessage :: Maybe Bool
+  } deriving (Show, Generic)
+
+instance FromJSON WhatsAppOptOutRequest where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data WhatsAppConsentStatus = WhatsAppConsentStatus
+  { wcsPhone       :: Text
+  , wcsConsent     :: Bool
+  , wcsConsentedAt :: Maybe UTCTime
+  , wcsRevokedAt   :: Maybe UTCTime
+  , wcsDisplayName :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON WhatsAppConsentStatus where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data WhatsAppConsentResponse = WhatsAppConsentResponse
+  { wcrsStatus      :: WhatsAppConsentStatus
+  , wcrsMessageSent :: Bool
+  , wcrsMessage     :: Maybe Text
+  } deriving (Show, Generic)
+
+instance ToJSON WhatsAppConsentResponse where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 4 }
 
 type BookingAPI =
        QueryParam "bookingId" Int64
@@ -158,6 +228,7 @@ type ReceiptAPI =
   :<|> Capture "receiptId" Int64 :> Get '[JSON] ReceiptDTO
 
 type HealthAPI = Get '[JSON] HealthStatus
+type McpAPI = ReqBody '[JSON] Value :> Post '[JSON] Value
 
 type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
 type GoogleLoginAPI = ReqBody '[JSON] GoogleLoginRequest :> Post '[JSON] LoginResponse
@@ -213,6 +284,7 @@ type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
 type ProtectedAPI =
        "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
+  :<|> ProposalsAPI
   :<|> ServiceCatalogAPI
   :<|> "packages" :> PackageAPI
   :<|> "invoices" :> InvoiceAPI
@@ -229,10 +301,15 @@ type ProtectedAPI =
   :<|> FeedbackAPI
   :<|> "marketplace" :> MarketplaceAdminAPI
   :<|> "payments" :> PaymentsAPI
-  :<|> "instagram" :> InstagramAPI
+  :<|> InstagramAPI
+  :<|> FacebookAPI
+  :<|> InstagramOAuthAPI
   :<|> WhatsAppMessagesAPI
+  :<|> WhatsAppConsentAPI
   :<|> "social" :> SocialAPI
   :<|> ChatAPI
+  :<|> ChatKitSessionAPI
+  :<|> TidalAgentAPI
   :<|> "social-sync" :> SocialSyncAPI
   :<|> "social-events" :> SocialEventsAPI
   :<|> InternshipsAPI
@@ -249,6 +326,7 @@ type ProtectedAPI =
 type API =
        VersionAPI
   :<|> "health" :> HealthAPI
+  :<|> "mcp" :> McpAPI
   :<|> "login"  :> LoginAPI
   :<|> "login"  :> "google" :> GoogleLoginAPI
   :<|> "signup" :> SignupAPI
@@ -256,6 +334,9 @@ type API =
   :<|> "v1" :> AuthV1API
   :<|> "fans" :> FanPublicAPI
   :<|> CoursesPublicAPI
+  :<|> InstagramWebhookAPI
+  :<|> FacebookWebhookAPI
+  :<|> WhatsAppHooksAPI
   :<|> WhatsAppWebhookAPI
   :<|> MetaAPI
   :<|> AcademyAPI
@@ -263,6 +344,7 @@ type API =
   :<|> "input-list" :> InputListAPI
   :<|> AdsPublicAPI
   :<|> CmsPublicAPI
+  :<|> WhatsAppConsentPublicAPI
   :<|> "marketplace" :> MarketplaceAPI
   :<|> "contracts" :> ContractsAPI
   :<|> RadioPublicAPI
@@ -271,6 +353,7 @@ type API =
   :<|> "engineers" :> Get '[JSON] [PublicEngineerDTO]
   :<|> BookingPublicAPI
   :<|> AssetsAPI
+  :<|> AssetsServeAPI
   :<|> AuthProtect "bearer-token" :> ProtectedAPI
 
 data HealthStatus = HealthStatus { status :: String, db :: String }
@@ -381,6 +464,44 @@ data CmsContentDTO = CmsContentDTO
   } deriving (Show, Generic)
 instance ToJSON CmsContentDTO where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data ChatKitSessionRequest = ChatKitSessionRequest
+  { cksWorkflowId :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON ChatKitSessionRequest where
+  parseJSON = withObject "ChatKitSessionRequest" $ \o -> do
+    workflowId <- o .:? "workflowId"
+    workflow <- o .:? "workflow"
+    nestedId <- case workflow of
+      Just (Object w) -> w .:? "id"
+      _ -> pure Nothing
+    pure ChatKitSessionRequest
+      { cksWorkflowId = workflowId <|> nestedId
+      }
+
+data ChatKitSessionResponse = ChatKitSessionResponse
+  { ckrClientSecret :: Text
+  , ckrExpiresAfter :: Maybe Value
+  } deriving (Show, Generic)
+
+instance ToJSON ChatKitSessionResponse where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelTo2 '_' . camelDrop 3 }
+
+data TidalAgentRequest = TidalAgentRequest
+  { taPrompt :: Text
+  , taModel  :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON TidalAgentRequest where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 2 }
+
+data TidalAgentResponse = TidalAgentResponse
+  { taContent :: Text
+  } deriving (Show, Generic)
+
+instance ToJSON TidalAgentResponse where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 2 }
 
 camelDrop :: Int -> String -> String
 camelDrop n xs = case drop n xs of

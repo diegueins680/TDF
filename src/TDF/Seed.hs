@@ -225,7 +225,7 @@ seedProductionCourse now = do
         let txt = T.strip (T.pack raw)
         in if T.null txt then Nothing else Just txt
       baseUrl = resolveAppBase (fmap T.pack baseEnv)
-      slugVal = fromMaybe "produccion-musical-dic-2025" (slugEnv >>= nonEmptyText)
+      slugVal = fromMaybe "produccion-musical-feb-2026" (slugEnv >>= nonEmptyText)
       courseTitle = "Curso de Producción Musical"
       subtitleTxt = Just "Presencial · 4 sábados · 16 horas"
       formatTxt = Just "Presencial"
@@ -239,22 +239,14 @@ seedProductionCourse now = do
       locationMap = Just (fromMaybe "https://maps.app.goo.gl/6pVYZ2CsbvQfGhAz6" (mapEnv >>= nonEmptyText))
       whatsappCta = Just (fromMaybe "https://wa.me/593995413168?text=Quiero%20inscribirme%20al%20curso" (whatsappEnv >>= nonEmptyText))
       landingUrl = Just (baseUrl <> "/curso/" <> slugVal)
-      dawsList = Just ["Logic", "Luna"]
-      includesList = Just
-        [ "Acceso a grabaciones"
-        , "Certificado de participación"
-        , "Mentorías"
-        , "Grupo de WhatsApp"
-        , "Acceso a la plataforma de TDF Records"
-        ]
       instructorName = Just "Esteban Muñoz"
       instructorBio = Just "Productor en TDF Records. 10+ años grabando bandas, rap y electrónica."
       instructorAvatar = Just (fromMaybe (baseUrl <> "/assets/esteban-munoz.jpg") (instructorAvatarEnv >>= nonEmptyText))
       sessions =
-        [ ("Sábado 1 · Introducción", fromGregorian 2025 12 13)
-        , ("Sábado 2 · Grabación", fromGregorian 2025 12 20)
-        , ("Sábado 3 · Mezcla", fromGregorian 2025 12 27)
-        , ("Sábado 4 · Masterización", fromGregorian 2026 1 3)
+        [ ("Sábado 1 · Introducción", fromGregorian 2026 2 28)
+        , ("Sábado 2 · Grabación", fromGregorian 2026 3 7)
+        , ("Sábado 3 · Mezcla", fromGregorian 2026 3 14)
+        , ("Sábado 4 · Masterización", fromGregorian 2026 3 21)
         ]
       syllabus =
         [ ("Introducción a la producción musical", ["Conceptos básicos", "Herramientas esenciales"])

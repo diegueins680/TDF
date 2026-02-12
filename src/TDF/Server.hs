@@ -43,7 +43,7 @@ import           GHC.Generics (Generic)
 import           Data.UUID (toText)
 import           Data.UUID.V4 (nextRandom)
 import           Crypto.BCrypt (hashPasswordUsingPolicy, slowerBcryptHashingPolicy, validatePassword)
-import           System.Directory (doesFileExist)
+import           System.FilePath ((</>))
 import           System.IO (hPutStrLn, stderr)
 import qualified Network.Wai as Wai (Request)
 import           Servant
@@ -58,7 +58,7 @@ import           Database.Persist.Sql (SqlBackend, SqlPersistT, fromSqlKey, rawS
 import           Database.Persist.Postgresql ()
 
 import           TDF.API
-import           TDF.API.Types (RolePayload(..), UserRoleSummaryDTO(..), UserRoleUpdatePayload(..), AccountStatusDTO(..), MarketplaceItemDTO(..), MarketplaceCartDTO(..), MarketplaceCartItemUpdate(..), MarketplaceCartItemDTO(..), MarketplaceOrderDTO(..), MarketplaceOrderItemDTO(..), MarketplaceOrderUpdate(..), MarketplaceCheckoutReq(..), DatafastCheckoutDTO(..), PaypalCreateDTO(..), PaypalCaptureReq(..), LabelTrackDTO(..), LabelTrackCreate(..), LabelTrackUpdate(..), DriveUploadDTO(..), PartyRelatedDTO(..), PartyRelatedBooking(..), PartyRelatedClassSession(..), PartyRelatedLabelTrack(..))
+import           TDF.API.Types (RolePayload(..), UserRoleSummaryDTO(..), UserRoleUpdatePayload(..), AccountStatusDTO(..), MarketplaceItemDTO(..), MarketplaceCartDTO(..), MarketplaceCartItemUpdate(..), MarketplaceCartItemDTO(..), MarketplaceOrderDTO(..), MarketplaceOrderItemDTO(..), MarketplaceOrderUpdate(..), MarketplaceCheckoutReq(..), DatafastCheckoutDTO(..), PaypalCreateDTO(..), PaypalCaptureReq(..), LabelTrackDTO(..), LabelTrackCreate(..), LabelTrackUpdate(..), DriveUploadDTO(..), DriveTokenExchangeRequest(..), DriveTokenRefreshRequest(..), DriveTokenResponse(..), PartyRelatedDTO(..), PartyRelatedBooking(..), PartyRelatedClassSession(..), PartyRelatedLabelTrack(..))
 import qualified TDF.API      as Api
 import           TDF.API.Marketplace (MarketplaceAPI, MarketplaceAdminAPI)
 import           TDF.API.Label (LabelAPI)
@@ -76,7 +76,8 @@ import           TDF.Seed       (seedAll, seedInventoryAssets, seedMarketplaceLi
 import           TDF.ServerAdmin (adminServer)
 import qualified TDF.LogBuffer as LogBuf
 import           TDF.Server.SocialEventsHandlers (socialEventsServer)
-import           TDF.ServerExtra (bandsServer, instagramServer, inventoryServer, loadBandForParty, paymentsServer, pipelinesServer, roomsPublicServer, roomsServer, serviceCatalogPublicServer, serviceCatalogServer, sessionsServer)
+import           TDF.ServerExtra (bandsServer, facebookServer, facebookWebhookServer, instagramServer, instagramWebhookServer, inventoryServer, loadBandForParty, paymentsServer, pipelinesServer, roomsPublicServer, roomsServer, serviceCatalogPublicServer, serviceCatalogServer, sessionsServer)
+import           TDF.ServerInstagramOAuth (instagramOAuthServer)
 import           TDF.ServerInternships (internshipsServer)
 import           TDF.Server.SocialSync (socialSyncServer)
 import qualified Data.Map.Strict            as Map
@@ -85,11 +86,12 @@ import           TDF.ServerRadio (radioServer)
 import           TDF.ServerLiveSessions (liveSessionsServer)
 import           TDF.ServerFeedback (feedbackServer)
 import qualified TDF.Contracts.Server as Contracts
+import           TDF.ServerProposals (proposalsServer)
 import           TDF.Trials.API (TrialsAPI)
 import           TDF.Trials.Server (trialsServer)
 import qualified TDF.Trials.Models as Trials
 import qualified TDF.Meta as Meta
-import           TDF.Version      (getVersionInfo)
+import           TDF.Version      (VersionInfo(..), getVersionInfo)
 import qualified TDF.Handlers.InputList as InputList
 import qualified TDF.Email as Email
 import qualified TDF.Email.Service as EmailSvc
@@ -109,6 +111,7 @@ import           TDF.Routes.Academy ( AcademyAPI
                                     , NextCohortDTO(..)
                                     )
 import           TDF.Routes.Courses ( CoursesPublicAPI
+                                    , WhatsAppHooksAPI
                                     , WhatsAppWebhookAPI
                                     , CourseMetadata(..)
                                     , CourseSession(..)
@@ -229,16 +232,20 @@ mkApp env =
       ctxProxy = Proxy :: Proxy '[AuthHandler Wai.Request AuthedUser]
       ctx      = authContext env
       trials   = trialsServer (envPool env)
-      apiSrv   = hoistServerWithContext apiProxy ctxProxy (nt env) server
+      apiSrv   = hoistServerWithContext apiProxy ctxProxy (nt env) (server env)
   in serveWithContext combinedProxy ctx (trials :<|> apiSrv)
 
 nt :: Env -> AppM a -> Handler a
 nt env x = runReaderT x env
 
-server :: ServerT API AppM
-server =
+server :: Env -> ServerT API AppM
+server env =
+  let Env{envConfig} = env
+      assetsRoot = assetsRootDir envConfig
+  in
        versionServer
   :<|> health
+  :<|> mcpServer
   :<|> login
   :<|> googleLogin
   :<|> signup
@@ -246,6 +253,9 @@ server =
   :<|> authV1Server
   :<|> fanPublicServer
   :<|> coursesPublicServer
+  :<|> instagramWebhookServer
+  :<|> facebookWebhookServer
+  :<|> whatsappHooksServer
   :<|> whatsappWebhookServer
   :<|> metaServer
   :<|> academyServer
@@ -253,6 +263,7 @@ server =
   :<|> inputListServer
   :<|> adsPublicServer
   :<|> cmsPublicServer
+  :<|> whatsappConsentPublicServer
   :<|> marketplacePublicServer
   :<|> contractsServer
   :<|> radioPresencePublicServer
@@ -260,7 +271,8 @@ server =
   :<|> serviceCatalogPublicServer
   :<|> listEngineersPublic
   :<|> bookingPublicServer
-  :<|> inventoryStaticServer
+  :<|> inventoryStaticServer assetsRoot
+  :<|> assetsServeServer assetsRoot
   :<|> protectedServer
 
 authV1Server :: ServerT Api.AuthV1API AppM
@@ -268,6 +280,133 @@ authV1Server = signup :<|> passwordReset :<|> passwordResetConfirm :<|> changePa
 
 versionServer :: ServerT Api.VersionAPI AppM
 versionServer = liftIO getVersionInfo
+
+mcpServer :: ServerT Api.McpAPI AppM
+mcpServer rawRequest =
+  case parseMcpRequest rawRequest of
+    Nothing -> pure (mcpErrorValue Nothing (-32600) "Invalid Request" Nothing)
+    Just req -> handleMcpRequest req
+
+data McpRequest = McpRequest
+  { mcpReqId :: Maybe Value
+  , mcpReqMethod :: Text
+  , mcpReqParams :: Maybe Value
+  } deriving (Show)
+
+mcpProtocolVersion :: Text
+mcpProtocolVersion = "2024-11-05"
+
+mcpTools :: [Value]
+mcpTools =
+  [ object
+      [ "name" .= ("tdf_health_check" :: Text)
+      , "description" .= ("Return service health and version metadata." :: Text)
+      , "inputSchema" .= object
+          [ "type" .= ("object" :: Text)
+          , "properties" .= object []
+          , "additionalProperties" .= False
+          ]
+      ]
+  ]
+
+parseMcpRequest :: Value -> Maybe McpRequest
+parseMcpRequest = parseMaybe $ withObject "McpRequest" $ \o ->
+  McpRequest
+    <$> o .:? "id"
+    <*> o .: "method"
+    <*> o .:? "params"
+
+parseToolCallParams :: Value -> Maybe (Text, Value)
+parseToolCallParams = parseMaybe $ withObject "ToolCallParams" $ \o -> do
+  toolName <- o .: "name"
+  args <- o .:? "arguments" .!= object []
+  pure (toolName, args)
+
+handleMcpRequest :: McpRequest -> AppM Value
+handleMcpRequest req@McpRequest{ mcpReqMethod = method, mcpReqParams = params } =
+  case method of
+    "initialize" -> do
+      info <- liftIO getVersionInfo
+      let VersionInfo { name = appName, appVer } = info
+          result =
+            object
+              [ "protocolVersion" .= mcpProtocolVersion
+              , "capabilities" .= object
+                  [ "tools" .= object []
+                  , "resources" .= object []
+                  , "prompts" .= object []
+                  ]
+              , "serverInfo" .= object
+                  [ "name" .= appName
+                  , "version" .= appVer
+                  ]
+              ]
+      pure (mcpSuccess req result)
+    "tools/list" ->
+      pure (mcpSuccess req (object ["tools" .= mcpTools]))
+    "tools/call" ->
+      handleMcpToolCall req params
+    "resources/list" ->
+      pure (mcpSuccess req (object ["resources" .= ([] :: [Value])]))
+    "prompts/list" ->
+      pure (mcpSuccess req (object ["prompts" .= ([] :: [Value])]))
+    "initialized" ->
+      pure (mcpSuccess req (object []))
+    _ ->
+      pure (mcpErrorValue (mcpReqId req) (-32601) "Method not found" Nothing)
+
+handleMcpToolCall :: McpRequest -> Maybe Value -> AppM Value
+handleMcpToolCall req rawParams =
+  case rawParams >>= parseToolCallParams of
+    Nothing -> pure (mcpErrorValue (mcpReqId req) (-32602) "Invalid params" Nothing)
+    Just (toolName, _) ->
+      case toolName of
+        "tdf_health_check" -> do
+          info <- liftIO getVersionInfo
+          now <- liftIO getCurrentTime
+          let VersionInfo { appVer, commit, buildTime } = info
+              timestamp = T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now)
+              message = T.intercalate "\n"
+                [ "status: ok"
+                , "time: " <> timestamp
+                , "version: " <> appVer
+                , "commit: " <> commit
+                , "buildTime: " <> buildTime
+                ]
+              result =
+                object
+                  [ "content" .=
+                      [ object
+                          [ "type" .= ("text" :: Text)
+                          , "text" .= message
+                          ]
+                      ]
+                  ]
+          pure (mcpSuccess req result)
+        _ ->
+          pure (mcpErrorValue (mcpReqId req) (-32602) ("Unknown tool: " <> toolName) Nothing)
+
+mcpSuccess :: McpRequest -> Value -> Value
+mcpSuccess req result =
+  object
+    [ "jsonrpc" .= ("2.0" :: Text)
+    , "id" .= fromMaybe Null (mcpReqId req)
+    , "result" .= result
+    ]
+
+mcpErrorValue :: Maybe Value -> Int -> Text -> Maybe Value -> Value
+mcpErrorValue mReqId code message mData =
+  object
+    [ "jsonrpc" .= ("2.0" :: Text)
+    , "id" .= fromMaybe Null mReqId
+    , "error" .= object (baseFields <> dataField)
+    ]
+  where
+    baseFields =
+      [ "code" .= code
+      , "message" .= message
+      ]
+    dataField = maybe [] (\datum -> ["data" .= datum]) mData
 
 inputListServer :: ServerT Api.InputListAPI AppM
 inputListServer = publicRoutes :<|> seedRoutes
@@ -555,13 +694,19 @@ whatsappWebhookServer =
                   pure ()
       pure NoContent
 
+whatsappHooksServer :: ServerT WhatsAppHooksAPI AppM
+whatsappHooksServer = whatsappWebhookServer
+
 whatsappMessagesServer :: AuthedUser -> ServerT Api.WhatsAppMessagesAPI AppM
-whatsappMessagesServer _ mLimit mRepliedOnly = do
+whatsappMessagesServer _ mLimit mDirection mRepliedOnly = do
   let limit = normalizeLimit mLimit
-      filters =
-        case mRepliedOnly of
-          Just True -> [ME.WhatsAppMessageRepliedAt !=. Nothing]
-          _ -> []
+  direction <- parseDirectionParam mDirection
+  repliedOnly <- parseBoolParam mRepliedOnly
+  let filters =
+        concat
+          [ maybe [] (\dir -> [ME.WhatsAppMessageDirection ==. dir]) direction
+          , if repliedOnly then [ME.WhatsAppMessageRepliedAt !=. Nothing] else []
+          ]
   rows <- runDB $
     selectList filters [Desc ME.WhatsAppMessageCreatedAt, LimitTo limit]
   let toObj (Entity _ m) = object
@@ -577,8 +722,186 @@ whatsappMessagesServer _ mLimit mRepliedOnly = do
         ]
   pure (toJSON (map toObj rows))
 
+whatsappConsentServer :: AuthedUser -> ServerT Api.WhatsAppConsentAPI AppM
+whatsappConsentServer user =
+  let requireAdmin = unless (hasRole Admin user) $ throwError err403
+  in whatsappConsentRoutes "tdf-hq-ui" requireAdmin
+
+whatsappConsentPublicServer :: ServerT Api.WhatsAppConsentPublicAPI AppM
+whatsappConsentPublicServer = whatsappConsentRoutes "public" (pure ())
+
+whatsappConsentRoutes :: Text -> AppM () -> ServerT Api.WhatsAppConsentRoutes AppM
+whatsappConsentRoutes defaultSource requireGate =
+       createConsent
+  :<|> revokeConsent
+  :<|> fetchStatus
+  where
+    normalizePhoneOrFail raw =
+      case normalizePhone raw of
+        Just val -> pure val
+        Nothing -> throwBadRequest "Número de WhatsApp inválido."
+
+    toStatus phoneVal mRow =
+      case mRow of
+        Nothing ->
+          WhatsAppConsentStatus
+            { wcsPhone = phoneVal
+            , wcsConsent = False
+            , wcsConsentedAt = Nothing
+            , wcsRevokedAt = Nothing
+            , wcsDisplayName = Nothing
+            }
+        Just (Entity _ row) ->
+          WhatsAppConsentStatus
+            { wcsPhone = phoneVal
+            , wcsConsent = ME.whatsAppConsentConsent row
+            , wcsConsentedAt = ME.whatsAppConsentConsentedAt row
+            , wcsRevokedAt = ME.whatsAppConsentRevokedAt row
+            , wcsDisplayName = ME.whatsAppConsentDisplayName row
+            }
+
+    persistConsent phoneVal nameClean sourceClean noteClean now = runDB $ do
+      let record =
+            ME.WhatsAppConsent
+              { ME.whatsAppConsentPhoneE164 = phoneVal
+              , ME.whatsAppConsentDisplayName = nameClean
+              , ME.whatsAppConsentConsent = True
+              , ME.whatsAppConsentSource = sourceClean
+              , ME.whatsAppConsentNote = noteClean
+              , ME.whatsAppConsentConsentedAt = Just now
+              , ME.whatsAppConsentRevokedAt = Nothing
+              , ME.whatsAppConsentCreatedAt = now
+              , ME.whatsAppConsentUpdatedAt = now
+              }
+      _ <- upsert record
+        [ ME.WhatsAppConsentDisplayName =. nameClean
+        , ME.WhatsAppConsentConsent =. True
+        , ME.WhatsAppConsentSource =. sourceClean
+        , ME.WhatsAppConsentNote =. noteClean
+        , ME.WhatsAppConsentConsentedAt =. Just now
+        , ME.WhatsAppConsentRevokedAt =. Nothing
+        , ME.WhatsAppConsentUpdatedAt =. now
+        ]
+      getBy (ME.UniqueWhatsAppConsent phoneVal)
+
+    persistOptOut phoneVal reasonClean now = runDB $ do
+      let record =
+            ME.WhatsAppConsent
+              { ME.whatsAppConsentPhoneE164 = phoneVal
+              , ME.whatsAppConsentDisplayName = Nothing
+              , ME.whatsAppConsentConsent = False
+              , ME.whatsAppConsentSource = Just "opt-out"
+              , ME.whatsAppConsentNote = reasonClean
+              , ME.whatsAppConsentConsentedAt = Nothing
+              , ME.whatsAppConsentRevokedAt = Just now
+              , ME.whatsAppConsentCreatedAt = now
+              , ME.whatsAppConsentUpdatedAt = now
+              }
+      _ <- upsert record
+        [ ME.WhatsAppConsentDisplayName =. Nothing
+        , ME.WhatsAppConsentConsent =. False
+        , ME.WhatsAppConsentSource =. Just "opt-out"
+        , ME.WhatsAppConsentNote =. reasonClean
+        , ME.WhatsAppConsentConsentedAt =. Nothing
+        , ME.WhatsAppConsentRevokedAt =. Just now
+        , ME.WhatsAppConsentUpdatedAt =. now
+        ]
+      getBy (ME.UniqueWhatsAppConsent phoneVal)
+
+    sendConsentMessage phoneVal nameClean = do
+      waEnv <- liftIO loadWhatsAppEnv
+      let greeting =
+            case nameClean of
+              Just nm -> "Hola " <> nm <> "! "
+              Nothing -> "Hola! "
+          msg = greeting <>
+            "Gracias por aceptar recibir mensajes de TDF Records por WhatsApp. " <>
+            "Responde STOP si deseas dejar de recibir mensajes."
+      sendWhatsAppText waEnv phoneVal msg
+
+    sendOptOutMessage phoneVal = do
+      waEnv <- liftIO loadWhatsAppEnv
+      let msg = "Listo. No recibirás más mensajes de TDF Records por WhatsApp. " <>
+                "Si fue un error, escríbenos y lo reactivamos."
+      sendWhatsAppText waEnv phoneVal msg
+
+    createConsent WhatsAppConsentRequest{..} = do
+      requireGate
+      unless wcrConsent $ throwBadRequest "Debes aceptar el consentimiento para continuar."
+      phoneVal <- normalizePhoneOrFail wcrPhone
+      now <- liftIO getCurrentTime
+      let nameClean = cleanOptional wcrName
+          sourceClean = cleanOptional wcrSource <|> Just defaultSource
+          noteClean = Just "consent"
+          shouldSend = fromMaybe True wcrSendMessage
+      _ <- persistConsent phoneVal nameClean sourceClean noteClean now
+      (sent, msgText) <- if shouldSend
+        then do
+          res <- sendConsentMessage phoneVal nameClean
+          pure $ case res of
+            Left err -> (False, Just err)
+            Right msg -> (True, Just msg)
+        else pure (False, Nothing)
+      status <- runDB $ getBy (ME.UniqueWhatsAppConsent phoneVal)
+      pure WhatsAppConsentResponse
+        { wcrsStatus = toStatus phoneVal status
+        , wcrsMessageSent = sent
+        , wcrsMessage = msgText
+        }
+
+    revokeConsent WhatsAppOptOutRequest{..} = do
+      requireGate
+      phoneVal <- normalizePhoneOrFail worPhone
+      now <- liftIO getCurrentTime
+      let reasonClean = cleanOptional worReason
+          shouldSend = fromMaybe True worSendMessage
+      _ <- persistOptOut phoneVal reasonClean now
+      (sent, msgText) <- if shouldSend
+        then do
+          res <- sendOptOutMessage phoneVal
+          pure $ case res of
+            Left err -> (False, Just err)
+            Right msg -> (True, Just msg)
+        else pure (False, Nothing)
+      status <- runDB $ getBy (ME.UniqueWhatsAppConsent phoneVal)
+      pure WhatsAppConsentResponse
+        { wcrsStatus = toStatus phoneVal status
+        , wcrsMessageSent = sent
+        , wcrsMessage = msgText
+        }
+
+    fetchStatus mPhone = do
+      requireGate
+      phoneRaw <- maybe (throwBadRequest "phone requerido") pure mPhone
+      phoneVal <- normalizePhoneOrFail phoneRaw
+      mRow <- runDB $ getBy (ME.UniqueWhatsAppConsent phoneVal)
+      pure (toStatus phoneVal mRow)
+
 normalizeLimit :: Maybe Int -> Int
 normalizeLimit = max 1 . min 200 . fromMaybe 100
+
+parseBoolParam :: Maybe Text -> AppM Bool
+parseBoolParam Nothing = pure False
+parseBoolParam (Just raw) =
+  case T.toCaseFold (T.strip raw) of
+    "true" -> pure True
+    "1" -> pure True
+    "yes" -> pure True
+    "false" -> pure False
+    "0" -> pure False
+    "no" -> pure False
+    "" -> pure False
+    _ -> throwBadRequest "Invalid repliedOnly value"
+
+parseDirectionParam :: Maybe Text -> AppM (Maybe Text)
+parseDirectionParam Nothing = pure Nothing
+parseDirectionParam (Just raw) =
+  case T.toCaseFold (T.strip raw) of
+    "" -> pure Nothing
+    "all" -> pure Nothing
+    "incoming" -> pure (Just "incoming")
+    "outgoing" -> pure (Just "outgoing")
+    _ -> throwBadRequest "Invalid direction value"
 
 fanSecureServer :: AuthedUser -> ServerT FanSecureAPI AppM
 fanSecureServer user =
@@ -604,7 +927,13 @@ chatServer user =
   :<|> chatSendMessage user
 
 driveServer :: AuthedUser -> ServerT DriveAPI AppM
-driveServer _ mAccessToken DriveUploadForm{..} = do
+driveServer user =
+  driveUploadServer user
+  :<|> driveTokenExchangeServer user
+  :<|> driveTokenRefreshServer user
+
+driveUploadServer :: AuthedUser -> Maybe Text -> DriveUploadForm -> AppM DriveUploadDTO
+driveUploadServer _ mAccessToken DriveUploadForm{..} = do
   manager <- liftIO $ newManager tlsManagerSettings
   accessToken <- resolveDriveAccessToken manager (fmap T.strip mAccessToken <|> duAccessToken)
   mFolderEnv <- liftIO $ lookupEnvTextNonEmpty "DRIVE_UPLOAD_FOLDER_ID"
@@ -662,59 +991,108 @@ driveServer _ mAccessToken DriveUploadForm{..} = do
       let body = map toLower (BL8.unpack (errBody err))
       in "invalid_grant" `isInfixOf` body
 
-    loadDriveClientCreds :: AppM (Text, Text)
-    loadDriveClientCreds = do
-      mCid <- liftIO $ lookupEnvTextNonEmpty "DRIVE_CLIENT_ID"
-      mSecret <- liftIO $ lookupEnvTextNonEmpty "DRIVE_CLIENT_SECRET"
-      mCidFallback <- liftIO $ lookupEnvTextNonEmpty "GOOGLE_CLIENT_ID"
-      mSecretFallback <- liftIO $ lookupEnvTextNonEmpty "GOOGLE_CLIENT_SECRET"
-      case (mCid <|> mCidFallback, mSecret <|> mSecretFallback) of
-        (Just cid, Just secret) -> pure (cid, secret)
-        _ ->
-          throwError err503
-            { errBody =
-                "Google Drive no configurado (faltan DRIVE_CLIENT_ID/DRIVE_CLIENT_SECRET o " <>
-                "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET)."
-            }
+driveTokenExchangeServer :: AuthedUser -> DriveTokenExchangeRequest -> AppM DriveTokenResponse
+driveTokenExchangeServer _ DriveTokenExchangeRequest{..} = do
+  Env{envConfig} <- ask
+  manager <- liftIO $ newManager tlsManagerSettings
+  (cid, secret) <- loadDriveClientCreds
+  let redirectResolved = resolveDriveRedirectUri envConfig redirectUri
+  token <- requestGoogleToken manager
+    [ ("client_id", TE.encodeUtf8 cid)
+    , ("client_secret", TE.encodeUtf8 secret)
+    , ("code", TE.encodeUtf8 code)
+    , ("code_verifier", TE.encodeUtf8 codeVerifier)
+    , ("redirect_uri", TE.encodeUtf8 redirectResolved)
+    , ("grant_type", "authorization_code")
+    ]
+  pure (driveTokenResponseFrom token Nothing)
 
-    refreshDriveAccessToken :: Manager -> Text -> Text -> Text -> AppM Text
-    refreshDriveAccessToken manager cid secret rt = do
-      req0 <- liftIO $ parseRequest "https://oauth2.googleapis.com/token"
-      let form =
-            renderSimpleQuery False
-              [ ("client_id", TE.encodeUtf8 cid)
-              , ("client_secret", TE.encodeUtf8 secret)
-              , ("refresh_token", TE.encodeUtf8 rt)
-              , ("grant_type", "refresh_token")
-              ]
-          req = req0
-            { method = "POST"
-            , requestBody = RequestBodyLBS (BL.fromStrict form)
-            , requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")]
-            }
-      respOrErr <-
-        liftIO
-          (try (httpLbs req manager) ::
-            IO (Either SomeException (Response BL.ByteString)))
-      resp <- case respOrErr of
-        Left err ->
-          throwError err502
-            { errBody = BL8.pack ("No se pudo contactar Google OAuth: " <> displayException err) }
-        Right ok -> pure ok
-      let codeStatus = statusCode (responseStatus resp)
-      when (codeStatus >= 400) $ do
-        let bodySnippet = take 2000 (BL8.unpack (responseBody resp))
-            suffix = if null bodySnippet then "" else " " <> bodySnippet
-        throwError err502
-          { errBody =
-              BL8.pack
-                ("Refresh token falló con Google OAuth (" <> show codeStatus <> ")." <> suffix)
-          }
-      token <- case eitherDecode (responseBody resp) of
-        Left err ->
-          throwError err502 { errBody = BL8.pack ("No se pudo parsear refresh token: " <> err) }
-        Right tok -> pure (tok :: GoogleToken)
-      pure (access_token token)
+driveTokenRefreshServer :: AuthedUser -> DriveTokenRefreshRequest -> AppM DriveTokenResponse
+driveTokenRefreshServer _ DriveTokenRefreshRequest{..} = do
+  manager <- liftIO $ newManager tlsManagerSettings
+  (cid, secret) <- loadDriveClientCreds
+  token <- requestGoogleToken manager
+    [ ("client_id", TE.encodeUtf8 cid)
+    , ("client_secret", TE.encodeUtf8 secret)
+    , ("refresh_token", TE.encodeUtf8 refreshToken)
+    , ("grant_type", "refresh_token")
+    ]
+  pure (driveTokenResponseFrom token (Just refreshToken))
+
+resolveDriveRedirectUri :: AppConfig -> Maybe Text -> Text
+resolveDriveRedirectUri cfg mProvided =
+  fromMaybe (resolveConfiguredAppBase cfg <> "/oauth/google-drive/callback") (mProvided >>= nonEmptyTextLocal)
+  where
+    nonEmptyTextLocal txt =
+      let trimmed = T.strip txt
+      in if T.null trimmed then Nothing else Just trimmed
+
+driveTokenResponseFrom :: GoogleToken -> Maybe Text -> DriveTokenResponse
+driveTokenResponseFrom GoogleToken{..} fallbackRefresh =
+  DriveTokenResponse
+    { accessToken = access_token
+    , refreshToken = refresh_token <|> fallbackRefresh
+    , expiresIn = fromMaybe 3600 expires_in
+    , tokenType = token_type
+    }
+
+requestGoogleToken :: Manager -> [(ByteString, ByteString)] -> AppM GoogleToken
+requestGoogleToken manager form = do
+  req0 <- liftIO $ parseRequest "https://oauth2.googleapis.com/token"
+  let payload = renderSimpleQuery False form
+      req = req0
+        { method = "POST"
+        , requestBody = RequestBodyLBS (BL.fromStrict payload)
+        , requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")]
+        }
+  respOrErr <-
+    liftIO
+      (try (httpLbs req manager) ::
+        IO (Either SomeException (Response BL.ByteString)))
+  resp <- case respOrErr of
+    Left err ->
+      throwError err502
+        { errBody = BL8.pack ("No se pudo contactar Google OAuth: " <> displayException err) }
+    Right ok -> pure ok
+  let codeStatus = statusCode (responseStatus resp)
+  when (codeStatus >= 400) $ do
+    let bodySnippet = take 2000 (BL8.unpack (responseBody resp))
+        suffix = if null bodySnippet then "" else " " <> bodySnippet
+    throwError err502
+      { errBody =
+          BL8.pack
+            ("Solicitud OAuth falló (" <> show codeStatus <> ")." <> suffix)
+      }
+  token <- case eitherDecode (responseBody resp) of
+    Left err ->
+      throwError err502 { errBody = BL8.pack ("No se pudo parsear token: " <> err) }
+    Right tok -> pure (tok :: GoogleToken)
+  pure token
+
+loadDriveClientCreds :: AppM (Text, Text)
+loadDriveClientCreds = do
+  mCid <- liftIO $ lookupEnvTextNonEmpty "DRIVE_CLIENT_ID"
+  mSecret <- liftIO $ lookupEnvTextNonEmpty "DRIVE_CLIENT_SECRET"
+  mCidFallback <- liftIO $ lookupEnvTextNonEmpty "GOOGLE_CLIENT_ID"
+  mSecretFallback <- liftIO $ lookupEnvTextNonEmpty "GOOGLE_CLIENT_SECRET"
+  case (mCid <|> mCidFallback, mSecret <|> mSecretFallback) of
+    (Just cid, Just secret) -> pure (cid, secret)
+    _ ->
+      throwError err503
+        { errBody =
+            "Google Drive no configurado (faltan DRIVE_CLIENT_ID/DRIVE_CLIENT_SECRET o " <>
+            "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET)."
+        }
+
+refreshDriveAccessToken :: Manager -> Text -> Text -> Text -> AppM Text
+refreshDriveAccessToken manager cid secret rt = do
+  token <- requestGoogleToken manager
+    [ ("client_id", TE.encodeUtf8 cid)
+    , ("client_secret", TE.encodeUtf8 secret)
+    , ("refresh_token", TE.encodeUtf8 rt)
+    , ("grant_type", "refresh_token")
+    ]
+  pure (access_token token)
 
 lookupEnvTextNonEmpty :: String -> IO (Maybe Text)
 lookupEnvTextNonEmpty key = do
@@ -732,6 +1110,7 @@ protectedServer :: AuthedUser -> ServerT ProtectedAPI AppM
 protectedServer user =
        partyServer user
   :<|> bookingServer user
+  :<|> proposalsServer user
   :<|> serviceCatalogServer user
   :<|> packageServer user
   :<|> invoiceServer user
@@ -749,9 +1128,14 @@ protectedServer user =
   :<|> marketplaceAdminServer user
   :<|> paymentsServer user
   :<|> instagramServer
+  :<|> facebookServer
+  :<|> instagramOAuthServer user
   :<|> whatsappMessagesServer user
+  :<|> whatsappConsentServer user
   :<|> socialServer user
   :<|> chatServer user
+  :<|> chatkitSessionServer user
+  :<|> tidalAgentServer user
   :<|> socialSyncServer user
   :<|> socialEventsServer user
   :<|> internshipsServer user
@@ -1163,10 +1547,10 @@ courseMetadataFor cfg mWaContact slugVal =
     else
       let whatsappUrl = buildWhatsappCtaFor mWaContact "Curso de Producción Musical" (buildLandingUrl cfg)
           sessions =
-            [ CourseSession "Sábado 1 · Introducción" (fromGregorian 2025 12 13)
-            , CourseSession "Sábado 2 · Grabación" (fromGregorian 2025 12 20)
-            , CourseSession "Sábado 3 · Mezcla" (fromGregorian 2025 12 27)
-            , CourseSession "Sábado 4 · Masterización" (fromGregorian 2026 1 3)
+            [ CourseSession "Sábado 1 · Introducción" (fromGregorian 2026 2 28)
+            , CourseSession "Sábado 2 · Grabación" (fromGregorian 2026 3 7)
+            , CourseSession "Sábado 3 · Mezcla" (fromGregorian 2026 3 14)
+            , CourseSession "Sábado 4 · Masterización" (fromGregorian 2026 3 21)
             ]
           syllabus =
             [ SyllabusItem "Introducción a la producción musical" ["Conceptos básicos", "Herramientas esenciales"]
@@ -1697,6 +2081,16 @@ sendWhatsappReply WhatsAppEnv{waToken = Just tok, waPhoneId = Just pid, waApiVer
     Right _ -> Right msg
 sendWhatsappReply _ _ = pure (Left "WhatsApp config not available")
 
+sendWhatsAppText :: WhatsAppEnv -> Text -> Text -> AppM (Either Text Text)
+sendWhatsAppText WhatsAppEnv{waToken = Just tok, waPhoneId = Just pid, waApiVersion = mVersion} phone msg = do
+  manager <- liftIO $ newManager tlsManagerSettings
+  let version = fromMaybe "v20.0" mVersion
+  res <- liftIO $ sendText manager version tok pid phone msg
+  pure $ case res of
+    Left err -> Left (T.pack err)
+    Right _ -> Right msg
+sendWhatsAppText _ _ _ = pure (Left "WhatsApp config not available")
+
 normalizePhone :: Text -> Maybe Text
 normalizePhone raw =
   let trimmed = T.filter (not . isSpace) (T.strip raw)
@@ -2134,7 +2528,7 @@ signup SignupRequest
           -> Maybe Text
           -> UTCTime
           -> SqlPersistT IO ()
-        upsertInternProfile pid startAt endAt requiredHours skills areas nowVal = do
+        upsertInternProfile pid startAt endAt requiredHours skills areas nowStamp = do
           mProfile <- getBy (ME.UniqueInternProfile pid)
           let updates = catMaybes
                 [ fmap (ME.InternProfileStartAt =.) (fmap Just startAt)
@@ -2146,7 +2540,7 @@ signup SignupRequest
           case mProfile of
             Just (Entity key _) ->
               unless (null updates) $
-                update key (updates ++ [ME.InternProfileUpdatedAt =. nowVal])
+                update key (updates ++ [ME.InternProfileUpdatedAt =. nowStamp])
             Nothing -> do
               _ <- insert ME.InternProfile
                 { ME.internProfilePartyId   = pid
@@ -2155,8 +2549,8 @@ signup SignupRequest
                 , ME.internProfileRequiredHours = requiredHours
                 , ME.internProfileSkills    = skills
                 , ME.internProfileAreas     = areas
-                , ME.internProfileCreatedAt = nowVal
-                , ME.internProfileUpdatedAt = nowVal
+                , ME.internProfileCreatedAt = nowStamp
+                , ME.internProfileUpdatedAt = nowStamp
                 }
               pure ()
 
@@ -2389,10 +2783,10 @@ passwordResetConfirm PasswordResetConfirmRequest{..} = do
     resetTokenUsername :: Text -> Maybe Text
     resetTokenUsername lbl =
       let prefix = "password-reset:"
-      in T.stripPrefix prefix lbl >>= nonEmptyText
+      in T.stripPrefix prefix lbl >>= nonEmptyTextLocal
 
-    nonEmptyText :: Text -> Maybe Text
-    nonEmptyText txt
+    nonEmptyTextLocal :: Text -> Maybe Text
+    nonEmptyTextLocal txt
       | T.null (T.strip txt) = Nothing
       | otherwise = Just (T.strip txt)
 
@@ -3343,9 +3737,13 @@ partyRelated user pidI = do
 bookingPublicServer :: ServerT Api.BookingPublicAPI AppM
 bookingPublicServer = createPublicBooking
 
-inventoryStaticServer :: ServerT Api.AssetsAPI AppM
-inventoryStaticServer =
-  serveDirectoryFileServer "assets/inventory"
+inventoryStaticServer :: FilePath -> ServerT Api.AssetsAPI AppM
+inventoryStaticServer assetsRoot =
+  serveDirectoryFileServer (assetsRoot </> "inventory")
+
+assetsServeServer :: FilePath -> ServerT Api.AssetsServeAPI AppM
+assetsServeServer assetsRoot =
+  serveDirectoryFileServer assetsRoot
 
 bookingServer :: AuthedUser -> ServerT BookingAPI AppM
 bookingServer user =
@@ -3820,6 +4218,8 @@ defaultResourcesForService (Just service) start end = do
             boothMatches = filter boothPredicate rooms
         in dedupeEntities (nameMatches ++ boothMatches)
   case () of
+    _ | normalized `elem` ["grabacion audiovisual live", "grabación audiovisual live"] ->
+      pure $ map entityKey $ catMaybes (map findByName ["Live Room", "Control Room"])
     _ | normalized `elem` ["band recording", "grabacion banda", "grabación banda"] ->
       pure $ map entityKey $ catMaybes (map findByName ["Live Room", "Control Room"])
     _ | normalized `elem` ["vocal recording", "grabacion vocal", "grabación vocal"] ->
@@ -4740,6 +5140,145 @@ callOpenAIChat cfg messages =
           pure (Right reply)
         Right _ -> pure (Left "Sin respuesta de modelo")
 
+tidalSystemPrompt :: Text
+tidalSystemPrompt = T.intercalate "\n"
+  [ "You are a TidalCycles code generator."
+  , "- Reply ONLY with TidalCycles code, no prose or markdown."
+  , "- Keep patterns short, loopable, and safe to evaluate."
+  , "- Use d1/d2/d3/d4, stack, sound, n, note, cps/bps, hush. Avoid file I/O or shell commands."
+  , "- Prefer concise percussive or melodic patterns; avoid very long sequences."
+  ]
+
+tidalAgentServer :: AuthedUser -> TidalAgentRequest -> AppM TidalAgentResponse
+tidalAgentServer _ TidalAgentRequest{..} = do
+  Env{..} <- ask
+  let prompt = T.strip taPrompt
+  when (T.null prompt) $ throwBadRequest "Prompt requerido"
+  when (T.length prompt > 2000) $ throwBadRequest "Prompt demasiado largo (max 2000 caracteres)"
+  apiKey <- case openAiApiKey envConfig of
+    Nothing -> throwError err503 { errBody = "OPENAI_API_KEY no configurada" }
+    Just key -> pure key
+  let model = fromMaybe (openAiModel envConfig) (taModel >>= nonEmptyText)
+  manager <- liftIO $ newManager tlsManagerSettings
+  reqBase <- liftIO $ parseRequest "https://api.openai.com/v1/chat/completions"
+  let body = encode $ object
+        [ "model" .= model
+        , "messages" .=
+            [ object ["role" .= ("system" :: Text), "content" .= tidalSystemPrompt]
+            , object ["role" .= ("user" :: Text), "content" .= prompt]
+            ]
+        , "temperature" .= (0.6 :: Double)
+        , "max_tokens" .= (300 :: Int)
+        ]
+      req =
+        reqBase
+          { method = "POST"
+          , requestHeaders =
+              [ ("Content-Type", "application/json")
+              , ("Authorization", "Bearer " <> TE.encodeUtf8 apiKey)
+              ]
+          , requestBody = RequestBodyLBS body
+          }
+  resp <- liftIO $ httpLbs req manager
+  let status = statusCode (responseStatus resp)
+      raw = responseBody resp
+  if status >= 200 && status < 300
+    then case eitherDecode raw of
+      Left err ->
+        throwError err502 { errBody = BL.fromStrict (TE.encodeUtf8 (T.pack err)) }
+      Right ChatCompletionResp{choices = (ChatChoice OpenAIChatMessage{content = reply} : _)} ->
+        pure (TidalAgentResponse reply)
+      Right _ ->
+        throwError err502 { errBody = "Sin respuesta de modelo" }
+    else do
+      let baseMsg = "Error al generar respuesta (HTTP " <> T.pack (show status) <> ")"
+          msg = case eitherDecode raw of
+            Right payload -> fromMaybe baseMsg (extractApiErrorMessage payload)
+            Left _ -> baseMsg
+      throwError err502 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+
+chatkitSessionServer :: AuthedUser -> ChatKitSessionRequest -> AppM ChatKitSessionResponse
+chatkitSessionServer user ChatKitSessionRequest{..} = do
+  Env{..} <- ask
+  let cfg = envConfig
+  workflowId <- case resolveWorkflowId cksWorkflowId (chatKitWorkflowId cfg) of
+    Nothing -> throwBadRequest "workflowId requerido"
+    Just val -> pure val
+  apiKey <- case openAiApiKey cfg of
+    Nothing -> throwError err503 { errBody = "OPENAI_API_KEY no configurada" }
+    Just key -> pure key
+  let userId = T.pack (show (fromSqlKey (auPartyId user)))
+      apiBase = normalizeChatKitBase (chatKitApiBase cfg)
+  manager <- liftIO $ newManager tlsManagerSettings
+  reqBase <- liftIO $ parseRequest (T.unpack (apiBase <> "/v1/chatkit/sessions"))
+  let body = encode $ object
+        [ "workflow" .= object ["id" .= workflowId]
+        , "user" .= userId
+        ]
+      req =
+        reqBase
+          { method = "POST"
+          , requestHeaders =
+              [ ("Content-Type", "application/json")
+              , ("Authorization", "Bearer " <> TE.encodeUtf8 apiKey)
+              , ("OpenAI-Beta", "chatkit_beta=v1")
+              ]
+          , requestBody = RequestBodyLBS body
+          }
+  resp <- liftIO $ httpLbs req manager
+  let status = statusCode (responseStatus resp)
+      raw = responseBody resp
+  case eitherDecode raw of
+    Left err ->
+      throwError err502 { errBody = BL.fromStrict (TE.encodeUtf8 (T.pack err)) }
+    Right payload ->
+      if status >= 200 && status < 300
+        then case extractChatKitSession payload of
+          Just (secret, expiresAfter) ->
+            pure ChatKitSessionResponse
+              { ckrClientSecret = secret
+              , ckrExpiresAfter = expiresAfter
+              }
+          Nothing ->
+            throwError err502 { errBody = "ChatKit respondió sin client_secret" }
+        else do
+          let baseMsg = "Error al crear sesión ChatKit (HTTP " <> T.pack (show status) <> ")"
+              msg = fromMaybe baseMsg (extractApiErrorMessage payload)
+          throwError err502 { errBody = BL.fromStrict (TE.encodeUtf8 msg) }
+
+resolveWorkflowId :: Maybe Text -> Maybe Text -> Maybe Text
+resolveWorkflowId primary fallback =
+  (primary <|> fallback) >>= nonEmptyText
+
+normalizeChatKitBase :: Text -> Text
+normalizeChatKitBase base =
+  let trimmed = T.dropWhileEnd (== '/') (T.strip base)
+  in if T.null trimmed then "https://api.openai.com" else trimmed
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText txt =
+  let trimmed = T.strip txt
+  in if T.null trimmed then Nothing else Just trimmed
+
+extractChatKitSession :: Value -> Maybe (Text, Maybe Value)
+extractChatKitSession = parseMaybe $ withObject "ChatKitSession" $ \o -> do
+  secret <- o .: "client_secret"
+  expiresAfter <- o .:? "expires_after"
+  pure (secret, expiresAfter)
+
+extractApiErrorMessage :: Value -> Maybe Text
+extractApiErrorMessage = parseMaybe $ withObject "ApiError" $ \o -> do
+  mErr <- o .:? "error"
+  case mErr of
+    Just (String msg) -> pure msg
+    Just (Object errObj) -> requireText =<< errObj .:? "message"
+    _ -> requireText =<< o .:? "message"
+  where
+    requireText mVal =
+      case mVal of
+        Just txt -> pure txt
+        Nothing -> fail "message missing"
+
 ensurePartyForInquiry :: AdsInquiry -> UTCTime -> SqlPersistT IO PartyId
 ensurePartyForInquiry AdsInquiry{..} now = do
   let emailClean = T.strip <$> aiEmail
@@ -4996,9 +5535,7 @@ resolveMarketplacePhotoUrl assetsBase (Just raw0) = do
   let trimmed = T.strip raw0
       path = T.dropWhile (== '/') trimmed
   if "inventory/" `T.isPrefixOf` path
-    then do
-      fileExists <- doesFileExist ("assets/" <> T.unpack path)
-      pure (if fileExists then Just (normalizePhoto assetsBase path) else Nothing)
+    then pure (Just (normalizePhoto assetsBase path))
     else pure (Just (normalizePhoto assetsBase trimmed))
 
 normalizePhoto :: Text -> Text -> Text
@@ -5008,7 +5545,11 @@ normalizePhoto assetsBase raw =
   in if "http://" `T.isPrefixOf` trimmed || "https://" `T.isPrefixOf` trimmed
         then trimmed
         else
-          let path = T.dropWhile (== '/') trimmed
+          let path0 = T.dropWhile (== '/') trimmed
+              path
+                | "assets/serve/" `T.isPrefixOf` path0 = T.drop (T.length ("assets/serve/" :: Text)) path0
+                | "assets/inventory/" `T.isPrefixOf` path0 = T.drop (T.length ("assets/" :: Text)) path0
+                | otherwise = path0
           in base <> "/" <> path
 
 createCart :: AppM MarketplaceCartDTO
@@ -6083,6 +6624,7 @@ data DriveApiResp = DriveApiResp
   { darId             :: Text
   , darWebViewLink    :: Maybe Text
   , darWebContentLink :: Maybe Text
+  , darResourceKey    :: Maybe Text
   } deriving (Show, Generic)
 
 instance FromJSON DriveApiResp where
@@ -6090,6 +6632,15 @@ instance FromJSON DriveApiResp where
     DriveApiResp <$> o .: "id"
                  <*> o .:? "webViewLink"
                  <*> o .:? "webContentLink"
+                 <*> o .:? "resourceKey"
+
+data DriveMetaResp = DriveMetaResp
+  { dmrResourceKey :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON DriveMetaResp where
+  parseJSON = withObject "DriveMetaResp" $ \o ->
+    DriveMetaResp <$> o .:? "resourceKey"
 
 uploadToDrive
   :: Manager
@@ -6128,7 +6679,9 @@ uploadToDrive manager accessToken file mName mFolder = do
       closing = BL.fromStrict (TE.encodeUtf8 (dashBoundary <> "--"))
       body = BL.intercalate "\r\n" [metaPart, filePart, closing, ""]
 
-  req0 <- parseRequest "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+  req0 <- parseRequest $
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart" <>
+    "&fields=id,webViewLink,webContentLink,resourceKey&supportsAllDrives=true"
   let bearer = "Bearer " <> TE.encodeUtf8 accessToken
       req = req0
         { method = "POST"
@@ -6150,7 +6703,10 @@ uploadToDrive manager accessToken file mName mFolder = do
 
   -- Best-effort: make the file public.
   let permBody = encode (object ["role" .= ("reader" :: Text), "type" .= ("anyone" :: Text)])
-  permReq0 <- parseRequest $ "https://www.googleapis.com/drive/v3/files/" <> T.unpack (darId driveResp) <> "/permissions"
+  permReq0 <- parseRequest $
+    "https://www.googleapis.com/drive/v3/files/" <>
+    T.unpack (darId driveResp) <>
+    "/permissions?supportsAllDrives=true"
   let permReq = permReq0
         { method = "POST"
         , requestHeaders =
@@ -6161,8 +6717,32 @@ uploadToDrive manager accessToken file mName mFolder = do
         }
   _ <- (try (httpLbs permReq manager) :: IO (Either SomeException (Response BL.ByteString)))
 
-  let fallbackPublicUrl = "https://drive.google.com/uc?export=download&id=" <> darId driveResp
-      publicUrl = darWebContentLink driveResp <|> Just fallbackPublicUrl
+  metaReq0 <- parseRequest $
+    "https://www.googleapis.com/drive/v3/files/" <>
+    T.unpack (darId driveResp) <>
+    "?fields=resourceKey&supportsAllDrives=true"
+  let metaReq = metaReq0
+        { requestHeaders =
+            [ ("Authorization", bearer)
+            ]
+        }
+  metaResp <- (try (httpLbs metaReq manager) :: IO (Either SomeException (Response BL.ByteString)))
+  let metaResourceKey =
+        case metaResp of
+          Right respMeta ->
+            case eitherDecode (responseBody respMeta) of
+              Right (DriveMetaResp key) -> key
+              Left _ -> Nothing
+          Left _ -> Nothing
+      resolvedResourceKey = darResourceKey driveResp <|> metaResourceKey
+      fallbackPublicUrl = "https://drive.google.com/uc?export=download&id=" <> darId driveResp
+      appendResourceKey url =
+        case resolvedResourceKey of
+          Just key
+            | not (T.null (T.strip key)) && "resourcekey=" `T.isInfixOf` url == False ->
+                url <> "&resourcekey=" <> T.strip key
+          _ -> url
+      publicUrl = Just $ appendResourceKey $ fromMaybe fallbackPublicUrl (darWebContentLink driveResp)
   pure DriveUploadDTO
     { duFileId = darId driveResp
     , duWebViewLink = darWebViewLink driveResp

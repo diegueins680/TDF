@@ -430,6 +430,37 @@ data DriveUploadDTO = DriveUploadDTO
 instance ToJSON DriveUploadDTO
 instance FromJSON DriveUploadDTO
 
+data AssetUploadDTO = AssetUploadDTO
+  { auFileName  :: Text
+  , auPath      :: Text
+  , auPublicUrl :: Text
+  } deriving (Show, Generic)
+instance ToJSON AssetUploadDTO
+instance FromJSON AssetUploadDTO
+
+data DriveTokenExchangeRequest = DriveTokenExchangeRequest
+  { code         :: Text
+  , codeVerifier :: Text
+  , redirectUri  :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON DriveTokenExchangeRequest
+instance FromJSON DriveTokenExchangeRequest
+
+data DriveTokenRefreshRequest = DriveTokenRefreshRequest
+  { refreshToken :: Text
+  } deriving (Show, Generic)
+instance ToJSON DriveTokenRefreshRequest
+instance FromJSON DriveTokenRefreshRequest
+
+data DriveTokenResponse = DriveTokenResponse
+  { accessToken  :: Text
+  , refreshToken :: Maybe Text
+  , expiresIn    :: Int
+  , tokenType    :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON DriveTokenResponse
+instance FromJSON DriveTokenResponse
+
 data AssetCheckoutRequest = AssetCheckoutRequest
   { coTargetKind    :: Maybe Text
   , coTargetSession :: Maybe Text
@@ -838,6 +869,20 @@ data RadioMetadataRefreshResult = RadioMetadataRefreshResult
   } deriving (Show, Generic)
 instance ToJSON RadioMetadataRefreshResult
 instance FromJSON RadioMetadataRefreshResult
+
+data RadioNowPlayingRequest = RadioNowPlayingRequest
+  { rnpStreamUrl :: Text
+  } deriving (Show, Generic)
+instance ToJSON RadioNowPlayingRequest
+instance FromJSON RadioNowPlayingRequest
+
+data RadioNowPlayingResult = RadioNowPlayingResult
+  { rnpTitle  :: Maybe Text
+  , rnpArtist :: Maybe Text
+  , rnpTrack  :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON RadioNowPlayingResult
+instance FromJSON RadioNowPlayingResult
 
 data RadioTransmissionRequest = RadioTransmissionRequest
   { rtrName    :: Maybe Text

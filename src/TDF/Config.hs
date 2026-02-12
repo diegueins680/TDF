@@ -2,10 +2,12 @@
 module TDF.Config where
 
 import           Control.Applicative ((<|>))
+import           Control.Monad      (filterM)
 import           Data.Char          (toLower)
-import           Data.Maybe         (fromMaybe)
+import           Data.Maybe         (catMaybes, fromMaybe, listToMaybe)
 import           Data.Text          (Text)
 import qualified Data.Text          as T
+import           System.Directory  (doesDirectoryExist)
 import           System.Environment (lookupEnv)
 import           Text.Read          (readMaybe)
 
@@ -32,12 +34,15 @@ data AppConfig = AppConfig
   , seedTriggerToken :: Maybe Text
   , appBaseUrl      :: Maybe Text
   , assetsBaseUrl   :: Maybe Text
+  , assetsRootDir   :: FilePath
   , courseDefaultSlug :: Text
   , courseDefaultMapUrl :: Maybe Text
   , courseDefaultInstructorAvatar :: Maybe Text
   , openAiApiKey    :: Maybe Text
   , openAiModel     :: Text
   , openAiEmbedModel :: Text
+  , chatKitWorkflowId :: Maybe Text
+  , chatKitApiBase :: Text
   , ragTopK         :: Int
   , ragChunkWords   :: Int
   , ragChunkOverlap :: Int
@@ -47,12 +52,27 @@ data AppConfig = AppConfig
   , ragEmbedBatchSize :: Int
   , emailConfig     :: Maybe EmailConfig
   , googleClientId  :: Maybe Text
+  , facebookAppId   :: Maybe Text
+  , facebookAppSecret :: Maybe Text
+  , facebookGraphBase :: Text
   , instagramAppToken :: Maybe Text
   , instagramGraphBase :: Text
   , instagramMessagingToken :: Maybe Text
   , instagramMessagingAccountId :: Maybe Text
   , instagramMessagingApiBase :: Text
+  , instagramVerifyToken :: Maybe Text
   } deriving (Show)
+
+openAiEmbedDimensions :: Text -> Maybe Int
+openAiEmbedDimensions model =
+  case T.toLower (T.strip model) of
+    "text-embedding-3-small" -> Just 1536
+    "text-embedding-3-large" -> Just 3072
+    "text-embedding-ada-002" -> Just 1536
+    _ -> Nothing
+
+ragEmbeddingDim :: AppConfig -> Int
+ragEmbeddingDim cfg = fromMaybe 1536 (openAiEmbedDimensions (openAiEmbedModel cfg))
 
 dbConnString :: AppConfig -> String
 dbConnString cfg =
@@ -76,13 +96,19 @@ loadConfig = do
   seedEnv    <- lookupEnv "SEED_TRIGGER_TOKEN"
   baseUrlEnv <- lookupEnv "HQ_APP_URL"
   assetsBaseEnv <- lookupEnv "HQ_ASSETS_BASE_URL"
+  assetsDirEnv <- lookupEnv "HQ_ASSETS_DIR"
   googleClientIdEnv <- lookupEnv "GOOGLE_CLIENT_ID"
+  fbAppIdEnv <- lookupEnv "FACEBOOK_APP_ID" <|> lookupEnv "META_APP_ID"
+  fbAppSecretEnv <- lookupEnv "FACEBOOK_APP_SECRET" <|> lookupEnv "META_APP_SECRET"
+  fbGraphBaseEnv <- lookupEnv "FACEBOOK_GRAPH_BASE"
   courseSlugEnv <- lookupEnv "COURSE_DEFAULT_SLUG"
   courseMapEnv <- lookupEnv "COURSE_DEFAULT_MAP_URL"
   courseInstructorAvatarEnv <- lookupEnv "COURSE_DEFAULT_INSTRUCTOR_AVATAR"
   openAiKeyEnv <- lookupEnv "OPENAI_API_KEY"
   openAiModelEnv <- lookupEnv "OPENAI_MODEL"
   openAiEmbedModelEnv <- lookupEnv "OPENAI_EMBED_MODEL"
+  chatKitWorkflowEnv <- lookupEnv "CHATKIT_WORKFLOW_ID" <|> lookupEnv "VITE_CHATKIT_WORKFLOW_ID"
+  chatKitApiBaseEnv <- lookupEnv "CHATKIT_API_BASE"
   ragTopKEnv <- lookupEnv "RAG_TOP_K"
   ragChunkWordsEnv <- lookupEnv "RAG_CHUNK_WORDS"
   ragChunkOverlapEnv <- lookupEnv "RAG_CHUNK_OVERLAP"
@@ -102,6 +128,8 @@ loadConfig = do
   igMsgTokenEnv <- lookupEnv "INSTAGRAM_MESSAGING_TOKEN"
   igMsgAccountEnv <- lookupEnv "INSTAGRAM_MESSAGING_ACCOUNT_ID"
   igMsgBaseEnv <- lookupEnv "INSTAGRAM_MESSAGING_API_BASE"
+  igVerifyEnv <- lookupEnv "INSTAGRAM_VERIFY_TOKEN" <|> lookupEnv "IG_VERIFY_TOKEN"
+  assetsRoot <- resolveAssetsRootDir (assetsDirEnv >>= nonEmptyPath)
   pure AppConfig
     { dbHost = h
     , dbPort = p
@@ -115,12 +143,15 @@ loadConfig = do
     , seedTriggerToken = mkSeedToken seedEnv
     , appBaseUrl = fmap (T.strip . T.pack) baseUrlEnv
     , assetsBaseUrl = fmap (T.strip . T.pack) assetsBaseEnv
-    , courseDefaultSlug = maybe "produccion-musical-dic-2025" (T.strip . T.pack) courseSlugEnv
+    , assetsRootDir = assetsRoot
+    , courseDefaultSlug = maybe "produccion-musical-feb-2026" (T.strip . T.pack) courseSlugEnv
     , courseDefaultMapUrl = fmap (T.strip . T.pack) courseMapEnv
     , courseDefaultInstructorAvatar = fmap (T.strip . T.pack) courseInstructorAvatarEnv
     , openAiApiKey = openAiKeyEnv >>= nonEmpty . T.pack
     , openAiModel = fromMaybe "gpt-4o-mini" (openAiModelEnv >>= nonEmpty . T.pack)
     , openAiEmbedModel = fromMaybe "text-embedding-3-small" (openAiEmbedModelEnv >>= nonEmpty . T.pack)
+    , chatKitWorkflowId = chatKitWorkflowEnv >>= nonEmpty . T.pack
+    , chatKitApiBase = fromMaybe "https://api.openai.com" (chatKitApiBaseEnv >>= nonEmpty . T.pack)
     , ragTopK = parseInt 8 ragTopKEnv
     , ragChunkWords = parseInt 220 ragChunkWordsEnv
     , ragChunkOverlap = parseInt 40 ragChunkOverlapEnv
@@ -130,6 +161,9 @@ loadConfig = do
     , ragEmbedBatchSize = parseInt 64 ragEmbedBatchSizeEnv
     , emailConfig = mkEmailConfig smtpHostEnv smtpUserEnv smtpPassEnv smtpFromEnv smtpFromNameEnv smtpPortEnv smtpTlsEnv
     , googleClientId = fmap (T.strip . T.pack) googleClientIdEnv
+    , facebookAppId = fbAppIdEnv >>= nonEmpty . T.pack
+    , facebookAppSecret = fbAppSecretEnv >>= nonEmpty . T.pack
+    , facebookGraphBase = fromMaybe "https://graph.facebook.com/v20.0" (fbGraphBaseEnv >>= nonEmpty . T.pack)
     , instagramAppToken = fmap (T.strip . T.pack) igTokenEnv
     , instagramGraphBase = maybe "https://graph.instagram.com" (T.strip . T.pack) igBaseEnv
     , instagramMessagingToken =
@@ -138,6 +172,7 @@ loadConfig = do
           _ -> fmap (T.strip . T.pack) igTokenEnv
     , instagramMessagingAccountId = fmap (T.strip . T.pack) igMsgAccountEnv
     , instagramMessagingApiBase = maybe "https://graph.facebook.com/v20.0" (T.strip . T.pack) igMsgBaseEnv
+    , instagramVerifyToken = fmap (T.strip . T.pack) igVerifyEnv >>= nonEmpty
     }
   where
     get k def = fmap (fromMaybe def) (lookupEnv k)
@@ -175,10 +210,16 @@ loadConfig = do
         , smtpUseTLS = useTls
         }
 
+resolveAssetsRootDir :: Maybe FilePath -> IO FilePath
+resolveAssetsRootDir mEnv = do
+  let candidates = catMaybes [mEnv] ++ ["/app/assets", "tdf-hq/assets", "assets"]
+  existing <- filterM doesDirectoryExist candidates
+  pure $ fromMaybe (fromMaybe "assets" mEnv) (listToMaybe existing)
+
 defaultAppBase :: Text
 defaultAppBase = "https://tdf-app.pages.dev"
 defaultAssetsBase :: Text
-defaultAssetsBase = "https://tdf-hq.fly.dev"
+defaultAssetsBase = "https://tdf-hq.fly.dev/assets/serve"
 
 sanitizeBaseUrl :: Text -> Text
 sanitizeBaseUrl base =
@@ -196,7 +237,7 @@ resolveConfiguredAssetsBase cfg = sanitizeBaseUrl (fromMaybe defaultAssetsBase (
 courseSlugFallback :: AppConfig -> Text
 courseSlugFallback cfg =
   let val = T.strip (courseDefaultSlug cfg)
-  in if T.null val then "produccion-musical-dic-2025" else val
+  in if T.null val then "produccion-musical-feb-2026" else val
 
 courseMapFallback :: AppConfig -> Text
 courseMapFallback cfg = fromMaybe "https://maps.app.goo.gl/6pVYZ2CsbvQfGhAz6" (courseDefaultMapUrl cfg >>= nonEmpty)
@@ -210,3 +251,6 @@ nonEmpty :: Text -> Maybe Text
 nonEmpty txt =
   let trimmed = T.strip txt
   in if T.null trimmed then Nothing else Just trimmed
+
+nonEmptyPath :: String -> Maybe FilePath
+nonEmptyPath = fmap T.unpack . nonEmpty . T.pack

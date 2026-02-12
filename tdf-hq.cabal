@@ -14,7 +14,9 @@ executable tdf-hq-exe
     TDF.API.Admin
     TDF.API
     TDF.API.Bands
+    TDF.API.Facebook
     TDF.API.Instagram
+    TDF.API.InstagramOAuth
     TDF.API.Internships
     TDF.API.Future
     TDF.API.LiveSessions
@@ -22,6 +24,7 @@ executable tdf-hq-exe
     TDF.API.Payments
     TDF.API.Inventory
     TDF.API.Pipelines
+    TDF.API.Proposals
     TDF.API.Calendar
     TDF.API.Marketplace
     TDF.API.Label
@@ -66,6 +69,8 @@ executable tdf-hq-exe
     TDF.ServerAdmin
     TDF.Server.SocialSync
     TDF.ServerExtra
+    TDF.ServerInstagramOAuth
+    TDF.ServerProposals
     TDF.ServerInternships
     TDF.Server.SocialEventsHandlers
     TDF.ServerLiveSessions
@@ -132,6 +137,7 @@ executable tdf-hq-exe
     , base64-bytestring
     , directory
     , process
+    , temporary
     , bcrypt
     , path-pieces
     , uuid
@@ -149,11 +155,13 @@ test-suite tdf-hq-test
     TDF.API
     TDF.API.Admin
     TDF.API.Bands
+    TDF.API.Facebook
     TDF.API.Future
     TDF.API.Payments
     TDF.API.Feedback
     TDF.API.Inventory
     TDF.API.Instagram
+    TDF.API.InstagramOAuth
     TDF.API.Internships
     TDF.API.SocialSyncAPI
     TDF.API.Calendar
@@ -168,6 +176,7 @@ test-suite tdf-hq-test
     TDF.API.Drive
     TDF.Calendar.Models
     TDF.API.Pipelines
+    TDF.API.Proposals
     TDF.API.Rooms
     TDF.API.Sessions
     TDF.API.SocialEventsAPI
@@ -192,13 +201,16 @@ test-suite tdf-hq-test
     TDF.Pipelines
     TDF.Profiles.Artist
     TDF.Profiles.ArtistSpec
+    TDF.RagStore
     TDF.Routes.Academy
     TDF.Routes.Courses
     TDF.Seed
     TDF.Server
     TDF.ServerAdmin
     TDF.ServerExtra
+    TDF.ServerInstagramOAuth
     TDF.ServerInternships
+    TDF.ServerProposals
     TDF.Server.SocialSync
     TDF.Server.SocialEventsHandlers
     TDF.ServerFuture
@@ -207,6 +219,7 @@ test-suite tdf-hq-test
     TDF.ServerRadio
     TDF.ServerSpec
     TDF.Services
+    TDF.Services.InstagramMessaging
     TDF.Services.InstagramSync
     TDF.Trials.API
     TDF.Trials.DTO
@@ -263,6 +276,7 @@ test-suite tdf-hq-test
     , scientific
     , safe-exceptions
     , base64-bytestring
+    , temporary
     , process
     , bcrypt
     , path-pieces

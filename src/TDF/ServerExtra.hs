@@ -18,23 +18,32 @@ import           Data.List                  (sortOn)
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set                   as Set
+import           Data.Bits                  (xor)
+import           Data.Char                  (isAlphaNum, isAscii, ord)
+import           Data.Word                  (Word64)
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
 import qualified Data.ByteString.Lazy       as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import           Data.Time                  (Day, UTCTime(..), defaultTimeLocale, getCurrentTime, parseTimeM)
+import           Data.UUID                  (toText)
 import           Data.UUID.V4               (nextRandom)
 import           Data.Aeson                 (object, (.:), (.:?), (.=))
 import           Data.Aeson.Types           (parseMaybe, withObject, (.!=))
 import qualified Data.Aeson                as A
+import qualified Data.Scientific            as Sci
+import           Numeric                    (showHex)
+import           System.Directory           (copyFile, createDirectoryIfMissing)
+import           System.FilePath            ((</>), takeExtension, takeFileName)
 import           System.IO                  (hPutStrLn, stderr)
 import           Database.Persist        hiding (Active)
 import           Database.Persist.Sql       (SqlPersistT, fromSqlKey, runSqlPool, toSqlKey)
 import           Servant
+import           Servant.Multipart          (FileData(..))
 import           Web.PathPieces             (PathPiece, fromPathPiece, toPathPiece)
 
-import           TDF.API.Inventory          (InventoryAPI)
+import           TDF.API.Inventory          (InventoryAPI, AssetUploadForm(..))
 import           TDF.API.Bands              (BandsAPI)
 import           TDF.API.Pipelines          (PipelinesAPI)
 import           TDF.API.Rooms              (RoomsAPI, RoomsPublicAPI)
@@ -43,9 +52,10 @@ import           TDF.API.Services           (ServiceCatalogAPI, ServiceCatalogPu
 import           TDF.API.Types
 import           TDF.Auth                   (AuthedUser(..), ModuleAccess(..), hasModuleAccess)
 import           TDF.API.Payments          (PaymentDTO(..), PaymentCreate(..), PaymentsAPI)
+import qualified TDF.API.Facebook          as FB
 import qualified TDF.API.Instagram         as IG
 import           TDF.DB                     (Env(..))
-import           TDF.Config                 (resolveConfiguredAppBase)
+import           TDF.Config                 (assetsRootDir, instagramAppToken, instagramMessagingToken, instagramVerifyToken, resolveConfiguredAppBase, resolveConfiguredAssetsBase)
 import           TDF.Models                 (Party(..), Payment(..), PaymentMethod(..))
 import qualified TDF.Models                 as M
 import           TDF.ModelsExtra
@@ -75,6 +85,7 @@ inventoryServer
 inventoryServer user =
        listAssets
   :<|> createAssetH
+  :<|> uploadAssetPhotoH
   :<|> getAssetH
   :<|> patchAssetH
   :<|> deleteAssetH
@@ -84,8 +95,15 @@ inventoryServer user =
   :<|> refreshQrH
   :<|> resolveByQrH
   where
+    ensureInventoryAccess =
+      unless (hasModuleAccess ModuleAdmin user || hasInventoryRole user) $
+        throwError err403 { errBody = "Missing required module access" }
+
+    hasInventoryRole u =
+      any (`elem` auRoles u) [M.Manager, M.Maintenance]
+
     listAssets _mq mp mps = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       let pageNum    = clampPage (fromMaybe 1 mp)
           pageSize'  = clampPageSize (fromMaybe 50 mps)
           pageOffset = (pageNum - 1) * pageSize'
@@ -95,7 +113,7 @@ inventoryServer user =
       pure (mkPage pageNum pageSize' totalCount (map toAssetDTO entities))
 
     createAssetH req = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       entity <- withPool $ do
         newAssetId <- insert Asset
           { assetName                  = cName req
@@ -119,14 +137,37 @@ inventoryServer user =
         getJustEntity newAssetId
       pure (toAssetDTO entity)
 
+    uploadAssetPhotoH AssetUploadForm{..} = do
+      ensureInventoryAccess
+      Env{envConfig} <- ask
+      let assetsBase = resolveConfiguredAssetsBase envConfig
+          assetsRoot = assetsRootDir envConfig
+          fallbackName = nonEmptyText (fdFileName aufFile)
+          requestedName = aufName >>= nonEmptyText
+          nameWithExt = applyExtension (requestedName <|> fallbackName) fallbackName
+          safeName = sanitizeAssetName nameWithExt
+      uuid <- liftIO nextRandom
+      let storedName = toText uuid <> "-" <> safeName
+          relPath = "inventory/" <> storedName
+          targetDir = assetsRoot </> "inventory"
+          targetPath = targetDir </> T.unpack storedName
+      liftIO $ createDirectoryIfMissing True targetDir
+      liftIO $ copyFile (fdPayload aufFile) targetPath
+      let publicUrl = buildAssetUrl assetsBase relPath
+      pure AssetUploadDTO
+        { auFileName = storedName
+        , auPath = relPath
+        , auPublicUrl = publicUrl
+        }
+
     getAssetH rawId = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       mEntity <- withPool $ getEntity assetKey
       maybe (throwError err404) (pure . toAssetDTO) mEntity
 
     patchAssetH rawId req = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey    <- parseKey @Asset rawId
       locationKey <- traverse (parseKey @Room) (uLocationId req)
       let statusValue = uStatus req >>= parseAssetStatus
@@ -148,7 +189,7 @@ inventoryServer user =
       maybe (throwError err404) (pure . toAssetDTO) result
 
     deleteAssetH rawId = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       deleted <- withPool $ do
         mAsset <- get assetKey
@@ -171,8 +212,43 @@ inventoryServer user =
       , photoUrl = assetPhotoUrl asset
       }
 
+    nonEmptyText txt =
+      let trimmed = T.strip txt
+      in if T.null trimmed then Nothing else Just trimmed
+
+    applyExtension name fallback =
+      let resolved = fromMaybe "upload" name
+          extFromFallback =
+            case fallback of
+              Nothing -> ""
+              Just raw -> T.pack (takeExtension (T.unpack raw))
+          extFromName = T.pack (takeExtension (T.unpack resolved))
+      in if T.null extFromName && not (T.null extFromFallback)
+          then resolved <> extFromFallback
+          else resolved
+
+    sanitizeAssetName raw =
+      let trimmed = T.strip raw
+          baseName = T.pack (takeFileName (T.unpack trimmed))
+          cleaned = T.map normalizeChar baseName
+          stripped = T.dropWhile (== '-') (T.dropWhileEnd (== '-') cleaned)
+      in if T.null stripped || stripped == "." || stripped == ".."
+          then "upload"
+          else stripped
+
+    normalizeChar ch
+      | isAscii ch && isAlphaNum ch = ch
+      | ch == '.' || ch == '-' || ch == '_' = ch
+      | ch == ' ' = '-'
+      | otherwise = '-'
+
+    buildAssetUrl assetsBase relPath =
+      let base = T.dropWhileEnd (== '/') assetsBase
+          path = T.dropWhile (== '/') relPath
+      in base <> "/" <> path
+
     checkoutAssetH rawId req = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       asset <- withPool $ get assetKey
       _ <- maybe (throwError err404) pure asset
@@ -206,7 +282,7 @@ inventoryServer user =
       pure (toCheckoutDTO recEnt)
 
     checkinAssetH rawId req = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       now <- liftIO getCurrentTime
       mOpen <- withPool $ selectFirst [AssetCheckoutAssetId ==. assetKey, AssetCheckoutReturnedAt ==. Nothing] [Desc AssetCheckoutCheckedOutAt]
@@ -224,13 +300,13 @@ inventoryServer user =
           pure (toCheckoutDTO recEnt)
 
     checkoutHistoryH rawId = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       recs <- withPool $ selectList [AssetCheckoutAssetId ==. assetKey] [Desc AssetCheckoutCheckedOutAt, LimitTo 50]
       pure (map toCheckoutDTO recs)
 
     refreshQrH rawId = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
       token <- liftIO (fmap (T.pack . show) nextRandom)
       Env{envConfig} <- ask
@@ -240,7 +316,7 @@ inventoryServer user =
       pure AssetQrDTO { qrToken = token, qrUrl = qrUrl token }
 
     resolveByQrH token = do
-      ensureModule ModuleAdmin user
+      ensureInventoryAccess
       mAsset <- withPool $ selectFirst [AssetQrCode ==. Just token] []
       maybe (throwError err404) (pure . toAssetDTO) mAsset
 
@@ -1008,10 +1084,6 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
       let trimmed = T.strip txt
       in if T.null trimmed then throwError err400 { errBody = "Nombre requerido" } else pure trimmed
 
-    normalizeNameMaybe txt =
-      let trimmed = T.strip txt
-      in if T.null trimmed then pure Nothing else pure (Just trimmed)
-
     normalizeCurrency txt =
       let trimmed = T.toUpper (T.strip txt)
       in if T.null trimmed then "USD" else trimmed
@@ -1173,13 +1245,22 @@ parseMethod t =
     "crypto" -> CryptoM
     _ -> BankTransferM
 
--- Minimal Instagram server (stub): logs webhook payload, stores messages, returns canned responses.
+data MetaChannel = MetaInstagram | MetaFacebook
+  deriving (Eq, Show)
+
+metaChannelLabel :: MetaChannel -> Text
+metaChannelLabel MetaInstagram = "instagram"
+metaChannelLabel MetaFacebook = "facebook"
+
+-- Meta webhook parser: accepts Messenger-style `entry.messaging` and Graph-style
+-- `entry.changes[].value` message envelopes used by Instagram/Facebook webhooks.
 data IGWebhook = IGWebhook
   { igEntries :: [IGEntry]
   } deriving (Show)
 
 data IGEntry = IGEntry
   { igMessaging :: [IGMessaging]
+  , igChanges :: [IGChange]
   } deriving (Show)
 
 data IGActor = IGActor
@@ -1191,6 +1272,7 @@ data IGMessage = IGMessage
   , igText   :: Maybe Text
   , igIsEcho :: Maybe Bool
   , igReferral :: Maybe IGReferral
+  , igAttachments :: Maybe [A.Value]
   } deriving (Show)
 
 data IGReferral = IGReferral
@@ -1204,9 +1286,27 @@ data IGReferral = IGReferral
 
 data IGMessaging = IGMessaging
   { igSender    :: IGActor
+  , igRecipient :: Maybe IGActor
   , igMessage   :: Maybe IGMessage
   , igReferral  :: Maybe IGReferral
   , igTimestamp :: Maybe Int
+  } deriving (Show)
+
+data IGChange = IGChange
+  { igChangeField :: Maybe Text
+  , igChangeValue :: Maybe IGChangeValue
+  } deriving (Show)
+
+data IGChangeValue = IGChangeValue
+  { igChangeMessage :: Maybe IGMessage
+  , igChangeFrom :: Maybe IGChangeActor
+  , igChangeTimestamp :: Maybe Int
+  , igChangeReferral :: Maybe IGReferral
+  } deriving (Show)
+
+data IGChangeActor = IGChangeActor
+  { igActorId :: Text
+  , igActorName :: Maybe Text
   } deriving (Show)
 
 instance A.FromJSON IGWebhook where
@@ -1217,6 +1317,7 @@ instance A.FromJSON IGWebhook where
 instance A.FromJSON IGEntry where
   parseJSON = withObject "IGEntry" $ \o -> do
     igMessaging <- o .:? "messaging" .!= []
+    igChanges <- o .:? "changes" .!= []
     pure IGEntry{..}
 
 instance A.FromJSON IGActor where
@@ -1230,6 +1331,7 @@ instance A.FromJSON IGMessage where
     igText <- o .:? "text"
     igIsEcho <- o .:? "is_echo"
     igReferral <- o .:? "referral"
+    igAttachments <- o .:? "attachments"
     pure IGMessage{..}
 
 instance A.FromJSON IGReferral where
@@ -1245,14 +1347,53 @@ instance A.FromJSON IGReferral where
 instance A.FromJSON IGMessaging where
   parseJSON = withObject "IGMessaging" $ \o -> do
     igSender <- o .: "sender"
+    igRecipient <- o .:? "recipient"
     igMessage <- o .:? "message"
     igReferral <- o .:? "referral"
-    igTimestamp <- o .:? "timestamp"
+    rawTs <- o .:? "timestamp"
+    igTimestamp <- parseTimestampMaybe rawTs
     pure IGMessaging{..}
+
+instance A.FromJSON IGChange where
+  parseJSON = withObject "IGChange" $ \o -> do
+    igChangeField <- o .:? "field"
+    igChangeValue <- o .:? "value"
+    pure IGChange{..}
+
+instance A.FromJSON IGChangeValue where
+  parseJSON = withObject "IGChangeValue" $ \o -> do
+    igChangeMessage <- o .:? "message"
+    igChangeFrom <- o .:? "from"
+    rawTs <- o .:? "timestamp"
+    igChangeTimestamp <- parseTimestampMaybe rawTs
+    igChangeReferral <- o .:? "referral"
+    pure IGChangeValue{..}
+
+instance A.FromJSON IGChangeActor where
+  parseJSON = withObject "IGChangeActor" $ \o -> do
+    igActorId <- o .: "id"
+    igActorName <- o .:? "username"
+      <|> o .:? "name"
+    pure IGChangeActor{..}
+
+parseTimestampMaybe :: Maybe A.Value -> A.Parser (Maybe Int)
+parseTimestampMaybe Nothing = pure Nothing
+parseTimestampMaybe (Just raw) =
+  case raw of
+    A.Number n ->
+      case Sci.toBoundedInteger n of
+        Just v -> pure (Just v)
+        Nothing -> fail "Invalid timestamp number"
+    A.String txt ->
+      case reads (T.unpack (T.strip txt)) of
+        [(v, "")] -> pure (Just v)
+        _ -> fail "Invalid timestamp text"
+    _ -> fail "Invalid timestamp type"
 
 data IGInbound = IGInbound
   { igInboundExternalId :: Text
   , igInboundSenderId   :: Text
+  , igInboundSenderName :: Maybe Text
   , igInboundText       :: Text
   , igInboundAdExternalId :: Maybe Text
   , igInboundAdName     :: Maybe Text
@@ -1261,24 +1402,75 @@ data IGInbound = IGInbound
   , igInboundMetadata   :: Maybe Text
   } deriving (Show)
 
-extractInstagramInbound :: A.Value -> [IGInbound]
-extractInstagramInbound payload =
+extractMetaInbound :: A.Value -> [IGInbound]
+extractMetaInbound payload =
   case parseMaybe A.parseJSON payload of
     Nothing -> []
     Just IGWebhook{igEntries} -> concatMap extractEntry igEntries
   where
-    extractEntry IGEntry{igMessaging} = mapMaybe extractEvent igMessaging
-    extractEvent IGMessaging{igSender, igMessage, igReferral = eventReferral, igTimestamp} = do
-      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral} <- igMessage
-      guard (not (fromMaybe False igIsEcho))
-      body <- igText
-      let ref = eventReferral <|> msgReferral
-          fallbackId = igId igSender <> "-" <> maybe "0" (T.pack . show) igTimestamp
-          externalId = fromMaybe fallbackId igMid
-          (adExt, adName, campExt, campName, meta) = toReferralMeta ref
+    extractEntry IGEntry{igMessaging, igChanges} =
+      mapMaybe extractMessagingEvent igMessaging <> mapMaybe extractChangeEvent igChanges
+
+    extractMessagingEvent IGMessaging{igSender, igMessage, igReferral = eventReferral, igTimestamp} = do
+      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments} <- igMessage
+      buildInbound
+        (igId igSender)
+        Nothing
+        igMid
+        igText
+        igIsEcho
+        (eventReferral <|> msgReferral)
+        igAttachments
+        igTimestamp
+
+    extractChangeEvent IGChange{igChangeField, igChangeValue} = do
+      guard (maybe True (\raw -> T.toCaseFold (T.strip raw) == "messages") igChangeField)
+      IGChangeValue{igChangeMessage, igChangeFrom, igChangeTimestamp, igChangeReferral} <- igChangeValue
+      IGChangeActor{igActorId, igActorName} <- igChangeFrom
+      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments} <- igChangeMessage
+      buildInbound
+        igActorId
+        igActorName
+        igMid
+        igText
+        igIsEcho
+        (igChangeReferral <|> msgReferral)
+        igAttachments
+        igChangeTimestamp
+
+    buildInbound senderId senderName mMid mText mIsEcho mReferral mAttachments mTs = do
+      guard (not (fromMaybe False mIsEcho))
+      let (adExt, adName, campExt, campName, refMeta) = toReferralMeta mReferral
+          attachmentPairs = case mAttachments of
+            Just xs | not (null xs) -> ["attachments" .= xs]
+            _ -> []
+          senderNamePairs = case senderName of
+            Just nm | not (T.null (T.strip nm)) -> ["sender_name" .= nm]
+            _ -> []
+          metaPairs = refMeta ++ attachmentPairs ++ senderNamePairs
+          meta = if null metaPairs
+            then Nothing
+            else Just (TE.decodeUtf8 (BL.toStrict (A.encode (object metaPairs))))
+          rawText = fromMaybe "" mText
+          body = if not (T.null (T.strip rawText))
+            then rawText
+            else if null attachmentPairs
+              then ""
+              else "[attachment]"
+      guard (not (T.null (T.strip body)))
+      let fallbackBase = T.intercalate "|"
+            [ senderId
+            , fromMaybe "" senderName
+            , maybe "" (T.pack . show) mTs
+            , body
+            , fromMaybe "" meta
+            ]
+          fallbackId = senderId <> "-" <> toHashText fallbackBase
+          externalId = fromMaybe fallbackId mMid
       pure IGInbound
         { igInboundExternalId = externalId
-        , igInboundSenderId = igId igSender
+        , igInboundSenderId = senderId
+        , igInboundSenderName = senderName
         , igInboundText = body
         , igInboundAdExternalId = adExt
         , igInboundAdName = adName
@@ -1287,13 +1479,21 @@ extractInstagramInbound payload =
         , igInboundMetadata = meta
         }
 
-    toReferralMeta Nothing = (Nothing, Nothing, Nothing, Nothing, Nothing)
+    simpleHash64 = T.foldl' step (14695981039346656037 :: Word64)
+      where
+        step h c = (h `xor` fromIntegral (ord c)) * 1099511628211
+
+    toHashText txt =
+      let hexTxt = T.pack (showHex (simpleHash64 txt) "")
+      in T.justifyRight 16 '0' hexTxt
+
+    toReferralMeta Nothing = (Nothing, Nothing, Nothing, Nothing, [])
     toReferralMeta (Just IGReferral{..}) =
       let adExt = igRefAdId <|> igRefSourceId
           adName = igRefAdTitle
           campExt = igRefCampaignId
           campName = igRefCampaignName
-          metaObj = object
+          metaPairs =
             [ "ad_id" .= igRefAdId
             , "ad_title" .= igRefAdTitle
             , "campaign_id" .= igRefCampaignId
@@ -1301,53 +1501,165 @@ extractInstagramInbound payload =
             , "source_type" .= igRefSourceType
             , "source_id" .= igRefSourceId
             ]
-          metaTxt = TE.decodeUtf8 (BL.toStrict (A.encode metaObj))
-      in (adExt, adName, campExt, campName, Just metaTxt)
+      in (adExt, adName, campExt, campName, metaPairs)
+
+extractMetaChannel :: A.Value -> Maybe MetaChannel
+extractMetaChannel payload =
+  join (parseMaybe parseObject payload)
+  where
+    parseObject = withObject "MetaWebhookObject" $ \o -> do
+      mObj <- o .:? "object"
+      pure $ case fmap (T.toCaseFold . T.strip) mObj of
+        Just "instagram" -> Just MetaInstagram
+        Just "page" -> Just MetaFacebook
+        Just "facebook" -> Just MetaFacebook
+        _ -> Nothing
+
+persistMetaInbound
+  :: MonadIO m
+  => MetaChannel
+  -> UTCTime
+  -> [IGInbound]
+  -> SqlPersistT m ()
+persistMetaInbound channel now incoming =
+  for_ incoming $ \IGInbound{..} ->
+    case channel of
+      MetaInstagram ->
+        upsertInstagram igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
+          igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
+      MetaFacebook ->
+        upsertFacebook igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
+          igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
+  where
+    upsertInstagram externalId senderId senderName body adExt adName campExt campName meta = do
+      _ <- upsert (M.InstagramMessage externalId
+                    senderId
+                    senderName
+                    (Just body)
+                    "incoming"
+                    adExt
+                    adName
+                    campExt
+                    campName
+                    meta
+                    Nothing
+                    Nothing
+                    Nothing
+                    now)
+           [ M.InstagramMessageSenderName =. senderName
+           , M.InstagramMessageText =. Just body
+           , M.InstagramMessageDirection =. "incoming"
+           , M.InstagramMessageAdExternalId =. adExt
+           , M.InstagramMessageAdName =. adName
+           , M.InstagramMessageCampaignExternalId =. campExt
+           , M.InstagramMessageCampaignName =. campName
+           , M.InstagramMessageMetadata =. meta
+           ]
+      pure ()
+
+    upsertFacebook externalId senderId senderName body adExt adName campExt campName meta = do
+      _ <- upsert (ME.FacebookMessage externalId
+                    senderId
+                    senderName
+                    (Just body)
+                    "incoming"
+                    adExt
+                    adName
+                    campExt
+                    campName
+                    meta
+                    Nothing
+                    Nothing
+                    Nothing
+                    now)
+           [ ME.FacebookMessageSenderName =. senderName
+           , ME.FacebookMessageText =. Just body
+           , ME.FacebookMessageDirection =. "incoming"
+           , ME.FacebookMessageAdExternalId =. adExt
+           , ME.FacebookMessageAdName =. adName
+           , ME.FacebookMessageCampaignExternalId =. campExt
+           , ME.FacebookMessageCampaignName =. campName
+           , ME.FacebookMessageMetadata =. meta
+           ]
+      pure ()
+
+verifyMetaWebhook
+  :: ( MonadReader Env m
+     , MonadError ServerError m
+     )
+  => Text
+  -> Maybe Text
+  -> Maybe Text
+  -> m Text
+verifyMetaWebhook platformLabel mToken mChallenge = do
+  Env{envConfig} <- ask
+  let expected =
+        instagramVerifyToken envConfig
+          <|> instagramMessagingToken envConfig
+          <|> instagramAppToken envConfig
+  case expected of
+    Nothing -> throwError err403 { errBody = "Meta verify token not configured" }
+    Just token ->
+      case mToken of
+        Just provided | provided == token -> pure (fromMaybe "" mChallenge)
+        _ -> throwError err403 { errBody = BL8.pack ("Meta verify token mismatch for " <> T.unpack platformLabel) }
+
+instagramWebhookServer
+  :: ( MonadIO m
+     , MonadReader Env m
+     , MonadError ServerError m
+     )
+  => ServerT IG.InstagramWebhookAPI m
+instagramWebhookServer =
+       verifyWebhook
+  :<|> handleWebhook
+  where
+    verifyWebhook _ mToken mChallenge = verifyMetaWebhook "instagram" mToken mChallenge
+
+    handleWebhook payload = do
+      Env{..} <- ask
+      now <- liftIO getCurrentTime
+      let incoming = extractMetaInbound payload
+          channel = fromMaybe MetaInstagram (extractMetaChannel payload)
+      liftIO $ do
+        hPutStrLn stderr ("[" <> T.unpack (metaChannelLabel channel) <> "] received webhook payload")
+        BL8.hPutStrLn stderr (A.encode payload)
+        flip runSqlPool envPool (persistMetaInbound channel now incoming)
+      pure NoContent
+
+facebookWebhookServer
+  :: ( MonadIO m
+     , MonadReader Env m
+     , MonadError ServerError m
+     )
+  => ServerT FB.FacebookWebhookAPI m
+facebookWebhookServer =
+       verifyWebhook
+  :<|> handleWebhook
+  where
+    verifyWebhook _ mToken mChallenge = verifyMetaWebhook "facebook" mToken mChallenge
+
+    handleWebhook payload = do
+      Env{..} <- ask
+      now <- liftIO getCurrentTime
+      let incoming = extractMetaInbound payload
+          channel = fromMaybe MetaFacebook (extractMetaChannel payload)
+      liftIO $ do
+        hPutStrLn stderr ("[" <> T.unpack (metaChannelLabel channel) <> "] received webhook payload")
+        BL8.hPutStrLn stderr (A.encode payload)
+        flip runSqlPool envPool (persistMetaInbound channel now incoming)
+      pure NoContent
 
 instagramServer
   :: ( MonadIO m
      , MonadReader Env m
+     , MonadError ServerError m
      )
   => ServerT IG.InstagramAPI m
 instagramServer =
-       handleWebhook
-  :<|> handleReply
+       handleReply
   :<|> listMessages
   where
-    handleWebhook payload = do
-      Env{..} <- ask
-      now <- liftIO getCurrentTime
-      let incoming = extractInstagramInbound payload
-      liftIO $ do
-        hPutStrLn stderr "[instagram] received webhook payload"
-        BL8.hPutStrLn stderr (A.encode payload)
-        flip runSqlPool envPool $ do
-          for_ incoming $ \IGInbound{..} -> do
-            _ <- upsert (M.InstagramMessage igInboundExternalId
-                          igInboundSenderId
-                          Nothing
-                          (Just igInboundText)
-                          "incoming"
-                          igInboundAdExternalId
-                          igInboundAdName
-                          igInboundCampaignExternalId
-                          igInboundCampaignName
-                          igInboundMetadata
-                          Nothing
-                          Nothing
-                          Nothing
-                          now)
-                 [ M.InstagramMessageText =. Just igInboundText
-                 , M.InstagramMessageDirection =. "incoming"
-                 , M.InstagramMessageAdExternalId =. igInboundAdExternalId
-                 , M.InstagramMessageAdName =. igInboundAdName
-                 , M.InstagramMessageCampaignExternalId =. igInboundCampaignExternalId
-                 , M.InstagramMessageCampaignName =. igInboundCampaignName
-                 , M.InstagramMessageMetadata =. igInboundMetadata
-                 ]
-            pure ()
-      pure NoContent
-
     handleReply req = do
       now <- liftIO getCurrentTime
       -- store outgoing message (stub)
@@ -1378,13 +1690,16 @@ instagramServer =
             ]
       pure (object ["status" .= ("ok" :: Text), "message" .= msg, "echoRecipient" .= IG.irSenderId req])
 
-    listMessages mLimit mRepliedOnly = do
+    listMessages mLimit mDirection mRepliedOnly = do
       Env{..} <- ask
-      let limit = normalizeLimit mLimit
-          filters =
-            case mRepliedOnly of
-              Just True -> [M.InstagramMessageRepliedAt !=. Nothing]
-              _ -> []
+      let limit = normalizeSocialLimit mLimit
+      direction <- parseSocialDirectionParam mDirection
+      repliedOnly <- parseSocialBoolParam mRepliedOnly
+      let filters =
+            concat
+              [ maybe [] (\dir -> [M.InstagramMessageDirection ==. dir]) direction
+              , if repliedOnly then [M.InstagramMessageRepliedAt !=. Nothing] else []
+              ]
       rows <- liftIO $
         flip runSqlPool envPool $
           selectList filters [Desc M.InstagramMessageCreatedAt, LimitTo limit]
@@ -1401,7 +1716,66 @@ instagramServer =
             ]
       pure (A.toJSON (map toObj rows))
 
-    normalizeLimit = max 1 . min 200 . fromMaybe 100
+facebookServer
+  :: ( MonadIO m
+     , MonadReader Env m
+     , MonadError ServerError m
+     )
+  => ServerT FB.FacebookAPI m
+facebookServer =
+  listMessages
+  where
+    listMessages mLimit mDirection mRepliedOnly = do
+      Env{..} <- ask
+      let limit = normalizeSocialLimit mLimit
+      direction <- parseSocialDirectionParam mDirection
+      repliedOnly <- parseSocialBoolParam mRepliedOnly
+      let filters =
+            concat
+              [ maybe [] (\dir -> [ME.FacebookMessageDirection ==. dir]) direction
+              , if repliedOnly then [ME.FacebookMessageRepliedAt !=. Nothing] else []
+              ]
+      rows <- liftIO $
+        flip runSqlPool envPool $
+          selectList filters [Desc ME.FacebookMessageCreatedAt, LimitTo limit]
+      let toObj (Entity _ m) = object
+            [ "externalId" .= ME.facebookMessageExternalId m
+            , "senderId"   .= ME.facebookMessageSenderId m
+            , "senderName" .= ME.facebookMessageSenderName m
+            , "text"       .= ME.facebookMessageText m
+            , "direction"  .= ME.facebookMessageDirection m
+            , "repliedAt"  .= ME.facebookMessageRepliedAt m
+            , "replyText"  .= ME.facebookMessageReplyText m
+            , "replyError" .= ME.facebookMessageReplyError m
+            , "createdAt"  .= ME.facebookMessageCreatedAt m
+            ]
+      pure (A.toJSON (map toObj rows))
+
+normalizeSocialLimit :: Maybe Int -> Int
+normalizeSocialLimit = max 1 . min 200 . fromMaybe 100
+
+parseSocialBoolParam :: MonadError ServerError m => Maybe Text -> m Bool
+parseSocialBoolParam Nothing = pure False
+parseSocialBoolParam (Just raw) =
+  case T.toCaseFold (T.strip raw) of
+    "true" -> pure True
+    "1" -> pure True
+    "yes" -> pure True
+    "false" -> pure False
+    "0" -> pure False
+    "no" -> pure False
+    "" -> pure False
+    _ -> throwError err400 { errBody = "Invalid repliedOnly value" }
+
+parseSocialDirectionParam :: MonadError ServerError m => Maybe Text -> m (Maybe Text)
+parseSocialDirectionParam Nothing = pure Nothing
+parseSocialDirectionParam (Just raw) =
+  case T.toCaseFold (T.strip raw) of
+    "" -> pure Nothing
+    "all" -> pure Nothing
+    "incoming" -> pure (Just "incoming")
+    "outgoing" -> pure (Just "outgoing")
+    _ -> throwError err400 { errBody = "Invalid direction value" }
 
 -- Shared helpers ----------------------------------------------------------
 

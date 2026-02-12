@@ -97,6 +97,16 @@ AdConversationExample
     updatedAt        UTCTime default=now()
     deriving Show Generic
 
+StudioBrainEntry
+    title       Text
+    body        Text
+    category    Text Maybe
+    tags        [Text] Maybe sqltype=text[]
+    active      Bool default=True
+    createdAt   UTCTime default=now()
+    updatedAt   UTCTime default=now()
+    deriving Show Generic
+
 WhatsAppMessage
     externalId       Text
     senderId         Text
@@ -113,6 +123,37 @@ WhatsAppMessage
     replyError       Text Maybe
     createdAt        UTCTime
     UniqueWhatsAppMessage externalId
+    deriving Show Generic
+
+FacebookMessage
+    externalId       Text
+    senderId         Text
+    senderName       Text Maybe
+    text             Text Maybe
+    direction        Text
+    adExternalId     Text Maybe
+    adName           Text Maybe
+    campaignExternalId Text Maybe
+    campaignName     Text Maybe
+    metadata         Text Maybe
+    repliedAt        UTCTime Maybe
+    replyText        Text Maybe
+    replyError       Text Maybe
+    createdAt        UTCTime
+    UniqueFacebookMessage externalId
+    deriving Show Generic
+
+WhatsAppConsent
+    phoneE164    Text
+    displayName  Text Maybe
+    consent      Bool default=False
+    source       Text Maybe
+    note         Text Maybe
+    consentedAt  UTCTime Maybe
+    revokedAt    UTCTime Maybe
+    createdAt    UTCTime default=now()
+    updatedAt    UTCTime default=now()
+    UniqueWhatsAppConsent phoneE164
     deriving Show Generic
 
 CourseRegistration
@@ -210,6 +251,34 @@ PipelineCard
     notes       Text Maybe
     createdAt   UTCTime default=now()
     updatedAt   UTCTime default=now()
+    deriving Show Generic
+
+Proposal
+    Id            UUID default=gen_random_uuid()
+    title         Text
+    serviceKind   ServiceKind Maybe
+    clientPartyId PartyId Maybe
+    contactName   Text Maybe
+    contactEmail  Text Maybe
+    contactPhone  Text Maybe
+    pipelineCardId PipelineCardId Maybe
+    status        Text default='draft'
+    notes         Text Maybe
+    createdAt     UTCTime default=now()
+    updatedAt     UTCTime default=now()
+    lastGeneratedAt UTCTime Maybe
+    sentAt        UTCTime Maybe
+    deriving Show Generic
+
+ProposalVersion
+    Id           UUID default=gen_random_uuid()
+    proposalId   ProposalId
+    version      Int
+    latex        Text
+    createdAt    UTCTime default=now()
+    createdByRef Text Maybe
+    notes        Text Maybe
+    UniqueProposalVersion proposalId version
     deriving Show Generic
 
 -- Party/Booking references use free-text refs to avoid coupling to existing tables

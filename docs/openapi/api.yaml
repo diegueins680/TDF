@@ -195,6 +195,252 @@ paths:
       responses:
         '204':
           description: Processed
+  /instagram/messages:
+    get:
+      tags: [Instagram]
+      summary: List Instagram inbox messages
+      description: Returns stored Instagram messages for auto-reply tracking.
+      operationId: listInstagramMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /facebook/messages:
+    get:
+      tags: [Facebook]
+      summary: List Facebook inbox messages
+      description: Returns stored Facebook Messenger messages for inbox tracking.
+      operationId: listFacebookMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /whatsapp/messages:
+    get:
+      tags: [WhatsApp]
+      summary: List WhatsApp inbox messages
+      description: Returns stored WhatsApp messages for auto-reply tracking.
+      operationId: listWhatsAppMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /whatsapp/consent:
+    post:
+      tags: [WhatsApp]
+      summary: Record WhatsApp consent (admin)
+      description: Stores explicit consent and optionally sends a confirmation message.
+      operationId: createWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppConsentRequest'
+      responses:
+        '200':
+          description: Consent stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+    get:
+      tags: [WhatsApp]
+      summary: Fetch WhatsApp consent status (admin)
+      operationId: getWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Consent status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentStatus'
+        '400':
+          description: Missing or invalid phone
+  /whatsapp/opt-out:
+    post:
+      tags: [WhatsApp]
+      summary: Revoke WhatsApp consent (admin)
+      operationId: optOutWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppOptOutRequest'
+      responses:
+        '200':
+          description: Consent revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+  /public/whatsapp/consent:
+    post:
+      tags: [WhatsApp]
+      summary: Record WhatsApp consent (public)
+      description: Stores explicit consent and optionally sends a confirmation message.
+      operationId: createWhatsAppConsentPublic
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppConsentRequest'
+      responses:
+        '200':
+          description: Consent stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+    get:
+      tags: [WhatsApp]
+      summary: Fetch WhatsApp consent status (public)
+      operationId: getWhatsAppConsentPublic
+      security: [ ]
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Consent status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentStatus'
+        '400':
+          description: Missing or invalid phone
+  /public/whatsapp/opt-out:
+    post:
+      tags: [WhatsApp]
+      summary: Revoke WhatsApp consent (public)
+      operationId: optOutWhatsAppConsentPublic
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppOptOutRequest'
+      responses:
+        '200':
+          description: Consent revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
   /admin/courses/{slug}/registrations/{registrationId}/status:
     parameters:
       - name: slug
@@ -773,6 +1019,75 @@ paths:
           description: Not allowed
         '404':
           description: Not found
+  /drive/token:
+    post:
+      tags: [Drive]
+      summary: Exchange Google Drive OAuth code
+      description: Exchanges a Google OAuth code (PKCE) for Drive tokens.
+      operationId: exchangeDriveToken
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveTokenExchangeRequest'
+      responses:
+        '200':
+          description: Drive token response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriveTokenResponse'
+        '502':
+          description: Google OAuth error
+  /drive/token/refresh:
+    post:
+      tags: [Drive]
+      summary: Refresh Google Drive access token
+      description: Refreshes a Google Drive access token using a refresh token.
+      operationId: refreshDriveToken
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveTokenRefreshRequest'
+      responses:
+        '200':
+          description: Drive token response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriveTokenResponse'
+        '502':
+          description: Google OAuth error
+  /radio/streams/now-playing:
+    post:
+      tags: [Radio]
+      summary: Get now playing metadata
+      description: Returns ICY StreamTitle metadata when the stream provides it.
+      operationId: getRadioNowPlaying
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RadioNowPlayingRequest'
+      responses:
+        '200':
+          description: Now playing metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RadioNowPlayingResult'
+        '400':
+          description: Invalid stream url
 security:
   - bearerAuth: [ ]
 
@@ -892,6 +1207,7 @@ components:
       enum:
         - Admin
         - Manager
+        - Intern
         - Engineer
         - Teacher
         - Reception
@@ -1030,6 +1346,94 @@ components:
         cmCreatedAt:
           type: string
           format: date-time
+    SocialInboxMessage:
+      type: object
+      properties:
+        externalId:
+          type: string
+        senderId:
+          type: string
+        senderName:
+          type: string
+          nullable: true
+        text:
+          type: string
+          nullable: true
+        direction:
+          type: string
+        repliedAt:
+          type: string
+          format: date-time
+          nullable: true
+        replyText:
+          type: string
+          nullable: true
+        replyError:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    WhatsAppConsentRequest:
+      type: object
+      required: [phone, consent]
+      properties:
+        phone:
+          type: string
+          description: Phone number in E.164 format.
+          example: "+593995413168"
+        name:
+          type: string
+          nullable: true
+        consent:
+          type: boolean
+        source:
+          type: string
+          nullable: true
+        sendMessage:
+          type: boolean
+          nullable: true
+    WhatsAppOptOutRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          description: Phone number in E.164 format.
+        reason:
+          type: string
+          nullable: true
+        sendMessage:
+          type: boolean
+          nullable: true
+    WhatsAppConsentStatus:
+      type: object
+      properties:
+        phone:
+          type: string
+        consent:
+          type: boolean
+        consentedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        displayName:
+          type: string
+          nullable: true
+    WhatsAppConsentResponse:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/WhatsAppConsentStatus'
+        messageSent:
+          type: boolean
+        message:
+          type: string
+          nullable: true
     ChatSendMessageRequest:
       type: object
       required: [csmBody]
@@ -1500,3 +1904,57 @@ components:
       type: object
       description: Meta WhatsApp Cloud API webhook payload (pass-through, not strictly validated).
       additionalProperties: true
+    DriveTokenExchangeRequest:
+      type: object
+      required: [code, codeVerifier]
+      properties:
+        code:
+          type: string
+        codeVerifier:
+          type: string
+        redirectUri:
+          type: string
+          nullable: true
+    DriveTokenRefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    DriveTokenResponse:
+      type: object
+      required: [accessToken, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+          nullable: true
+        expiresIn:
+          type: integer
+        tokenType:
+          type: string
+          nullable: true
+    RadioNowPlayingRequest:
+      type: object
+      required: [rnpStreamUrl]
+      properties:
+        rnpStreamUrl:
+          type: string
+          description: Stream URL to inspect (http/https).
+          example: https://icecast.radiofrance.fr/fip-midfi.mp3
+    RadioNowPlayingResult:
+      type: object
+      properties:
+        rnpTitle:
+          type: string
+          nullable: true
+          description: Current StreamTitle metadata when available.
+        rnpArtist:
+          type: string
+          nullable: true
+          description: Parsed artist name when StreamTitle includes a separator.
+        rnpTrack:
+          type: string
+          nullable: true
+          description: Parsed track title when StreamTitle includes a separator.
