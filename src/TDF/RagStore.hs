@@ -8,15 +8,24 @@ module TDF.RagStore
   , retrieveRagContext
   , getRagIndexStats
   , availabilityOverlaps
+  , callOpenAIEmbeddingsWith
   , validateEmbeddingModelDimensions
+  , validateEmbeddingResponseOrder
+  , validateEmbeddingResponseDimensions
   ) where
 
 import           Control.Monad          (forM, forM_)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Exception.Safe (catchAny, throwM)
 import           Data.Aeson             (Value, ToJSON(..), FromJSON(..), object, (.=), encode, eitherDecode, withObject, (.:))
-import           Data.ByteString.Lazy   (toStrict)
-import           Data.Char              (isAlphaNum, ord, toLower)
+import           Data.ByteString.Lazy   (ByteString, toStrict)
+import           Data.Char
+  ( GeneralCategory(Format, LineSeparator, ParagraphSeparator)
+  , generalCategory
+  , isAlphaNum
+  , ord
+  , toLower
+  )
 import           Data.Int               (Int64)
 import           Data.List              (foldl', sortOn)
 import qualified Data.IntMap.Strict     as IntMap
@@ -30,8 +39,7 @@ import           Data.Time.Format       (defaultTimeLocale, formatTime)
 import           Database.Persist       (Entity(..), SelectOpt(..), selectList, entityKey, entityVal, (==.), (!=.), (<-.), (>=.), (<=.))
 import           Database.Persist.Sql   (PersistValue(..), Single(..), SqlPersistT, fromSqlKey, rawExecute, rawSql, runSqlPool, transactionSave, transactionUndo)
 import           GHC.Generics           (Generic)
-import           Network.HTTP.Client    (Request(..), httpLbs, newManager, parseRequest, responseBody, responseStatus, RequestBody(..))
-import           Network.HTTP.Client.TLS (tlsManagerSettings)
+import           Network.HTTP.Client    (Request(..), Response, httpLbs, parseRequest, responseBody, responseStatus, RequestBody(..))
 import           Network.HTTP.Types.Status (statusCode)
 import           Numeric                (showFFloat)
 import           System.IO              (hPutStrLn, stderr)
@@ -39,7 +47,7 @@ import           Text.Read              (readMaybe)
 import           Web.PathPieces         (toPathPiece)
 
 import           TDF.Config             (AppConfig(..), openAiEmbedDimensions, ragEmbeddingDim)
-import           TDF.DB                 (ConnectionPool)
+import           TDF.DB                 (ConnectionPool, sharedTlsManager)
 import qualified TDF.Models             as M
 import qualified TDF.ModelsExtra        as ME
 import qualified TDF.Trials.Models      as Trials
@@ -612,6 +620,83 @@ validateEmbeddingModelDimensions model =
       Left ("OPENAI_EMBED_MODEL desconocido: " <> model <> ". Configura un modelo con dimensiones conocidas.")
     Just dim -> Right dim
 
+validateEmbeddingResponseOrder :: Int -> [(Int, [Double])] -> Either Text [[Double]]
+validateEmbeddingResponseOrder expectedCount indexedEmbeddings
+  | expectedCount < 0 =
+      Left "Embedding response expected count must not be negative"
+  | length indexedEmbeddings /= expectedCount =
+      Left
+        ( "Embedding response size mismatch: expected "
+          <> T.pack (show expectedCount)
+          <> " but got "
+          <> T.pack (show (length indexedEmbeddings))
+        )
+  | otherwise =
+      case outOfRangeIndexes of
+        idx:_ ->
+          Left ("Embedding response index out of range: " <> T.pack (show idx))
+        [] ->
+          case duplicateIndexes of
+            idx:_ ->
+              Left ("Embedding response duplicate index: " <> T.pack (show idx))
+            [] ->
+              traverse lookupEmbedding [0 .. expectedCount - 1]
+  where
+    grouped =
+      Map.fromListWith
+        (++)
+        [(idx, [embeddingValue]) | (idx, embeddingValue) <- indexedEmbeddings]
+    outOfRangeIndexes =
+      [idx | (idx, _) <- indexedEmbeddings, idx < 0 || idx >= expectedCount]
+    duplicateIndexes =
+      [idx | (idx, values) <- Map.toList grouped, length values > 1]
+    lookupEmbedding idx =
+      case Map.lookup idx grouped of
+        Just [embeddingValue] -> Right embeddingValue
+        _ ->
+          Left ("Embedding response missing index: " <> T.pack (show idx))
+
+validateEmbeddingResponseDimensions :: Int -> [[Double]] -> Either Text [[Double]]
+validateEmbeddingResponseDimensions expectedDim embeddings
+  | expectedDim <= 0 =
+      Left "Embedding response expected dimension must be positive"
+  | otherwise =
+      case dimensionMismatches of
+        (idx, actualDim):_ ->
+          Left
+            ( "Embedding response dimension mismatch at index "
+              <> T.pack (show idx)
+              <> ": expected "
+              <> T.pack (show expectedDim)
+              <> " but got "
+              <> T.pack (show actualDim)
+            )
+        [] ->
+          case nonFiniteValues of
+            (idx, valueIdx):_ ->
+              Left
+                ( "Embedding response non-finite value at index "
+                  <> T.pack (show idx)
+                  <> " position "
+                  <> T.pack (show valueIdx)
+                )
+            [] -> Right embeddings
+  where
+    dimensionMismatches =
+      [ (idx, length embeddingValue)
+      | (idx, embeddingValue) <- zip [0 :: Int ..] embeddings
+      , length embeddingValue /= expectedDim
+      ]
+    nonFiniteValues =
+      [ (idx, valueIdx)
+      | (idx, embeddingValue) <- zip [0 :: Int ..] embeddings
+      , (valueIdx, value) <- zip [0 :: Int ..] embeddingValue
+      , not (isFiniteDouble value)
+      ]
+
+isFiniteDouble :: Double -> Bool
+isFiniteDouble value = not (isNaN value || isInfinite value)
+
 validateRagEmbeddingDim :: AppConfig -> ConnectionPool -> IO (Either Text ())
 validateRagEmbeddingDim cfg pool =
   case validateEmbeddingModelDimensions (openAiEmbedModel cfg) of
@@ -719,10 +804,20 @@ hashToken dim token =
 
 callOpenAIEmbeddings :: AppConfig -> [Text] -> IO (Either Text [[Double]])
 callOpenAIEmbeddings cfg inputs =
+  callOpenAIEmbeddingsWith (\req -> do
+    manager <- pure sharedTlsManager
+    httpLbs req manager
+  ) cfg inputs
+
+callOpenAIEmbeddingsWith
+  :: (Request -> IO (Response ByteString))
+  -> AppConfig
+  -> [Text]
+  -> IO (Either Text [[Double]])
+callOpenAIEmbeddingsWith runEmbeddingRequest cfg inputs =
   case openAiApiKey cfg of
     Nothing -> pure (Left "OPENAI_API_KEY no configurada")
     Just key -> do
-      manager <- newManager tlsManagerSettings
       reqBase <- parseRequest "https://api.openai.com/v1/embeddings"
       let body = encode EmbeddingReq
             { model = openAiEmbedModel cfg
@@ -737,21 +832,56 @@ callOpenAIEmbeddings cfg inputs =
                   ]
               , requestBody = RequestBodyLBS body
               }
-      resp <- httpLbs req manager
-      let status = statusCode (responseStatus resp)
-      let raw = responseBody resp
-      if status < 200 || status >= 300
-        then case eitherDecode raw of
-          Right OpenAIErrorResp{..} ->
-            pure (Left ("OpenAI embeddings error: " <> oeMessage oeError))
-          Left _ ->
-            pure (Left ("OpenAI embeddings error (status " <> T.pack (show status) <> ")."))
-        else
-          case eitherDecode raw of
-            Left err -> pure (Left (T.pack err))
-            Right (EmbeddingResp embeddings) ->
-              let ordered = map embedding (sortOn index embeddings)
-              in pure (Right ordered)
+      respResult <-
+        (Right <$> runEmbeddingRequest req) `catchAny` \err ->
+          pure
+            ( Left
+                ( "OpenAI embeddings request failed: "
+                    <> sanitizeOpenAIEmbeddingErrorMessage (T.pack (show err))
+                )
+            )
+      case respResult of
+        Left err -> pure (Left err)
+        Right resp -> do
+          let status = statusCode (responseStatus resp)
+          let raw = responseBody resp
+          if status < 200 || status >= 300
+            then case eitherDecode raw of
+              Right OpenAIErrorResp{..} ->
+                pure
+                  ( Left
+                      ( "OpenAI embeddings error: "
+                          <> sanitizeOpenAIEmbeddingErrorMessage (oeMessage oeError)
+                      )
+                  )
+              Left _ ->
+                pure (Left ("OpenAI embeddings error (status " <> T.pack (show status) <> ")."))
+            else
+              case eitherDecode raw of
+                Left err -> pure (Left (T.pack err))
+                Right (EmbeddingResp embeddings) ->
+                  pure $ do
+                    expectedDim <- validateEmbeddingModelDimensions (openAiEmbedModel cfg)
+                    orderedEmbeddings <-
+                      validateEmbeddingResponseOrder
+                        (length inputs)
+                        [(index item, embedding item) | item <- embeddings]
+                    validateEmbeddingResponseDimensions expectedDim orderedEmbeddings
+
+sanitizeOpenAIEmbeddingErrorMessage :: Text -> Text
+sanitizeOpenAIEmbeddingErrorMessage raw =
+  let sanitized = T.strip (T.map sanitizeChar raw)
+  in if T.length sanitized <= maxOpenAIEmbeddingErrorChars
+       then sanitized
+       else T.take maxOpenAIEmbeddingErrorChars sanitized <> " [truncated]"
+  where
+    sanitizeChar ch
+      | ch == '\DEL' || ch < ' ' = ' '
+      | generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator] = ' '
+      | otherwise = ch
+
+maxOpenAIEmbeddingErrorChars :: Int
+maxOpenAIEmbeddingErrorChars = 500
 
 formatUtc :: UTCTime -> Text
 formatUtc ts = T.pack (formatTime defaultTimeLocale "%Y-%m-%d %H:%M UTC" ts)

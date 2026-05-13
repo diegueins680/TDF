@@ -3,23 +3,31 @@
 module TDF.WhatsApp.Service
   ( WhatsAppService(..)
   , WhatsAppConfig(..)
+  , loadWhatsAppConfig
   , mkWhatsAppService
   , enrollPhone
   , previewEnrollment
   , verifyTokenMatches
+  , requireWhatsAppSendSuccess
   ) where
 
 import Data.Aeson (Value, object, (.=))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Applicative ((<|>))
 import System.Environment (lookupEnv)
-import Network.HTTP.Client (Manager, newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.HTTP.Client (Manager)
+import TDF.DB (sharedTlsManager)
 import Database.PostgreSQL.Simple (Connection, execute, Only(..))
 
+import qualified TDF.Config as Config
 import TDF.Leads.Model (ensureLead, lookupCourseIdBySlug)
-import TDF.WhatsApp.Client (sendText)
+import TDF.WhatsApp.Client
+  ( SendTextResult (..)
+  , normalizeWhatsAppAccessToken
+  , normalizeWhatsAppPhoneNumberId
+  , normalizeWhatsAppVerifyToken
+  , sendText
+  )
 
 data WhatsAppConfig = WhatsAppConfig
   { waToken       :: Text
@@ -38,29 +46,124 @@ data WhatsAppService = WhatsAppService
 
 mkWhatsAppService :: IO WhatsAppService
 mkWhatsAppService = do
-  mgr <- newManager tlsManagerSettings
-  cfg <- loadConfig
+  mgr <- pure sharedTlsManager
+  cfg <- loadWhatsAppConfig
   pure $ WhatsAppService mgr cfg
 
-loadConfig :: IO WhatsAppConfig
-loadConfig = do
-  tok <- fmap (maybe "" T.pack) (lookupEnv "WA_TOKEN")
-  pid <- fmap (maybe "" T.pack) (lookupEnv "WA_PHONE_ID")
-  ver <- fmap (fmap T.pack) (lookupEnv "WA_VERIFY_TOKEN")
-  mSlug <- lookupEnv "COURSE_EDITION_SLUG"
+loadWhatsAppConfig :: IO WhatsAppConfig
+loadWhatsAppConfig = do
+  tok <- requireValidOptionalCredential normalizeWhatsAppAccessToken
+    =<< lookupFirstNonEmptyAliasEnv "WhatsApp access token" ["WA_TOKEN", "WHATSAPP_TOKEN"]
+  pid <- requireValidOptionalCredential normalizeWhatsAppPhoneNumberId
+    =<< lookupFirstNonEmptyAliasEnv
+      "WhatsApp phone number id"
+      ["WA_PHONE_ID", "WHATSAPP_PHONE_NUMBER_ID"]
+  ver <- traverse (either fail pure . normalizeWhatsAppVerifyToken . T.pack)
+    =<< lookupFirstNonEmptyAliasEnv
+      "WhatsApp verify token"
+      ["WA_VERIFY_TOKEN", "WHATSAPP_VERIFY_TOKEN"]
+  mSlug <- lookupFirstNonEmptyEnv ["COURSE_EDITION_SLUG", "COURSE_DEFAULT_SLUG"]
   mReg  <- lookupEnv "COURSE_REG_URL"
   mBase <- lookupEnv "HQ_APP_URL"
-  mVersion <- lookupEnv "WA_GRAPH_API_VERSION" <|> lookupEnv "WHATSAPP_API_VERSION"
+  mVersion <-
+    lookupFirstNonEmptyAliasEnv
+      "WhatsApp API version"
+      ["WA_GRAPH_API_VERSION", "WHATSAPP_API_VERSION"]
+  slugVal <- either fail pure (Config.normalizeConfiguredCourseSlug mSlug)
+  regUrl <- either fail pure (normalizeWhatsAppRegistrationUrl mReg)
+  baseUrl <- either fail pure (normalizeWhatsAppAppBaseUrl mBase)
+  version <- either fail pure (normalizeWhatsAppApiVersion mVersion)
   let cfg = WhatsAppConfig
         { waToken       = tok
         , waPhoneId     = pid
         , waVerifyToken = ver
-        , courseSlug    = maybe "produccion-musical-feb-2026" T.pack mSlug
-        , courseRegUrl  = fmap T.pack mReg
-        , appBaseUrl    = maybe "http://localhost:5173" T.pack mBase
-        , waApiVersion  = maybe "v20.0" T.pack mVersion
+        , courseSlug    = slugVal
+        , courseRegUrl  = regUrl
+        , appBaseUrl    = baseUrl
+        , waApiVersion  = version
         }
   pure cfg
+
+requireValidOptionalCredential :: (Text -> Either String Text) -> Maybe String -> IO Text
+requireValidOptionalCredential normalizeCredential mRaw =
+  case mRaw of
+    Nothing -> pure ""
+    Just raw -> either fail pure (normalizeCredential (T.pack raw))
+
+lookupFirstNonEmptyEnv :: [String] -> IO (Maybe String)
+lookupFirstNonEmptyEnv [] = pure Nothing
+lookupFirstNonEmptyEnv (key:rest) = do
+  value <- lookupEnv key
+  case value >>= nonEmptyString of
+    Just normalized -> pure (Just normalized)
+    Nothing -> lookupFirstNonEmptyEnv rest
+
+lookupFirstNonEmptyAliasEnv :: String -> [String] -> IO (Maybe String)
+lookupFirstNonEmptyAliasEnv label keys = do
+  values <- traverse lookupAlias keys
+  case [entry | Just entry <- values] of
+    [] -> pure Nothing
+    (firstKey, firstValue):rest ->
+      case filter ((/= firstValue) . snd) rest of
+        [] -> pure (Just firstValue)
+        (conflictKey, _):_ ->
+          fail $
+            label <> " aliases conflict: "
+              <> firstKey <> " and " <> conflictKey
+              <> " are both set with different values"
+  where
+    lookupAlias key = do
+      value <- lookupEnv key
+      pure ((,) key <$> (value >>= nonEmptyString))
+
+nonEmptyString :: String -> Maybe String
+nonEmptyString raw =
+  let trimmed = T.unpack (T.strip (T.pack raw))
+  in if null trimmed then Nothing else Just trimmed
+
+normalizeWhatsAppRegistrationUrl :: Maybe String -> Either String (Maybe Text)
+normalizeWhatsAppRegistrationUrl Nothing = Right Nothing
+normalizeWhatsAppRegistrationUrl (Just rawUrl)
+  | T.null trimmed = Right Nothing
+  | T.any (`elem` ("?#" :: String)) trimmed =
+      Left "COURSE_REG_URL must be an absolute https URL without query or fragment"
+  | otherwise =
+      Config.normalizeConfiguredHttpsUrl "COURSE_REG_URL" rawUrl
+  where
+    trimmed = T.strip (T.pack rawUrl)
+
+normalizeWhatsAppAppBaseUrl :: Maybe String -> Either String Text
+normalizeWhatsAppAppBaseUrl Nothing = Right "http://localhost:5173"
+normalizeWhatsAppAppBaseUrl (Just rawUrl) =
+  case Config.normalizeConfiguredBaseUrl "HQ_APP_URL" rawUrl of
+    Left msg -> Left msg
+    Right Nothing -> Right "http://localhost:5173"
+    Right (Just urlVal) -> Right urlVal
+
+normalizeWhatsAppApiVersion :: Maybe String -> Either String Text
+normalizeWhatsAppApiVersion Nothing = Right "v20.0"
+normalizeWhatsAppApiVersion (Just rawVersion)
+  | T.null version = Right "v20.0"
+  | isValidVersion version = Right version
+  | otherwise =
+      Left "WhatsApp API version must look like v20.0"
+  where
+    version = T.toLower (T.strip (T.pack rawVersion))
+    isValidVersion value =
+      case T.uncons value of
+        Just ('v', rest) ->
+          case T.splitOn "." rest of
+            [major] -> isPositiveVersionSegment major
+            [major, minor] ->
+              isPositiveVersionSegment major && isCanonicalVersionSegment minor
+            _ -> False
+        _ -> False
+    isPositiveVersionSegment value =
+      isCanonicalVersionSegment value && value /= "0"
+    isCanonicalVersionSegment value =
+      not (T.null value)
+        && T.all (\ch -> ch >= '0' && ch <= '9') value
+        && (value == "0" || not ("0" `T.isPrefixOf` value))
 
 verifyTokenMatches :: WhatsAppService -> Text -> Bool
 verifyTokenMatches svc token = case waVerifyToken (waConfig svc) of
@@ -85,8 +188,19 @@ sendViaWA WhatsAppService{waManager, waConfig} to url = do
   let msg = "¡Gracias por tu interés en el Curso de Producción Musical! Aquí está tu enlace de inscripción: "
             <> url <> "\nCupos limitados (10)."
       version = waApiVersion waConfig
-  _ <- sendText waManager version (waToken waConfig) (waPhoneId waConfig) to msg
-  pure (object ["ok" .= True])
+  result <- sendText waManager version (waToken waConfig) (waPhoneId waConfig) to msg
+  either fail pure (requireWhatsAppSendSuccess result)
+
+requireWhatsAppSendSuccess :: Either String SendTextResult -> Either String Value
+requireWhatsAppSendSuccess (Left err) =
+  Left ("WhatsApp send failed: " <> err)
+requireWhatsAppSendSuccess (Right SendTextResult{sendTextMessageId = Nothing}) =
+  Left "WhatsApp send failed: provider response did not include a message id"
+requireWhatsAppSendSuccess (Right SendTextResult{sendTextMessageId = Just rawId})
+  | T.null (T.strip rawId) =
+      Left "WhatsApp send failed: provider response did not include a message id"
+  | otherwise =
+      Right (object ["ok" .= True])
 
 mintLink :: WhatsAppService -> Connection -> Text -> IO (Text, Int)
 mintLink WhatsAppService{waConfig} conn phone = do

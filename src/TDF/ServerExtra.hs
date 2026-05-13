@@ -10,6 +10,7 @@ module TDF.ServerExtra where
 
 import           Control.Monad              (filterM, unless, when, join, guard)
 import           Control.Applicative        ((<|>))
+import           Control.Exception          (SomeException, try)
 import           Control.Monad.Except       (MonadError)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Reader       (MonadReader, ask, asks)
@@ -19,62 +20,193 @@ import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import qualified Data.Set                   as Set
 import           Data.Bits                  (xor)
-import           Data.Char                  (isAlphaNum, isAscii, ord)
+import           Data.Char
+  ( GeneralCategory(Format, LineSeparator, ParagraphSeparator)
+  , generalCategory
+  , isAlphaNum
+  , isAscii
+  , isAsciiLower
+  , isAsciiUpper
+  , isControl
+  , isDigit
+  , isSpace
+  , ord
+  )
 import           Data.Word                  (Word64)
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
+import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy       as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import           Data.Time                  (Day, UTCTime(..), defaultTimeLocale, getCurrentTime, parseTimeM)
 import           Data.UUID                  (toText)
+import qualified Data.UUID                  as UUID
 import           Data.UUID.V4               (nextRandom)
 import           Data.Aeson                 (object, (.:), (.:?), (.=))
-import           Data.Aeson.Types           (parseMaybe, withObject, (.!=))
+import           Data.Aeson.Types           (Parser, parseEither, parseMaybe, withObject, (.!=))
 import qualified Data.Aeson                as A
+import           Data.Int                   (Int64)
 import qualified Data.Scientific            as Sci
 import           Numeric                    (showHex)
-import           System.Directory           (copyFile, createDirectoryIfMissing)
+import           System.Directory           (copyFile, createDirectoryIfMissing, getFileSize)
 import           System.FilePath            ((</>), takeExtension, takeFileName)
 import           System.IO                  (hPutStrLn, stderr)
+import           Text.Read                  (readMaybe)
 import           Database.Persist        hiding (Active)
 import           Database.Persist.Sql       (SqlPersistT, fromSqlKey, runSqlPool, toSqlKey)
+import           Network.HTTP.Client        (Manager, Request(..), Response, httpLbs, parseRequest, responseBody, responseStatus)
+import           Network.HTTP.Types.Header  (hAuthorization)
+import           Network.HTTP.Types.Status  (statusCode)
+import           Network.HTTP.Types.URI     (urlEncode)
 import           Servant
 import           Servant.Multipart          (FileData(..))
 import           Web.PathPieces             (PathPiece, fromPathPiece, toPathPiece)
 
-import           TDF.API.Inventory          (InventoryAPI, AssetUploadForm(..))
+import           TDF.API.Inventory          (InventoryAPI, InventoryPublicAPI, AssetUploadForm(..))
+import qualified TDF.API.Inventory          as Inventory
 import           TDF.API.Bands              (BandsAPI)
 import           TDF.API.Pipelines          (PipelinesAPI)
 import           TDF.API.Rooms              (RoomsAPI, RoomsPublicAPI)
 import           TDF.API.Sessions           (SessionsAPI)
 import           TDF.API.Services           (ServiceCatalogAPI, ServiceCatalogPublicAPI)
 import           TDF.API.Types
-import           TDF.Auth                   (AuthedUser(..), ModuleAccess(..), hasModuleAccess)
+import           TDF.Auth
+  ( AuthedUser(..)
+  , ModuleAccess(..)
+  , hasOperationsAccess
+  , hasSocialInboxAccess
+  , moduleName
+  , validateModuleAccess
+  )
 import           TDF.API.Payments          (PaymentDTO(..), PaymentCreate(..), PaymentsAPI)
 import qualified TDF.API.Facebook          as FB
 import qualified TDF.API.Instagram         as IG
-import           TDF.DB                     (Env(..))
-import           TDF.Config                 (assetsRootDir, instagramAppToken, instagramMessagingToken, instagramVerifyToken, resolveConfiguredAppBase, resolveConfiguredAssetsBase)
+import           TDF.DB                     (Env(..), sharedTlsManager)
+import           TDF.Config                 (AppConfig, assetsRootDir, facebookAppSecret, facebookMessagingApiBase, facebookMessagingToken, instagramAppToken, instagramMessagingApiBase, instagramMessagingToken, instagramVerifyToken, resolveConfiguredAppBase, resolveConfiguredAssetsBase)
+import           TDF.Services.InstagramMessaging (sendInstagramTextWithContext)
+import           TDF.Services.FacebookMessaging (sendFacebookText)
 import           TDF.Models                 (Party(..), Payment(..), PaymentMethod(..))
 import qualified TDF.Models                 as M
 import           TDF.ModelsExtra
 import qualified TDF.ModelsExtra as ME
 import           TDF.Pipelines              (canonicalStage, defaultStage, pipelineStages, pipelineTypeSlug, parsePipelineType)
+import qualified TDF.Trials.Server          as TrialsServer (isValidHttpUrl)
 import qualified TDF.Handlers.InputList     as InputList
+import           TDF.WhatsApp.History       (normalizeWhatsAppPhone)
 
 -- Helpers for simple date parsing (YYYY-MM-DD)
 parseDayText :: MonadError ServerError m => Text -> m Day
-parseDayText t =
-  case parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack t) of
+parseDayText rawText =
+  let t = T.strip rawText
+  in unlessIsoDateShape t $
+  case parseTimeM False defaultTimeLocale "%Y-%m-%d" (T.unpack t) of
     Just d  -> pure d
     Nothing -> throwError err400 { errBody = "Invalid date format, expected YYYY-MM-DD" }
 
 parseUTCTimeText :: MonadError ServerError m => Text -> m UTCTime
-parseUTCTimeText t =
-  case parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack t) of
+parseUTCTimeText rawText =
+  let t = T.strip rawText
+  in unlessIsoDateShape t $
+  case parseTimeM False defaultTimeLocale "%Y-%m-%d" (T.unpack t) of
     Just d  -> pure (UTCTime d 0)
     Nothing -> throwError err400 { errBody = "Invalid date format, expected YYYY-MM-DD" }
+
+unlessIsoDateShape :: MonadError ServerError m => Text -> m a -> m a
+unlessIsoDateShape t action
+  | hasIsoDateShape t = action
+  | otherwise = throwError err400 { errBody = "Invalid date format, expected YYYY-MM-DD" }
+
+hasIsoDateShape :: Text -> Bool
+hasIsoDateShape t =
+  case T.splitOn "-" t of
+    [yearPart, monthPart, dayPart] ->
+      T.length yearPart == 4
+        && T.length monthPart == 2
+        && T.length dayPart == 2
+        && T.all isDigit (yearPart <> monthPart <> dayPart)
+    _ -> False
+
+parseCheckoutTargetKind :: Maybe Text -> Either ServerError CheckoutTarget
+parseCheckoutTargetKind Nothing =
+  Left err400 { errBody = "targetKind is required and must be one of: party, room, session" }
+parseCheckoutTargetKind (Just raw) =
+  case T.toLower (T.strip raw) of
+    "session" -> Right TargetSession
+    "party" -> Right TargetParty
+    "room" -> Right TargetRoom
+    _ -> Left err400 { errBody = "targetKind must be one of: party, room, session" }
+
+parseCheckoutDisposition :: Maybe Text -> Either ServerError CheckoutDisposition
+parseCheckoutDisposition Nothing =
+  Left err400 { errBody = "disposition is required and must be one of: loan, rental, sale, repair, transfer, other" }
+parseCheckoutDisposition (Just raw) =
+  case T.toLower (T.strip raw) of
+    "" -> Left err400 { errBody = "disposition must be one of: loan, rental, sale, repair, transfer, other" }
+    "loan" -> Right Loan
+    "lend" -> Right Loan
+    "rental" -> Right Rental
+    "rent" -> Right Rental
+    "sale" -> Right Sale
+    "sell" -> Right Sale
+    "repair" -> Right Repair
+    "maintenance" -> Right Repair
+    "transfer" -> Right Transfer
+    "other" -> Right OtherDisposition
+    _ -> Left err400 { errBody = "disposition must be one of: loan, rental, sale, repair, transfer, other" }
+
+validateCheckoutTargets
+  :: CheckoutTarget
+  -> Maybe Text
+  -> Maybe (Key Room)
+  -> Maybe (Key ME.Session)
+  -> Either ServerError (Maybe Text, Maybe (Key Room), Maybe (Key ME.Session))
+validateCheckoutTargets targetKind mTargetParty mRoom mSession =
+  case targetKind of
+    TargetRoom ->
+      case (targetPartyPresent, mRoom, mSession) of
+        (Just _, _, _) -> Left err400 { errBody = "targetParty is only allowed for party checkout" }
+        (_, Nothing, _) -> Left err400 { errBody = "targetRoom required for room checkout" }
+        (_, Just _, Just _) -> Left err400 { errBody = "targetSession is only allowed for session checkout" }
+        (Nothing, Just roomKey, Nothing) -> Right (Nothing, Just roomKey, Nothing)
+    TargetSession ->
+      case (targetPartyPresent, mRoom, mSession) of
+        (Just _, _, _) -> Left err400 { errBody = "targetParty is only allowed for party checkout" }
+        (_, _, Nothing) -> Left err400 { errBody = "targetSession required for session checkout" }
+        (_, Just _, Just _) -> Left err400 { errBody = "targetRoom is only allowed for room checkout" }
+        (Nothing, Nothing, Just sessionKey) -> Right (Nothing, Nothing, Just sessionKey)
+    TargetParty ->
+      case (targetPartyPresent, mRoom, mSession) of
+        (Nothing, _, _) -> Left err400 { errBody = "targetParty required for party checkout" }
+        (_, Just _, _) -> Left err400 { errBody = "targetRoom is only allowed for room checkout" }
+        (_, _, Just _) -> Left err400 { errBody = "targetSession is only allowed for session checkout" }
+        (Just _, Nothing, Nothing) -> do
+          targetParty <- validateCheckoutTargetParty mTargetParty
+          Right (targetParty, Nothing, Nothing)
+  where
+    targetPartyPresent = normalizeOptionalTextField mTargetParty
+
+validateCheckoutTargetParty :: Maybe Text -> Either ServerError (Maybe Text)
+validateCheckoutTargetParty mTargetParty =
+  case normalizeOptionalTextField mTargetParty of
+    Nothing -> Right Nothing
+    Just targetParty
+      | T.length targetParty > 160 ->
+          Left err400 { errBody = "targetParty must be 160 characters or fewer" }
+      | T.any isUnsafeCheckoutTargetPartyChar targetParty ->
+          Left err400
+            { errBody =
+                "targetParty must not contain control characters or hidden formatting characters"
+            }
+      | not (T.any isAlphaNum targetParty) ->
+          Left err400 { errBody = "targetParty must contain at least one letter or digit" }
+      | otherwise ->
+          Right (Just targetParty)
+
+isUnsafeCheckoutTargetPartyChar :: Char -> Bool
+isUnsafeCheckoutTargetPartyChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
 inventoryServer
   :: ( MonadReader Env m
      , MonadIO m
@@ -96,28 +228,32 @@ inventoryServer user =
   :<|> resolveByQrH
   where
     ensureInventoryAccess =
-      unless (hasModuleAccess ModuleAdmin user || hasInventoryRole user) $
+      unless (hasOperationsAccess user) $
         throwError err403 { errBody = "Missing required module access" }
 
-    hasInventoryRole u =
-      any (`elem` auRoles u) [M.Manager, M.Maintenance]
-
-    listAssets _mq mp mps = do
+    listAssets mq mp mps = do
       ensureInventoryAccess
-      let pageNum    = clampPage (fromMaybe 1 mp)
-          pageSize'  = clampPageSize (fromMaybe 50 mps)
+      assetQuery <- either throwError pure (validateAssetSearchQuery mq)
+      (pageNum, pageSize') <- either throwError pure (validatePageParams mp mps)
+      let
           pageOffset = (pageNum - 1) * pageSize'
-          opts       = [Asc AssetName, LimitTo pageSize', OffsetBy pageOffset]
-      entities <- withPool $ selectList ([] :: [Filter Asset]) opts
-      totalCount <- withPool $ count ([] :: [Filter Asset])
-      pure (mkPage pageNum pageSize' totalCount (map toAssetDTO entities))
+      entities <- withPool $ selectList ([] :: [Filter Asset]) [Asc AssetName]
+      let filteredEntities = filterAssetsByQuery assetQuery entities
+          totalCount = length filteredEntities
+          pagedEntities = take pageSize' (drop pageOffset filteredEntities)
+      activeMap <- either throwError pure =<< withPool
+        (loadActiveCheckoutMap "listing assets" (map entityKey pagedEntities))
+      pure (mkPage pageNum pageSize' totalCount (map (\entity -> toAssetDTO entity (Map.lookup (entityKey entity) activeMap)) pagedEntities))
 
     createAssetH req = do
       ensureInventoryAccess
+      nameClean <- either throwError pure (normalizeAssetName (cName req))
+      categoryClean <- either throwError pure (normalizeAssetCategory (cCategory req))
+      photoUrlValue <- either throwError pure (validateAssetPhotoUrl (cPhotoUrl req))
       entity <- withPool $ do
         newAssetId <- insert Asset
-          { assetName                  = cName req
-          , assetCategory              = cCategory req
+          { assetName                  = nameClean
+          , assetCategory              = categoryClean
           , assetBrand                 = Nothing
           , assetModel                 = Nothing
           , assetSerialNumber          = Nothing
@@ -128,186 +264,131 @@ inventoryServer user =
           , assetLocationId            = Nothing
           , assetOwner                 = "TDF"
           , assetQrCode                = Nothing
-          , assetPhotoUrl              = cPhotoUrl req
+          , assetPhotoUrl              = photoUrlValue
           , assetNotes                 = Nothing
           , assetWarrantyExpires       = Nothing
           , assetMaintenancePolicy     = None
           , assetNextMaintenanceDue    = Nothing
           }
         getJustEntity newAssetId
-      pure (toAssetDTO entity)
+      pure (toAssetDTO entity Nothing)
 
-    uploadAssetPhotoH AssetUploadForm{..} = do
+    uploadAssetPhotoH uploadForm = do
       ensureInventoryAccess
-      Env{envConfig} <- ask
-      let assetsBase = resolveConfiguredAssetsBase envConfig
-          assetsRoot = assetsRootDir envConfig
-          fallbackName = nonEmptyText (fdFileName aufFile)
-          requestedName = aufName >>= nonEmptyText
-          nameWithExt = applyExtension (requestedName <|> fallbackName) fallbackName
-          safeName = sanitizeAssetName nameWithExt
-      uuid <- liftIO nextRandom
-      let storedName = toText uuid <> "-" <> safeName
-          relPath = "inventory/" <> storedName
-          targetDir = assetsRoot </> "inventory"
-          targetPath = targetDir </> T.unpack storedName
-      liftIO $ createDirectoryIfMissing True targetDir
-      liftIO $ copyFile (fdPayload aufFile) targetPath
-      let publicUrl = buildAssetUrl assetsBase relPath
-      pure AssetUploadDTO
-        { auFileName = storedName
-        , auPath = relPath
-        , auPublicUrl = publicUrl
-        }
+      storeAssetUpload uploadForm
 
     getAssetH rawId = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
-      mEntity <- withPool $ getEntity assetKey
-      maybe (throwError err404) (pure . toAssetDTO) mEntity
+      loadAssetDTOByKey assetKey
 
     patchAssetH rawId req = do
       ensureInventoryAccess
       assetKey    <- parseKey @Asset rawId
       locationKey <- traverse (parseKey @Room) (uLocationId req)
-      let statusValue = uStatus req >>= parseAssetStatus
+      nameUpdate <- either throwError pure (normalizeAssetNameUpdate (uName req))
+      categoryUpdate <- either throwError pure (normalizeAssetCategoryUpdate (uCategory req))
+      statusValue <- either throwError pure (validateAssetStatusUpdate (uStatus req))
+      notesUpdate <- either throwError pure (normalizeAssetNotesUpdate (uNotes req))
+      photoUrlUpdate <- either throwError pure (validateAssetPhotoUrlUpdate (uPhotoUrl req))
+      either throwError pure
+        (validateAssetPatchIntent nameUpdate categoryUpdate statusValue locationKey notesUpdate photoUrlUpdate)
       let updates = catMaybes
-            [ (AssetName =.) <$> uName req
-            , (AssetCategory =.) <$> uCategory req
+            [ (AssetName =.) <$> nameUpdate
+            , (AssetCategory =.) <$> categoryUpdate
             , (AssetStatus =.) <$> statusValue
             , fmap (\rid -> AssetLocationId =. Just rid) locationKey
-            , fmap (\noteTxt -> AssetNotes =. Just noteTxt) (uNotes req)
-            , fmap (\url -> AssetPhotoUrl =. Just url) (uPhotoUrl req)
+            , (AssetNotes =.) <$> notesUpdate
+            , (AssetPhotoUrl =.) <$> photoUrlUpdate
             ]
       result <- withPool $ do
         mEntity <- getEntity assetKey
         case mEntity of
-          Nothing -> pure Nothing
-          Just _  -> do
-            unless (null updates) (update assetKey updates)
-            getEntity assetKey
-      maybe (throwError err404) (pure . toAssetDTO) result
+          Nothing -> pure (Right Nothing)
+          Just entity -> do
+            locationResult <- validateAssetLocationReference locationKey
+            activeCheckouts <- selectList
+              [ AssetCheckoutAssetId ==. assetKey
+              , AssetCheckoutReturnedAt ==. Nothing
+              ]
+              [ Desc AssetCheckoutCheckedOutAt
+              , LimitTo 2
+              ]
+            let activeCheckoutStatusResult =
+                  case activeCheckouts of
+                    [] ->
+                      Right Nothing
+                    [checkoutEnt] ->
+                      Right
+                        (Just (assetStatusForCheckoutDisposition (assetCheckoutDisposition (entityVal checkoutEnt))))
+                    _ ->
+                      Left err409
+                        { errBody = "Asset has multiple active checkouts; resolve the inventory state before patching asset metadata"
+                        }
+            case do
+              activeCheckoutStatus <- activeCheckoutStatusResult
+              locationResult
+              validateAssetPatchStatusInvariant
+                (assetStatus (entityVal entity))
+                statusValue
+                activeCheckoutStatus of
+              Left err ->
+                pure (Left err)
+              Right () -> do
+                unless (null updates) (update assetKey updates)
+                Right <$> getEntity assetKey
+      case result of
+        Left err -> throwError err
+        Right Nothing -> throwError err404
+        Right (Just entity) -> do
+          activeMap <- either throwError pure =<< withPool
+            (loadActiveCheckoutMap "loading asset details" [entityKey entity])
+          pure (toAssetDTO entity (Map.lookup (entityKey entity) activeMap))
 
     deleteAssetH rawId = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
-      deleted <- withPool $ do
+      deleteResult <- withPool $ do
         mAsset <- get assetKey
         case mAsset of
-          Nothing -> pure False
-          Just _  -> delete assetKey >> pure True
-      unless deleted (throwError err404)
+          Nothing ->
+            pure (Left err404 { errBody = "Asset not found" })
+          Just _ -> do
+            mCheckout <- selectFirst [AssetCheckoutAssetId ==. assetKey] [LimitTo 1]
+            case mCheckout of
+              Just _ ->
+                pure
+                  (Left err409 { errBody = "Asset has checkout history and cannot be deleted" })
+              Nothing -> do
+                delete assetKey
+                pure (Right ())
+      either throwError pure deleteResult
       pure NoContent
-
-    toAssetDTO (Entity key asset) = AssetDTO
-      { assetId  = toPathPiece key
-      , name     = assetName asset
-      , category = assetCategory asset
-      , status   = T.pack (show (assetStatus asset))
-      , condition = Just (T.pack (show (assetCondition asset)))
-      , brand    = assetBrand asset
-      , model    = assetModel asset
-      , location = fmap toPathPiece (assetLocationId asset)
-      , qrToken  = assetQrCode asset
-      , photoUrl = assetPhotoUrl asset
-      }
-
-    nonEmptyText txt =
-      let trimmed = T.strip txt
-      in if T.null trimmed then Nothing else Just trimmed
-
-    applyExtension name fallback =
-      let resolved = fromMaybe "upload" name
-          extFromFallback =
-            case fallback of
-              Nothing -> ""
-              Just raw -> T.pack (takeExtension (T.unpack raw))
-          extFromName = T.pack (takeExtension (T.unpack resolved))
-      in if T.null extFromName && not (T.null extFromFallback)
-          then resolved <> extFromFallback
-          else resolved
-
-    sanitizeAssetName raw =
-      let trimmed = T.strip raw
-          baseName = T.pack (takeFileName (T.unpack trimmed))
-          cleaned = T.map normalizeChar baseName
-          stripped = T.dropWhile (== '-') (T.dropWhileEnd (== '-') cleaned)
-      in if T.null stripped || stripped == "." || stripped == ".."
-          then "upload"
-          else stripped
-
-    normalizeChar ch
-      | isAscii ch && isAlphaNum ch = ch
-      | ch == '.' || ch == '-' || ch == '_' = ch
-      | ch == ' ' = '-'
-      | otherwise = '-'
-
-    buildAssetUrl assetsBase relPath =
-      let base = T.dropWhileEnd (== '/') assetsBase
-          path = T.dropWhile (== '/') relPath
-      in base <> "/" <> path
 
     checkoutAssetH rawId req = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
-      asset <- withPool $ get assetKey
-      _ <- maybe (throwError err404) pure asset
-      now <- liftIO getCurrentTime
-      let targetKind = maybe TargetParty parseTarget (coTargetKind req)
-          targetRoomKey = coTargetRoom req >>= parseKeyMaybe @Room
-          targetSessionKey = coTargetSession req >>= parseKeyMaybe @ME.Session
-          checkedOutBy = T.pack (show (fromSqlKey (auPartyId user)))
-      active <- withPool $ selectFirst [AssetCheckoutAssetId ==. assetKey, AssetCheckoutReturnedAt ==. Nothing] [Desc AssetCheckoutCheckedOutAt]
-      when (isJust active) $
-        throwError err409 { errBody = "Asset already checked out" }
-      (mRoom, mSession) <- validateTargets targetKind targetRoomKey targetSessionKey
-      recEnt <- withPool $ do
-        checkoutId <- insert AssetCheckout
-          { assetCheckoutAssetId          = assetKey
-          , assetCheckoutTargetKind       = targetKind
-          , assetCheckoutTargetSessionId  = mSession
-          , assetCheckoutTargetPartyRef   = coTargetParty req
-          , assetCheckoutTargetRoomId     = mRoom
-          , assetCheckoutCheckedOutByRef  = checkedOutBy
-          , assetCheckoutCheckedOutAt     = now
-          , assetCheckoutDueAt            = coDueAt req
-          , assetCheckoutConditionOut     = coConditionOut req
-          , assetCheckoutPhotoDriveFileId = Nothing
-          , assetCheckoutReturnedAt       = Nothing
-          , assetCheckoutConditionIn      = Nothing
-          , assetCheckoutNotes            = coNotes req
-          }
-        update assetKey [AssetStatus =. Booked]
-        getJustEntity checkoutId
-      pure (toCheckoutDTO recEnt)
+      assetEntity <- loadAssetEntityByKey assetKey
+      let checkedOutBy = T.pack (show (fromSqlKey (auPartyId user)))
+      performCheckout checkedOutBy assetEntity req
 
     checkinAssetH rawId req = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
-      now <- liftIO getCurrentTime
-      mOpen <- withPool $ selectFirst [AssetCheckoutAssetId ==. assetKey, AssetCheckoutReturnedAt ==. Nothing] [Desc AssetCheckoutCheckedOutAt]
-      case mOpen of
-        Nothing -> throwError err404 { errBody = "No active checkout" }
-        Just (Entity checkoutId _) -> do
-          recEnt <- withPool $ do
-            update checkoutId
-              [ AssetCheckoutReturnedAt   =. Just now
-              , AssetCheckoutConditionIn  =. ciConditionIn req
-              , AssetCheckoutNotes        =. ciNotes req
-              ]
-            update assetKey [AssetStatus =. Active]
-            getJustEntity checkoutId
-          pure (toCheckoutDTO recEnt)
+      assetEntity <- loadAssetEntityByKey assetKey
+      performCheckin assetEntity req
 
     checkoutHistoryH rawId = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
+      _ <- loadAssetEntityByKey assetKey
       recs <- withPool $ selectList [AssetCheckoutAssetId ==. assetKey] [Desc AssetCheckoutCheckedOutAt, LimitTo 50]
       pure (map toCheckoutDTO recs)
 
     refreshQrH rawId = do
       ensureInventoryAccess
       assetKey <- parseKey @Asset rawId
+      _ <- loadAssetEntityByKey assetKey
       token <- liftIO (fmap (T.pack . show) nextRandom)
       Env{envConfig} <- ask
       let qrBase = resolveConfiguredAppBase envConfig <> "/inventario/scan/"
@@ -317,51 +398,1172 @@ inventoryServer user =
 
     resolveByQrH token = do
       ensureInventoryAccess
-      mAsset <- withPool $ selectFirst [AssetQrCode ==. Just token] []
-      maybe (throwError err404) (pure . toAssetDTO) mAsset
+      loadAssetDTOByQrToken token
 
-    parseTarget raw =
-      case T.toLower (T.strip raw) of
-        "session" -> TargetSession
-        "party"   -> TargetParty
-        "room"    -> TargetRoom
-        _         -> TargetParty
+inventoryPublicServer
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => ServerT InventoryPublicAPI m
+inventoryPublicServer =
+       loadPublicAssetDTOByQrToken
+  :<|> checkoutByQrToken
+  :<|> checkinByQrToken
+  :<|> uploadByQrToken
+  where
+    checkoutByQrToken token rawReq = do
+      assetEntity <- loadAssetEntityByQrToken token
+      Env{envConfig} <- ask
+      let req = normalizePublicQrCheckoutRequest envConfig rawReq
+      either throwError pure (validatePublicQrCheckoutRequestFields req)
+      normalized <- either throwError pure (normalizeCheckoutRequest req)
+      either throwError pure (validatePublicQrCheckoutRequest normalized)
+      sanitizePublicCheckoutDTO <$> performCheckout "public-link" assetEntity req
 
-    parseKeyMaybe
-      :: forall record.
-         PathPiece (Key record)
-      => Text
-      -> Maybe (Key record)
-    parseKeyMaybe t = fromPathPiece t
+    checkinByQrToken token rawReq = do
+      assetEntity <- loadAssetEntityByQrToken token
+      Env{envConfig} <- ask
+      let req = normalizePublicQrCheckinRequest envConfig rawReq
+      normalized <- either throwError pure (normalizeAssetCheckinFields req)
+      either throwError pure (validatePublicQrCheckinFields normalized)
+      sanitizePublicCheckoutDTO <$> performCheckinWith ensurePublicQrCheckinAllowed assetEntity req
 
-    validateTargets targetKind mRoom mSession = do
-      case targetKind of
-        TargetRoom ->
-          case mRoom of
-            Nothing -> throwError err400 { errBody = "targetRoom required for room checkout" }
-            Just _  -> pure (mRoom, Nothing)
-        TargetSession ->
-          case mSession of
-            Nothing -> throwError err400 { errBody = "targetSession required for session checkout" }
-            Just _  -> pure (Nothing, mSession)
-        TargetParty ->
-          pure (Nothing, Nothing)
+    uploadByQrToken token uploadForm = do
+      Entity assetKey assetRecord <- loadAssetEntityByQrToken token
+      openCheckouts <- withPool $
+        selectList
+          [ AssetCheckoutAssetId ==. assetKey
+          , AssetCheckoutReturnedAt ==. Nothing
+          ]
+          [ Desc AssetCheckoutCheckedOutAt
+          , LimitTo 2
+          ]
+      mOpenCheckout <- case openCheckouts of
+        [] ->
+          pure Nothing
+        [checkoutEnt] ->
+          pure (Just checkoutEnt)
+        _ ->
+          throwError err409
+            { errBody = "Asset has multiple active checkouts; resolve the inventory state before public upload"
+            }
+      either throwError pure (validatePublicQrUploadContext (assetStatus assetRecord) mOpenCheckout)
+      storeAssetUpload uploadForm
 
-    toCheckoutDTO (Entity key rec) = AssetCheckoutDTO
-      { checkoutId      = toPathPiece key
-      , assetId         = toPathPiece (assetCheckoutAssetId rec)
-      , targetKind      = T.pack (show (assetCheckoutTargetKind rec))
-      , targetSessionId = fmap toPathPiece (assetCheckoutTargetSessionId rec)
-      , targetPartyRef  = assetCheckoutTargetPartyRef rec
-      , targetRoomId    = fmap toPathPiece (assetCheckoutTargetRoomId rec)
-      , checkedOutBy    = assetCheckoutCheckedOutByRef rec
-      , checkedOutAt    = assetCheckoutCheckedOutAt rec
-      , dueAt           = assetCheckoutDueAt rec
-      , conditionOut    = assetCheckoutConditionOut rec
-      , conditionIn     = assetCheckoutConditionIn rec
-      , returnedAt      = assetCheckoutReturnedAt rec
-      , notes           = assetCheckoutNotes rec
+loadAssetEntityByKey
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Key Asset
+  -> m (Entity Asset)
+loadAssetEntityByKey assetKey = do
+  mEntity <- withPool $ getEntity assetKey
+  maybe (throwError err404 { errBody = "Asset not found" }) pure mEntity
+
+loadAssetEntityByQrToken
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Text
+  -> m (Entity Asset)
+loadAssetEntityByQrToken token = do
+  tokenCanonical <- either throwError pure (validateAssetQrToken token)
+  matches <- withPool $
+    selectList
+      [AssetQrCode ==. Just tokenCanonical]
+      [Asc AssetId, LimitTo 2]
+  case matches of
+    [] ->
+      throwError err404 { errBody = "Asset not found" }
+    [entity] ->
+      pure entity
+    _ ->
+      throwError err409
+        { errBody =
+            "Asset QR token resolves to multiple assets; resolve the inventory state before QR lookup"
+        }
+
+loadAssetDTOByKey
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Key Asset
+  -> m AssetDTO
+loadAssetDTOByKey assetKey = do
+  assetEntity@(Entity _ assetRecord) <- loadAssetEntityByKey assetKey
+  mActiveCheckout <- loadSingleActiveCheckoutForRead "loading asset details" assetKey
+  either throwError pure
+    (validateAssetReadCheckoutState "loading asset details" (assetStatus assetRecord) mActiveCheckout)
+  pure (toAssetDTO assetEntity mActiveCheckout)
+
+loadSingleActiveCheckoutForRead
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Text
+  -> Key Asset
+  -> m (Maybe (Entity AssetCheckout))
+loadSingleActiveCheckoutForRead readContext assetKey = do
+  openCheckouts <- withPool $
+    selectList
+      [ AssetCheckoutAssetId ==. assetKey
+      , AssetCheckoutReturnedAt ==. Nothing
+      ]
+      [ Desc AssetCheckoutCheckedOutAt
+      , LimitTo 2
+      ]
+  case openCheckouts of
+    [] ->
+      pure Nothing
+    [checkoutEnt] ->
+      pure (Just checkoutEnt)
+    _ ->
+      throwError err409
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8 ("Asset has multiple active checkouts; resolve the inventory state before " <> readContext))
+        }
+
+loadAssetDTOByQrToken
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Text
+  -> m AssetDTO
+loadAssetDTOByQrToken token = do
+  assetEntity@(Entity assetKey assetRecord) <- loadAssetEntityByQrToken token
+  mActiveCheckout <- loadSingleActiveCheckoutForRead "QR lookup" assetKey
+  either throwError pure
+    (validateAssetReadCheckoutState "QR lookup" (assetStatus assetRecord) mActiveCheckout)
+  pure (toAssetDTO assetEntity mActiveCheckout)
+
+loadPublicAssetDTOByQrToken
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Text
+  -> m AssetDTO
+loadPublicAssetDTOByQrToken token =
+  sanitizePublicAssetDTO <$> loadAssetDTOByQrToken token
+
+validateAssetReadCheckoutState
+  :: Text
+  -> AssetStatus
+  -> Maybe (Entity AssetCheckout)
+  -> Either ServerError ()
+validateAssetReadCheckoutState readContext Booked Nothing =
+  Left err409
+    { errBody =
+        BL.fromStrict
+          (TE.encodeUtf8
+            ( "Asset status is booked but no active checkout exists; resolve the inventory state before "
+                <> readContext
+            ))
+    }
+validateAssetReadCheckoutState readContext assetState (Just checkoutEnt)
+  | assetReadStateAllowsCheckout assetState checkoutDisposition =
+      Right ()
+  | otherwise =
+      Left err409
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8
+                ( "Asset status is "
+                    <> assetStatusToText assetState
+                    <> " but an active "
+                    <> checkoutDispositionToText checkoutDisposition
+                    <> " checkout exists; resolve the inventory state before "
+                    <> readContext
+                ))
+        }
+  where
+    checkoutDisposition = assetCheckoutDisposition (entityVal checkoutEnt)
+validateAssetReadCheckoutState _ _ _ =
+  Right ()
+
+assetReadStateAllowsCheckout :: AssetStatus -> CheckoutDisposition -> Bool
+assetReadStateAllowsCheckout Booked Sale = False
+assetReadStateAllowsCheckout Booked _ = True
+assetReadStateAllowsCheckout Retired Sale = True
+assetReadStateAllowsCheckout _ _ = False
+
+assetStatusToText :: AssetStatus -> Text
+assetStatusToText Active = "active"
+assetStatusToText Booked = "booked"
+assetStatusToText OutForMaintenance = "out_for_maintenance"
+assetStatusToText Retired = "retired"
+
+sanitizePublicAssetDTO :: AssetDTO -> AssetDTO
+sanitizePublicAssetDTO dto =
+  dto
+    { location = Nothing
+    , qrToken = Nothing
+    , currentCheckoutKind = publicCheckoutContextField (currentCheckoutKind dto)
+    , currentCheckoutTarget = publicCheckoutContextField (currentCheckoutTarget dto)
+    , currentCheckoutDisposition = publicCheckoutDispositionField (currentCheckoutDisposition dto)
+    , currentCheckoutHolderEmail = Nothing
+    , currentCheckoutHolderPhone = Nothing
+    , currentCheckoutAt = publicCheckoutContextField (currentCheckoutAt dto)
+    , currentCheckoutDueAt = publicCheckoutContextField (currentCheckoutDueAt dto)
+    , currentCheckoutPaymentType = Nothing
+    , currentCheckoutPaymentInstallments = Nothing
+    , currentCheckoutPaymentAmountCents = Nothing
+    , currentCheckoutPaymentCurrency = Nothing
+    , currentCheckoutPaymentOutstandingCents = Nothing
+    , currentCheckoutPhotoUrl = Nothing
+    }
+  where
+    disposition = currentCheckoutDisposition dto
+    exposesPublicCheckoutContext =
+      currentCheckoutKind dto == Just "party"
+        && disposition `elem` [Just "loan", Just "rental"]
+    exposesPublicDisposition =
+      currentCheckoutKind dto == Just "party"
+        && disposition `elem` [Just "loan", Just "rental", Just "sale"]
+    publicCheckoutContextField value
+      | exposesPublicCheckoutContext = value
+      | otherwise = Nothing
+    publicCheckoutDispositionField value
+      | exposesPublicDisposition = value
+      | otherwise = Nothing
+
+sanitizePublicCheckoutDTO :: AssetCheckoutDTO -> AssetCheckoutDTO
+sanitizePublicCheckoutDTO dto =
+  dto
+    { termsAndConditions = Nothing
+    , holderEmail = Nothing
+    , holderPhone = Nothing
+    , paymentType = Nothing
+    , paymentInstallments = Nothing
+    , paymentReference = Nothing
+    , paymentAmountCents = Nothing
+    , paymentCurrency = Nothing
+    , paymentOutstandingCents = Nothing
+    , checkedOutBy = "redacted"
+    , conditionOut = Nothing
+    , photoOutUrl = Nothing
+    , conditionIn = Nothing
+    , photoInUrl = Nothing
+    , notes = Nothing
+    }
+
+loadActiveCheckoutMap
+  :: MonadIO m
+  => Text
+  -> [Key Asset]
+  -> SqlPersistT m (Either ServerError (Map.Map (Key Asset) (Entity AssetCheckout)))
+loadActiveCheckoutMap _ [] = pure (Right Map.empty)
+loadActiveCheckoutMap readContext assetKeys = do
+  recs <- selectList
+    [ AssetCheckoutAssetId <-. assetKeys
+    , AssetCheckoutReturnedAt ==. Nothing
+    ]
+    [Desc AssetCheckoutCheckedOutAt]
+  let activeCheckoutCounts =
+        Map.fromListWith (+)
+          [ (assetCheckoutAssetId rec, 1 :: Int)
+          | Entity _ rec <- recs
+          ]
+  if any (> 1) (Map.elems activeCheckoutCounts)
+    then
+      pure $
+        Left err409
+          { errBody =
+              BL.fromStrict
+                (TE.encodeUtf8
+                  ( "One or more assets have multiple active checkouts; resolve the inventory state before "
+                      <> readContext
+                  ))
+          }
+    else
+      pure $
+        Right (Map.fromList [(assetCheckoutAssetId rec, ent) | ent@(Entity _ rec) <- recs])
+
+performCheckout
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Text
+  -> Entity Asset
+  -> AssetCheckoutRequest
+  -> m AssetCheckoutDTO
+performCheckout checkedOutBy (Entity assetKey assetRecord) req = do
+  now <- liftIO getCurrentTime
+  normalized <- either throwError pure (normalizeCheckoutRequest req)
+  dueAtValue <- either throwError pure (validateCheckoutDueAt now (ncrDueAt normalized))
+  openCheckouts <- withPool $
+    selectList
+      [ AssetCheckoutAssetId ==. assetKey
+      , AssetCheckoutReturnedAt ==. Nothing
+      ]
+      [ Desc AssetCheckoutCheckedOutAt
+      , LimitTo 2
+      ]
+  case openCheckouts of
+    [] ->
+      pure ()
+    [_] ->
+      throwError err409 { errBody = "Asset already checked out" }
+    _ ->
+      throwError err409
+        { errBody = "Asset has multiple active checkouts; resolve the inventory state before checkout"
+        }
+  either throwError pure (validateAssetCheckoutStatus (assetStatus assetRecord))
+  either throwError pure =<< withPool (validateCheckoutTargetReferences (ncrTargetRoom normalized) (ncrTargetSession normalized))
+  recEnt <- withPool $ do
+    checkoutId <- insert AssetCheckout
+      { assetCheckoutAssetId          = assetKey
+      , assetCheckoutTargetKind       = ncrTargetKind normalized
+      , assetCheckoutTargetSessionId  = ncrTargetSession normalized
+      , assetCheckoutTargetPartyRef   = ncrTargetParty normalized
+      , assetCheckoutTargetRoomId     = ncrTargetRoom normalized
+      , assetCheckoutDisposition      = ncrDisposition normalized
+      , assetCheckoutTermsAndConditions = ncrTermsAndConditions normalized
+      , assetCheckoutHolderEmail      = ncrHolderEmail normalized
+      , assetCheckoutHolderPhone      = ncrHolderPhone normalized
+      , assetCheckoutPaymentType      = ncrPaymentType normalized
+      , assetCheckoutPaymentInstallments = ncrPaymentInstallments normalized
+      , assetCheckoutPaymentReference = ncrPaymentReference normalized
+      , assetCheckoutPaymentAmountCents = ncrPaymentAmountCents normalized
+      , assetCheckoutPaymentCurrency  = ncrPaymentCurrency normalized
+      , assetCheckoutPaymentOutstandingCents = ncrPaymentOutstandingCents normalized
+      , assetCheckoutCheckedOutByRef  = checkedOutBy
+      , assetCheckoutCheckedOutAt     = now
+      , assetCheckoutDueAt            = dueAtValue
+      , assetCheckoutConditionOut     = ncrConditionOut normalized
+      , assetCheckoutPhotoOutUrl      = ncrPhotoOutUrl normalized
+      , assetCheckoutPhotoDriveFileId = Nothing
+      , assetCheckoutReturnedAt       = Nothing
+      , assetCheckoutConditionIn      = Nothing
+      , assetCheckoutPhotoInUrl       = Nothing
+      , assetCheckoutNotes            = ncrNotes normalized
       }
+    update assetKey [AssetStatus =. assetStatusForCheckoutDisposition (ncrDisposition normalized)]
+    getJustEntity checkoutId
+  pure (toCheckoutDTO recEnt)
+
+performCheckin
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Entity Asset
+  -> AssetCheckinRequest
+  -> m AssetCheckoutDTO
+performCheckin =
+  performCheckinWith (\_ -> pure ())
+
+performCheckinWith
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => (Entity AssetCheckout -> m ())
+  -> Entity Asset
+  -> AssetCheckinRequest
+  -> m AssetCheckoutDTO
+performCheckinWith validateOpenCheckout (Entity assetKey _) req = do
+  now <- liftIO getCurrentTime
+  (conditionInUpdate, checkinNotesUpdate, photoInUpdate) <- either throwError pure (normalizeAssetCheckinFields req)
+  checkoutEnt@(Entity checkoutId checkoutRecord) <- loadSingleOpenCheckout assetKey
+  either throwError pure (validateCheckinDisposition (assetCheckoutDisposition checkoutRecord))
+  validateOpenCheckout checkoutEnt
+  either throwError pure (validateCheckinPayload conditionInUpdate checkinNotesUpdate photoInUpdate)
+  notesUpdate <- either throwError pure (prepareCheckinNotesUpdate (assetCheckoutNotes checkoutRecord) checkinNotesUpdate)
+  recEnt <- withPool $ do
+    let updates = catMaybes
+          [ Just (AssetCheckoutReturnedAt =. Just now)
+          , fmap (\conditionText -> AssetCheckoutConditionIn =. Just conditionText) conditionInUpdate
+          , (AssetCheckoutNotes =.) <$> notesUpdate
+          , fmap (\photoUrl -> AssetCheckoutPhotoInUrl =. Just photoUrl) photoInUpdate
+          ]
+    update checkoutId updates
+    update assetKey [AssetStatus =. assetStatusForCheckinDisposition (assetCheckoutDisposition checkoutRecord)]
+    getJustEntity checkoutId
+  pure (toCheckoutDTO recEnt)
+
+loadSingleOpenCheckout
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => Key Asset
+  -> m (Entity AssetCheckout)
+loadSingleOpenCheckout assetKey = do
+  openCheckouts <- withPool $
+    selectList
+      [ AssetCheckoutAssetId ==. assetKey
+      , AssetCheckoutReturnedAt ==. Nothing
+      ]
+      [ Desc AssetCheckoutCheckedOutAt
+      , LimitTo 2
+      ]
+  case openCheckouts of
+    [] ->
+      throwError err409 { errBody = "Asset is not currently checked out" }
+    [checkoutEnt] ->
+      pure checkoutEnt
+    _ ->
+      throwError err409
+        { errBody = "Asset has multiple active checkouts; resolve the inventory state before check-in"
+        }
+
+ensurePublicQrCheckinAllowed
+  :: MonadError ServerError m
+  => Entity AssetCheckout
+  -> m ()
+ensurePublicQrCheckinAllowed (Entity _ checkoutRecord)
+  | assetCheckoutTargetKind checkoutRecord == TargetParty =
+      case assetCheckoutDisposition checkoutRecord of
+        Loan -> pure ()
+        Rental -> pure ()
+        _ ->
+          throwError err409 { errBody = "Public QR check-in only supports party loan or rental checkouts" }
+  | otherwise =
+      throwError err409 { errBody = "Public QR check-in only supports party checkouts" }
+
+validatePublicQrUploadContext
+  :: AssetStatus
+  -> Maybe (Entity AssetCheckout)
+  -> Either ServerError ()
+validatePublicQrUploadContext Booked Nothing =
+  Left err409
+    { errBody =
+        "Asset status is booked but no active checkout exists; resolve the inventory state before public QR proof upload"
+    }
+validatePublicQrUploadContext assetState Nothing =
+  validateAssetCheckoutStatus assetState
+validatePublicQrUploadContext assetState (Just checkoutEnt@(Entity _ checkoutRecord))
+  | assetCheckoutTargetKind checkoutRecord /= TargetParty =
+      Left err409
+        { errBody =
+            "Public QR upload only supports assets that are available for checkout or currently checked out to a party loan or rental"
+        }
+  | assetCheckoutDisposition checkoutRecord /= Loan
+      && assetCheckoutDisposition checkoutRecord /= Rental =
+      Left err409
+        { errBody =
+            "Public QR upload only supports assets that are available for checkout or currently checked out to a party loan or rental"
+        }
+  | otherwise =
+      validateAssetReadCheckoutState "public QR proof upload" assetState (Just checkoutEnt)
+
+data NormalizedCheckoutRequest = NormalizedCheckoutRequest
+  { ncrTargetKind :: CheckoutTarget
+  , ncrTargetParty :: Maybe Text
+  , ncrTargetRoom :: Maybe (Key Room)
+  , ncrTargetSession :: Maybe (Key ME.Session)
+  , ncrDisposition :: CheckoutDisposition
+  , ncrTermsAndConditions :: Maybe Text
+  , ncrHolderEmail :: Maybe Text
+  , ncrHolderPhone :: Maybe Text
+  , ncrPaymentType :: Maybe Text
+  , ncrPaymentInstallments :: Maybe Int
+  , ncrPaymentReference :: Maybe Text
+  , ncrPaymentAmountCents :: Maybe Int
+  , ncrPaymentCurrency :: Maybe Text
+  , ncrPaymentOutstandingCents :: Maybe Int
+  , ncrDueAt :: Maybe UTCTime
+  , ncrConditionOut :: Maybe Text
+  , ncrPhotoOutUrl :: Maybe Text
+  , ncrNotes :: Maybe Text
+  }
+
+normalizeCheckoutRequest :: AssetCheckoutRequest -> Either ServerError NormalizedCheckoutRequest
+normalizeCheckoutRequest req = do
+  targetKind <- parseCheckoutTargetKind (coTargetKind req)
+  targetRoomKey <- parseOptionalKeyField @Room "targetRoom" (coTargetRoom req)
+  targetSessionKey <- parseOptionalKeyField @ME.Session "targetSession" (coTargetSession req)
+  (mTargetParty, mRoom, mSession) <-
+    validateCheckoutTargets targetKind (coTargetParty req) targetRoomKey targetSessionKey
+  disposition <- parseCheckoutDisposition (coDisposition req)
+  termsAndConditions <- validateCheckoutTermsField "termsAndConditions" (coTermsAndConditions req)
+  holderEmail <- validateCheckoutHolderEmail (coHolderEmail req)
+  holderPhone <- validateCheckoutHolderPhone (coHolderPhone req)
+  paymentType <- normalizeCheckoutPaymentType (coPaymentType req)
+  paymentInstallments <- validateCheckoutInstallments (coPaymentInstallments req)
+  paymentReference <- validateOptionalPaymentTextField "paymentReference" 160 (coPaymentReference req)
+  paymentAmountCents <- validateCheckoutAmountField "paymentAmount" (coPaymentAmount req)
+  paymentCurrency <- validateCheckoutCurrency (coPaymentCurrency req)
+  rawPaymentOutstandingCents <- validateCheckoutMoneyField "paymentOutstanding" True (coPaymentOutstanding req)
+  validateCheckoutFinancials
+    disposition
+    paymentType
+    paymentInstallments
+    paymentReference
+    paymentAmountCents
+    paymentCurrency
+    rawPaymentOutstandingCents
+  let paymentOutstandingCents =
+        normalizeCheckoutOutstanding
+          disposition
+          paymentType
+          paymentAmountCents
+          paymentCurrency
+          rawPaymentOutstandingCents
+  validateCheckoutDispositionFields targetKind disposition (coDueAt req)
+  conditionOut <- validateInventoryConditionField "conditionOut" (coConditionOut req)
+  checkoutNotes <- validateInventoryNotesField "notes" (coNotes req)
+  photoOutUrl <- validateAssetPhotoUrl (coPhotoUrl req)
+  pure NormalizedCheckoutRequest
+    { ncrTargetKind = targetKind
+    , ncrTargetParty = mTargetParty
+    , ncrTargetRoom = mRoom
+    , ncrTargetSession = mSession
+    , ncrDisposition = disposition
+    , ncrTermsAndConditions = termsAndConditions
+    , ncrHolderEmail = holderEmail
+    , ncrHolderPhone = holderPhone
+    , ncrPaymentType = paymentType
+    , ncrPaymentInstallments = paymentInstallments
+    , ncrPaymentReference = paymentReference
+    , ncrPaymentAmountCents = paymentAmountCents
+    , ncrPaymentCurrency = paymentCurrency
+    , ncrPaymentOutstandingCents = paymentOutstandingCents
+    , ncrDueAt = coDueAt req
+    , ncrConditionOut = conditionOut
+    , ncrPhotoOutUrl = photoOutUrl
+    , ncrNotes = checkoutNotes
+    }
+
+normalizePublicQrCheckoutRequest :: AppConfig -> AssetCheckoutRequest -> AssetCheckoutRequest
+normalizePublicQrCheckoutRequest cfg req =
+  req
+    { coPhotoUrl = normalizePublicQrProofField cfg (coPhotoUrl req)
+    }
+
+normalizePublicQrCheckinRequest :: AppConfig -> AssetCheckinRequest -> AssetCheckinRequest
+normalizePublicQrCheckinRequest cfg req =
+  req
+    { ciPhotoUrl = normalizePublicQrProofField cfg (ciPhotoUrl req)
+    }
+
+normalizePublicQrProofField :: AppConfig -> Maybe Text -> Maybe Text
+normalizePublicQrProofField cfg rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Nothing
+    Just cleanValue ->
+      Just (fromMaybe cleanValue (normalizeManagedInventoryProofUrl cfg cleanValue))
+
+normalizeManagedInventoryProofUrl :: AppConfig -> Text -> Maybe Text
+normalizeManagedInventoryProofUrl cfg rawValue =
+  normalizeAssetPhotoPath rawValue
+    <|> do
+      relPath <- T.stripPrefix assetsPrefix (T.strip rawValue)
+      normalizeAssetPhotoPath relPath
+  where
+    assetsPrefix = T.dropWhileEnd (== '/') (resolveConfiguredAssetsBase cfg) <> "/"
+
+validatePublicQrCheckoutRequest :: NormalizedCheckoutRequest -> Either ServerError ()
+validatePublicQrCheckoutRequest normalized
+  | ncrTargetKind normalized /= TargetParty =
+      Left err400 { errBody = "Public QR checkout only supports party targets" }
+  | ncrDisposition normalized == Sale =
+      Left err400 { errBody = "Public QR checkout does not allow sale disposition" }
+  | ncrDisposition normalized /= Loan && ncrDisposition normalized /= Rental =
+      Left err400 { errBody = "Public QR checkout only supports loan or rental disposition" }
+  | isNothing (ncrTermsAndConditions normalized) =
+      Left err400 { errBody = "Public QR checkout requires coTermsAndConditions" }
+  | ncrDisposition normalized == Rental && isNothing (ncrPaymentType normalized) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentType" }
+  | ncrDisposition normalized == Rental && isNothing (ncrPaymentAmountCents normalized) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentAmount" }
+  | ncrDisposition normalized == Rental && isNothing (ncrPaymentCurrency normalized) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentCurrency" }
+  | ncrDisposition normalized == Rental && isNothing (ncrPaymentOutstandingCents normalized) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentOutstanding" }
+  | isNothing (ncrHolderEmail normalized) && isNothing (ncrHolderPhone normalized) =
+      Left err400 { errBody = "Public QR checkout requires holderEmail or holderPhone" }
+  | isNothing (ncrConditionOut normalized) =
+      Left err400 { errBody = "Public QR checkout requires coConditionOut" }
+  | isNothing (ncrPhotoOutUrl normalized) =
+      Left err400 { errBody = "Public QR checkout requires coPhotoUrl" }
+  | not (maybe False isManagedInventoryPhotoProof (ncrPhotoOutUrl normalized)) =
+      Left err400 { errBody = "Public QR checkout requires coPhotoUrl to reference an uploaded inventory asset path" }
+  | isNothing (ncrDueAt normalized) =
+      Left err400 { errBody = "Public QR checkout requires coDueAt" }
+  | otherwise =
+      Right ()
+
+validatePublicQrCheckoutRequestFields :: AssetCheckoutRequest -> Either ServerError ()
+validatePublicQrCheckoutRequestFields req
+  | isRentalDisposition (coDisposition req)
+      && isNothing (normalizeOptionalTextField (coPaymentType req)) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentType" }
+  | isRentalDisposition (coDisposition req)
+      && isNothing (normalizeOptionalTextField (coPaymentAmount req)) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentAmount" }
+  | isRentalDisposition (coDisposition req)
+      && isNothing (normalizeOptionalTextField (coPaymentCurrency req)) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentCurrency" }
+  | isRentalDisposition (coDisposition req)
+      && isNothing (normalizeOptionalTextField (coPaymentOutstanding req)) =
+      Left err400 { errBody = "Public QR rental checkout requires coPaymentOutstanding" }
+  | otherwise =
+      Right ()
+  where
+    isRentalDisposition =
+      maybe False (\raw -> T.toLower (T.strip raw) `elem` ["rental", "rent"])
+
+validatePublicQrCheckinFields :: (Maybe Text, Maybe Text, Maybe Text) -> Either ServerError ()
+validatePublicQrCheckinFields (mConditionIn, _, mPhotoIn)
+  | isNothing mConditionIn =
+      Left err400 { errBody = "Public QR check-in requires ciConditionIn" }
+  | isNothing mPhotoIn =
+      Left err400 { errBody = "Public QR check-in requires ciPhotoUrl" }
+  | not (maybe False isManagedInventoryPhotoProof mPhotoIn) =
+      Left err400 { errBody = "Public QR check-in requires ciPhotoUrl to reference an uploaded inventory asset path" }
+  | otherwise =
+      Right ()
+
+isManagedInventoryPhotoProof :: Text -> Bool
+isManagedInventoryPhotoProof =
+  isJust . normalizeAssetPhotoPath
+
+validateCheckoutHolderEmail :: Maybe Text -> Either ServerError (Maybe Text)
+validateCheckoutHolderEmail rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just cleanValue
+      | T.length cleanValue > maxCheckoutHolderEmailChars ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 ("holderEmail must be " <> T.pack (show maxCheckoutHolderEmailChars) <> " characters or fewer"))
+            }
+      | T.any isControl cleanValue ->
+          Left err400 { errBody = "holderEmail must not contain control characters" }
+      | isValidCheckoutHolderEmail normalized ->
+          Right (Just normalized)
+      | otherwise ->
+          Left err400 { errBody = "holderEmail must be a valid email address" }
+      where
+        normalized = T.toLower cleanValue
+
+validateCheckoutHolderPhone :: Maybe Text -> Either ServerError (Maybe Text)
+validateCheckoutHolderPhone rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just cleanValue
+      | T.length cleanValue > maxCheckoutHolderPhoneChars ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 ("holderPhone must be " <> T.pack (show maxCheckoutHolderPhoneChars) <> " characters or fewer"))
+            }
+      | T.any isControl cleanValue ->
+          Left err400 { errBody = "holderPhone must not contain control characters" }
+      | otherwise ->
+          maybe
+            (Left err400 { errBody = "holderPhone must be a valid phone number" })
+            (Right . Just)
+            (normalizeWhatsAppPhone cleanValue)
+
+isValidCheckoutHolderEmail :: Text -> Bool
+isValidCheckoutHolderEmail candidate =
+  case T.split (== '@') candidate of
+    [localPart, domain] ->
+      T.length candidate <= maxCheckoutHolderEmailChars
+        && isValidCheckoutHolderEmailLocalPart localPart
+        && not (T.null domain)
+        && not (T.any (`elem` [' ', '\t', '\n', '\r']) candidate)
+        && T.isInfixOf "." domain
+        && hasValidCheckoutHolderFinalDomainLabel domain
+        && all isValidCheckoutHolderDomainLabel (T.splitOn "." domain)
+    _ -> False
+
+hasValidCheckoutHolderFinalDomainLabel :: Text -> Bool
+hasValidCheckoutHolderFinalDomainLabel domain =
+  case reverse (T.splitOn "." domain) of
+    finalLabel : _ ->
+      T.length finalLabel >= 2 && T.any isAsciiLower finalLabel
+    [] -> False
+
+isValidCheckoutHolderEmailLocalPart :: Text -> Bool
+isValidCheckoutHolderEmailLocalPart localPart =
+  not (T.null localPart)
+    && T.length localPart <= maxCheckoutHolderEmailLocalPartChars
+    && not (T.isPrefixOf "." localPart)
+    && not (T.isSuffixOf "." localPart)
+    && not (".." `T.isInfixOf` localPart)
+    && T.all isValidCheckoutHolderEmailLocalChar localPart
+
+isValidCheckoutHolderEmailLocalChar :: Char -> Bool
+isValidCheckoutHolderEmailLocalChar c =
+  isAsciiLower c || isDigit c || c `elem` ("!#$%&'*+/=?^_`{|}~.-" :: String)
+
+isValidCheckoutHolderDomainLabel :: Text -> Bool
+isValidCheckoutHolderDomainLabel label =
+  not (T.null label)
+    && T.length label <= maxCheckoutHolderEmailDomainLabelChars
+    && not (T.isPrefixOf "-" label)
+    && not (T.isSuffixOf "-" label)
+    && T.all isValidCheckoutHolderDomainChar label
+
+isValidCheckoutHolderDomainChar :: Char -> Bool
+isValidCheckoutHolderDomainChar c = isAsciiLower c || isDigit c || c == '-'
+
+maxCheckoutHolderEmailChars :: Int
+maxCheckoutHolderEmailChars = 160
+
+maxCheckoutHolderEmailLocalPartChars :: Int
+maxCheckoutHolderEmailLocalPartChars = 64
+
+maxCheckoutHolderEmailDomainLabelChars :: Int
+maxCheckoutHolderEmailDomainLabelChars = 63
+
+maxCheckoutHolderPhoneChars :: Int
+maxCheckoutHolderPhoneChars = 60
+
+validateCheckoutTermsField :: Text -> Maybe Text -> Either ServerError (Maybe Text)
+validateCheckoutTermsField fieldName =
+  validateInventoryOptionalTextField fieldName inventoryTermsMaxLength
+
+normalizeCheckoutPaymentType :: Maybe Text -> Either ServerError (Maybe Text)
+normalizeCheckoutPaymentType Nothing = Right Nothing
+normalizeCheckoutPaymentType (Just rawValue) =
+  case normalizeOptionalTextField (Just rawValue) of
+    Nothing -> Right Nothing
+    Just cleanValue ->
+      fmap (Just . paymentMethodToInventoryPaymentType) (validatePaymentMethod cleanValue)
+
+validateCheckoutInstallments :: Maybe Int -> Either ServerError (Maybe Int)
+validateCheckoutInstallments Nothing = Right Nothing
+validateCheckoutInstallments (Just installments)
+  | installments < 1 =
+      Left err400 { errBody = "paymentInstallments must be at least 1" }
+  | installments > 60 =
+      Left err400 { errBody = "paymentInstallments must be 60 or fewer" }
+  | otherwise =
+      Right (Just installments)
+
+validateCheckoutAmountField :: Text -> Maybe Text -> Either ServerError (Maybe Int)
+validateCheckoutAmountField fieldName rawValue = do
+  amountCents <- validateCheckoutMoneyField fieldName False rawValue
+  case amountCents of
+    Just 0 ->
+      Left err400
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8 (fieldName <> " must be greater than 0"))
+        }
+    _ ->
+      Right amountCents
+
+validateCheckoutCurrency :: Maybe Text -> Either ServerError (Maybe Text)
+validateCheckoutCurrency Nothing = Right Nothing
+validateCheckoutCurrency (Just rawCurrency) =
+  case normalizeOptionalTextField (Just rawCurrency) of
+    Nothing -> Right Nothing
+    Just currency ->
+      let normalized = T.toUpper currency
+      in if T.length normalized == 3 && T.all isAsciiUpper normalized
+           then Right (Just normalized)
+           else Left err400 { errBody = "paymentCurrency must be a 3-letter ISO code" }
+
+validateCheckoutMoneyField :: Text -> Bool -> Maybe Text -> Either ServerError (Maybe Int)
+validateCheckoutMoneyField fieldName allowZero rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just cleanValue ->
+      case parseMoneyToCents cleanValue of
+        Nothing ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 (fieldName <> " must be a non-negative amount with up to 2 decimals"))
+            }
+        Just cents
+          | not allowZero && cents <= 0 ->
+              Left err400
+                { errBody =
+                    BL.fromStrict
+                      (TE.encodeUtf8 (fieldName <> " must be greater than 0"))
+                }
+          | otherwise ->
+              Right (Just cents)
+
+parseMoneyToCents :: Text -> Maybe Int
+parseMoneyToCents rawValue
+  | T.any isSpace rawValue = Nothing
+  | T.any isControl rawValue = Nothing
+  | T.isPrefixOf "-" rawValue = Nothing
+  | otherwise =
+      case T.splitOn "." rawValue of
+        [wholePart]
+          | validWholePart wholePart ->
+              buildCents wholePart ""
+        [wholePart, fractionalPart]
+          | validWholePart wholePart
+              && not (T.null fractionalPart)
+              && T.length fractionalPart <= 2
+              && T.all isDigit fractionalPart ->
+                  buildCents wholePart fractionalPart
+        _ ->
+          Nothing
+  where
+    validWholePart part = not (T.null part) && T.all isDigit part
+    buildCents wholePart fractionalPart = do
+      wholeUnits <- parseInteger wholePart
+      fractionalUnits <- parseInteger (fractionalPart <> T.replicate (2 - T.length fractionalPart) "0")
+      let totalCents = wholeUnits * 100 + fractionalUnits
+      if totalCents <= fromIntegral (maxBound :: Int)
+        then Just (fromIntegral totalCents)
+        else Nothing
+    parseInteger txt =
+      case reads (T.unpack txt) :: [(Integer, String)] of
+        [(value, "")] -> Just value
+        _             -> Nothing
+
+validateCheckoutFinancials
+  :: CheckoutDisposition
+  -> Maybe Text
+  -> Maybe Int
+  -> Maybe Text
+  -> Maybe Int
+  -> Maybe Text
+  -> Maybe Int
+  -> Either ServerError ()
+validateCheckoutFinancials disposition paymentType paymentInstallments paymentReference paymentAmount paymentCurrency paymentOutstanding
+  | not (checkoutDispositionSupportsPaymentDetails disposition)
+      && any isJust
+        [ fmap (const ()) paymentType
+        , fmap (const ()) paymentInstallments
+        , fmap (const ()) paymentReference
+        , fmap (const ()) paymentAmount
+        , fmap (const ()) paymentCurrency
+        , fmap (const ()) paymentOutstanding
+        ] =
+      Left err400 { errBody = "payment fields are only allowed for sale or rental checkout" }
+validateCheckoutFinancials _ Nothing (Just _) _ _ _ _ =
+  Left err400 { errBody = "paymentInstallments requires paymentType" }
+validateCheckoutFinancials _ Nothing _ (Just _) _ _ _ =
+  Left err400 { errBody = "paymentReference requires paymentType" }
+validateCheckoutFinancials _ Nothing _ _ (Just _) _ _ =
+  Left err400 { errBody = "paymentAmount requires paymentType" }
+validateCheckoutFinancials _ Nothing _ _ _ (Just _) _ =
+  Left err400 { errBody = "paymentCurrency requires paymentType" }
+validateCheckoutFinancials _ Nothing _ _ _ _ (Just _) =
+  Left err400 { errBody = "paymentOutstanding requires paymentType" }
+validateCheckoutFinancials _ (Just _) Nothing Nothing Nothing Nothing Nothing =
+  Left err400 { errBody = "paymentType requires paymentAmount" }
+validateCheckoutFinancials _ _ _ (Just _) Nothing _ _ =
+  Left err400 { errBody = "paymentReference requires paymentAmount" }
+validateCheckoutFinancials _ _ (Just _) _ Nothing _ _ =
+  Left err400 { errBody = "paymentInstallments requires paymentAmount" }
+validateCheckoutFinancials _ _ _ _ Nothing (Just _) _ =
+  Left err400 { errBody = "paymentCurrency requires paymentAmount" }
+validateCheckoutFinancials _ _ _ _ (Just _) Nothing _ =
+  Left err400 { errBody = "paymentAmount requires paymentCurrency" }
+validateCheckoutFinancials _ _ _ _ Nothing _ (Just _) =
+  Left err400 { errBody = "paymentOutstanding requires paymentAmount" }
+validateCheckoutFinancials _ _ (Just installments) _ _ _ Nothing
+  | installments > 1 =
+      Left err400 { errBody = "paymentInstallments greater than 1 requires paymentOutstanding" }
+validateCheckoutFinancials Rental _ _ _ (Just _) _ Nothing =
+  Left err400 { errBody = "rental checkout requires paymentOutstanding" }
+validateCheckoutFinancials _ _ _ _ (Just amountCents) _ (Just outstandingCents)
+  | outstandingCents > amountCents =
+      Left err400 { errBody = "paymentOutstanding must be less than or equal to paymentAmount" }
+validateCheckoutFinancials _ _ _ _ _ _ _ =
+  Right ()
+
+normalizeCheckoutOutstanding
+  :: CheckoutDisposition
+  -> Maybe Text
+  -> Maybe Int
+  -> Maybe Text
+  -> Maybe Int
+  -> Maybe Int
+normalizeCheckoutOutstanding Sale (Just _) (Just _) (Just _) Nothing = Just 0
+normalizeCheckoutOutstanding _ _ _ _ outstanding = outstanding
+
+validateCheckoutDispositionFields
+  :: CheckoutTarget
+  -> CheckoutDisposition
+  -> Maybe UTCTime
+  -> Either ServerError ()
+validateCheckoutDispositionFields TargetParty Sale (Just _) =
+  Left err400 { errBody = "dueAt is not allowed for sale checkout" }
+validateCheckoutDispositionFields TargetParty _ _ =
+  Right ()
+validateCheckoutDispositionFields _ Sale _ =
+  Left err400 { errBody = "sale checkout only supports party targets" }
+validateCheckoutDispositionFields _ _ _ =
+  Right ()
+
+validateCheckinDisposition :: CheckoutDisposition -> Either ServerError ()
+validateCheckinDisposition Sale =
+  Left err409 { errBody = "Sale checkouts cannot be checked in" }
+validateCheckinDisposition _ =
+  Right ()
+
+validateCheckinPayload
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> Either ServerError ()
+validateCheckinPayload Nothing Nothing Nothing =
+  Left err400 { errBody = "check-in requires at least one of ciConditionIn, ciNotes, or ciPhotoUrl" }
+validateCheckinPayload _ _ _ =
+  Right ()
+
+checkoutDispositionSupportsPaymentDetails :: CheckoutDisposition -> Bool
+checkoutDispositionSupportsPaymentDetails Rental = True
+checkoutDispositionSupportsPaymentDetails Sale = True
+checkoutDispositionSupportsPaymentDetails _ = False
+
+validateInventoryConditionField :: Text -> Maybe Text -> Either ServerError (Maybe Text)
+validateInventoryConditionField fieldName =
+  validateInventoryOptionalTextField fieldName inventoryConditionMaxLength
+
+validateInventoryNotesField :: Text -> Maybe Text -> Either ServerError (Maybe Text)
+validateInventoryNotesField fieldName =
+  validateInventoryOptionalTextField fieldName inventoryNotesMaxLength
+
+validateInventoryOptionalTextField :: Text -> Int -> Maybe Text -> Either ServerError (Maybe Text)
+validateInventoryOptionalTextField fieldName maxLength rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just cleanValue
+      | T.length cleanValue > maxLength ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 (fieldName <> " must be " <> T.pack (show maxLength) <> " characters or fewer"))
+            }
+      | T.any isUnsafeInventoryTextChar cleanValue ->
+          Left err400
+            { errBody =
+                BL.fromStrict $
+                  TE.encodeUtf8
+                    ( fieldName
+                        <> " must not contain control characters other than tabs or line breaks, or hidden formatting characters"
+                    )
+            }
+      | otherwise ->
+          Right (Just cleanValue)
+
+isUnsafeInventoryTextChar :: Char -> Bool
+isUnsafeInventoryTextChar ch =
+  (isControl ch && ch /= '\n' && ch /= '\r' && ch /= '\t')
+    || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+inventoryConditionMaxLength :: Int
+inventoryConditionMaxLength = 240
+
+inventoryNotesMaxLength :: Int
+inventoryNotesMaxLength = 1000
+
+inventoryTermsMaxLength :: Int
+inventoryTermsMaxLength = 4000
+
+validateCheckoutDueAt :: UTCTime -> Maybe UTCTime -> Either ServerError (Maybe UTCTime)
+validateCheckoutDueAt _ Nothing = Right Nothing
+validateCheckoutDueAt now (Just dueAt)
+  | utctDay dueAt == utctDay now && utctDayTime dueAt == 0 =
+      Right (Just dueAt)
+  | dueAt < now =
+      Left err400 { errBody = "dueAt must not be in the past" }
+  | otherwise =
+      Right (Just dueAt)
+
+assetStatusForCheckoutDisposition :: CheckoutDisposition -> AssetStatus
+assetStatusForCheckoutDisposition Sale = Retired
+assetStatusForCheckoutDisposition _ = Booked
+
+assetStatusForCheckinDisposition :: CheckoutDisposition -> AssetStatus
+assetStatusForCheckinDisposition Sale = Retired
+assetStatusForCheckinDisposition _ = Active
+
+checkoutTargetToText :: CheckoutTarget -> Text
+checkoutTargetToText TargetParty = "party"
+checkoutTargetToText TargetRoom = "room"
+checkoutTargetToText TargetSession = "session"
+
+checkoutDispositionToText :: CheckoutDisposition -> Text
+checkoutDispositionToText Loan = "loan"
+checkoutDispositionToText Rental = "rental"
+checkoutDispositionToText Sale = "sale"
+checkoutDispositionToText Repair = "repair"
+checkoutDispositionToText Transfer = "transfer"
+checkoutDispositionToText OtherDisposition = "other"
+
+paymentMethodToInventoryPaymentType :: PaymentMethod -> Text
+paymentMethodToInventoryPaymentType CashM = "cash"
+paymentMethodToInventoryPaymentType BankTransferM = "bank_transfer"
+paymentMethodToInventoryPaymentType CardPOSM = "card"
+paymentMethodToInventoryPaymentType PayPalM = "paypal"
+paymentMethodToInventoryPaymentType StripeM = "stripe"
+paymentMethodToInventoryPaymentType WompiM = "wompi"
+paymentMethodToInventoryPaymentType PayPhoneM = "payphone"
+paymentMethodToInventoryPaymentType CryptoM = "crypto"
+paymentMethodToInventoryPaymentType OtherM = "other"
+
+checkoutTargetRef :: AssetCheckout -> Maybe Text
+checkoutTargetRef rec =
+  assetCheckoutTargetPartyRef rec
+    <|> fmap toPathPiece (assetCheckoutTargetRoomId rec)
+    <|> fmap toPathPiece (assetCheckoutTargetSessionId rec)
+
+checkoutPhotoOutUrl :: AssetCheckout -> Maybe Text
+checkoutPhotoOutUrl rec = assetCheckoutPhotoOutUrl rec <|> assetCheckoutPhotoDriveFileId rec
+
+toAssetDTO :: Entity Asset -> Maybe (Entity AssetCheckout) -> AssetDTO
+toAssetDTO (Entity key asset) mCurrentCheckout = AssetDTO
+  { assetId  = toPathPiece key
+  , name     = assetName asset
+  , category = assetCategory asset
+  , status   = T.pack (show (assetStatus asset))
+  , condition = Just (T.pack (show (assetCondition asset)))
+  , brand    = assetBrand asset
+  , model    = assetModel asset
+  , location = fmap toPathPiece (assetLocationId asset)
+  , qrToken  = assetQrCode asset
+  , photoUrl = assetPhotoUrl asset
+  , currentCheckoutKind = fmap (checkoutTargetToText . assetCheckoutTargetKind . entityVal) mCurrentCheckout
+  , currentCheckoutTarget = mCurrentCheckout >>= (checkoutTargetRef . entityVal)
+  , currentCheckoutDisposition = fmap (checkoutDispositionToText . assetCheckoutDisposition . entityVal) mCurrentCheckout
+  , currentCheckoutHolderEmail = mCurrentCheckout >>= (assetCheckoutHolderEmail . entityVal)
+  , currentCheckoutHolderPhone = mCurrentCheckout >>= (assetCheckoutHolderPhone . entityVal)
+  , currentCheckoutAt = fmap (assetCheckoutCheckedOutAt . entityVal) mCurrentCheckout
+  , currentCheckoutDueAt = mCurrentCheckout >>= (assetCheckoutDueAt . entityVal)
+  , currentCheckoutPaymentType = mCurrentCheckout >>= (assetCheckoutPaymentType . entityVal)
+  , currentCheckoutPaymentInstallments = mCurrentCheckout >>= (assetCheckoutPaymentInstallments . entityVal)
+  , currentCheckoutPaymentAmountCents = mCurrentCheckout >>= (assetCheckoutPaymentAmountCents . entityVal)
+  , currentCheckoutPaymentCurrency = mCurrentCheckout >>= (assetCheckoutPaymentCurrency . entityVal)
+  , currentCheckoutPaymentOutstandingCents = mCurrentCheckout >>= (assetCheckoutPaymentOutstandingCents . entityVal)
+  , currentCheckoutPhotoUrl = mCurrentCheckout >>= (checkoutPhotoOutUrl . entityVal)
+  }
+
+toCheckoutDTO :: Entity AssetCheckout -> AssetCheckoutDTO
+toCheckoutDTO (Entity key rec) = AssetCheckoutDTO
+  { checkoutId      = toPathPiece key
+  , assetId         = toPathPiece (assetCheckoutAssetId rec)
+  , targetKind      = checkoutTargetToText (assetCheckoutTargetKind rec)
+  , targetSessionId = fmap toPathPiece (assetCheckoutTargetSessionId rec)
+  , targetPartyRef  = assetCheckoutTargetPartyRef rec
+  , targetRoomId    = fmap toPathPiece (assetCheckoutTargetRoomId rec)
+  , disposition     = checkoutDispositionToText (assetCheckoutDisposition rec)
+  , termsAndConditions = assetCheckoutTermsAndConditions rec
+  , holderEmail     = assetCheckoutHolderEmail rec
+  , holderPhone     = assetCheckoutHolderPhone rec
+  , paymentType     = assetCheckoutPaymentType rec
+  , paymentInstallments = assetCheckoutPaymentInstallments rec
+  , paymentReference = assetCheckoutPaymentReference rec
+  , paymentAmountCents = assetCheckoutPaymentAmountCents rec
+  , paymentCurrency = assetCheckoutPaymentCurrency rec
+  , paymentOutstandingCents = assetCheckoutPaymentOutstandingCents rec
+  , checkedOutBy    = assetCheckoutCheckedOutByRef rec
+  , checkedOutAt    = assetCheckoutCheckedOutAt rec
+  , dueAt           = assetCheckoutDueAt rec
+  , conditionOut    = assetCheckoutConditionOut rec
+  , photoOutUrl     = checkoutPhotoOutUrl rec
+  , conditionIn     = assetCheckoutConditionIn rec
+  , photoInUrl      = assetCheckoutPhotoInUrl rec
+  , returnedAt      = assetCheckoutReturnedAt rec
+  , notes           = assetCheckoutNotes rec
+  }
+
+storeAssetUpload
+  :: ( MonadReader Env m
+     , MonadIO m
+     , MonadError ServerError m
+     )
+  => AssetUploadForm
+  -> m AssetUploadDTO
+storeAssetUpload rawUploadForm = do
+  validatedUploadForm <-
+    case Inventory.validateAssetUploadForm rawUploadForm of
+      Left err ->
+        throwError err400 { errBody = BL.fromStrict (TE.encodeUtf8 err) }
+      Right uploadForm ->
+        pure uploadForm
+  Env{envConfig} <- ask
+  let AssetUploadForm{..} = validatedUploadForm
+      assetsBase = resolveConfiguredAssetsBase envConfig
+      assetsRoot = assetsRootDir envConfig
+      fallbackName = nonEmptyText (fdFileName aufFile)
+      requestedName = aufName >>= nonEmptyText
+      nameWithExt = applyExtension (requestedName <|> fallbackName) fallbackName
+      safeName = sanitizeAssetName nameWithExt
+  uuid <- liftIO nextRandom
+  let storedName = toText uuid <> "-" <> safeName
+      relPath = "inventory/" <> storedName
+      targetDir = assetsRoot </> "inventory"
+      targetPath = targetDir </> T.unpack storedName
+  fileSize <- liftIO (getFileSize (fdPayload aufFile))
+  either throwError pure (validateInventoryAssetUploadSize fileSize)
+  liftIO $ createDirectoryIfMissing True targetDir
+  liftIO $ copyFile (fdPayload aufFile) targetPath
+  let publicUrl = buildAssetUrl assetsBase relPath
+  pure AssetUploadDTO
+    { auFileName = storedName
+    , auPath = relPath
+    , auPublicUrl = publicUrl
+    }
+
+maxInventoryAssetUploadBytes :: Integer
+maxInventoryAssetUploadBytes = 10 * 1024 * 1024
+
+validateInventoryAssetUploadSize :: Integer -> Either ServerError ()
+validateInventoryAssetUploadSize size
+  | size < 0 =
+      Left err400 { errBody = "asset upload size is invalid" }
+  | size == 0 =
+      Left err400 { errBody = "asset upload must not be empty" }
+  | size > maxInventoryAssetUploadBytes =
+      Left err400 { errBody = "asset upload must be 10 MB or smaller" }
+  | otherwise =
+      Right ()
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText txt =
+  let trimmed = T.strip txt
+  in if T.null trimmed then Nothing else Just trimmed
+
+applyExtension :: Maybe Text -> Maybe Text -> Text
+applyExtension name fallback =
+  let resolved = fromMaybe "upload" name
+      extFromFallback =
+        case fallback of
+          Nothing -> ""
+          Just raw -> T.pack (takeExtension (T.unpack raw))
+      extFromName = T.pack (takeExtension (T.unpack resolved))
+  in if T.null extFromName && not (T.null extFromFallback)
+      then resolved <> extFromFallback
+      else resolved
+
+sanitizeAssetName :: Text -> Text
+sanitizeAssetName raw =
+  let trimmed = T.strip raw
+      baseName = T.pack (takeFileName (T.unpack trimmed))
+      cleaned = T.map normalizeAssetUploadChar baseName
+      stripped = T.dropWhile (== '-') (T.dropWhileEnd (== '-') cleaned)
+  in if T.null stripped || stripped == "." || stripped == ".."
+      then "upload"
+      else stripped
+
+normalizeAssetUploadChar :: Char -> Char
+normalizeAssetUploadChar ch
+  | isAscii ch && isAlphaNum ch = ch
+  | ch == '.' || ch == '-' || ch == '_' = ch
+  | ch == ' ' = '-'
+  | otherwise = '-'
+
+buildAssetUrl :: Text -> Text -> Text
+buildAssetUrl assetsBase relPath =
+  let base = T.dropWhileEnd (== '/') assetsBase
+      path = T.dropWhile (== '/') relPath
+  in base <> "/" <> path
 
 bandsServer
   :: ( MonadReader Env m
@@ -378,8 +1580,8 @@ bandsServer user =
   where
     listBands mp mps = do
       ensureModule ModuleCRM user
-      let pageNum    = clampPage (fromMaybe 1 mp)
-          pageSize'  = clampPageSize (fromMaybe 50 mps)
+      (pageNum, pageSize') <- either throwError pure (validatePageParams mp mps)
+      let
           pageOffset = (pageNum - 1) * pageSize'
           opts       = [Asc BandName, LimitTo pageSize', OffsetBy pageOffset]
       (bandEntities, totalCount, memberEntities, partyEntities) <- withPool $ do
@@ -411,16 +1613,11 @@ bandsServer user =
 
     createBandH req = do
       ensureModule ModuleCRM user
-      let trimmedName = T.strip (bcName req)
-          toPartyKey pid = toSqlKey pid :: Key Party
-          memberPartyKeys = map (toPartyKey . bmiPartyId) (bcMembers req)
-      when (trimmedName == "") $
-        throwError err400 { errBody = "Band name is required" }
-      nameExists <- withPool $ do
-        existing <- selectFirst [BandName ==. trimmedName] []
-        pure (isJust existing)
-      when nameExists $
-        throwError err409 { errBody = "A band with this name already exists" }
+      let toPartyKey pid = toSqlKey pid :: Key Party
+      nameClean <- either throwError pure (normalizeBandName (bcName req))
+      memberPartyKeys <- either throwError pure
+        (validateDistinctBandMemberIds (map (toPartyKey . bmiPartyId) (bcMembers req)))
+      ensureBandNameAvailable nameClean
       missingMemberKeys <- if null memberPartyKeys
         then pure []
         else withPool $ filterM (fmap isNothing . get) memberPartyKeys
@@ -430,7 +1627,7 @@ bandsServer user =
       (bandEntity, memberEntities, partyEntities) <- withPool $ do
         partyId <- insert Party
           { partyLegalName        = Nothing
-          , partyDisplayName      = trimmedName
+          , partyDisplayName      = nameClean
           , partyIsOrg            = True
           , partyTaxId            = Nothing
           , partyPrimaryEmail     = Nothing
@@ -443,7 +1640,7 @@ bandsServer user =
           }
         let band = Band
               { bandPartyId      = partyId
-              , bandName         = trimmedName
+              , bandName         = nameClean
               , bandLabelArtist  = fromMaybe False (bcLabelArtist req)
               , bandPrimaryGenre = bcPrimaryGenre req
               , bandHomeCity     = bcHomeCity req
@@ -511,6 +1708,17 @@ bandsServer user =
         , genres = map toOptionDTO genreOptions
         }
 
+    ensureBandNameAvailable nameClean = do
+      let canonicalName = canonicalBandName nameClean
+      duplicate <- withPool $ do
+        existing <- selectList ([] :: [Filter Band]) []
+        pure $
+          any
+            (\(Entity _ band) -> canonicalBandName (bandName band) == canonicalName)
+            existing
+      when duplicate $
+        throwError err409 { errBody = "A band with this name already exists" }
+
     toOptionDTO (Entity optKey option) = DropdownOptionDTO
       { optionId  = toPathPiece optKey
       , category  = dropdownOptionCategory option
@@ -538,8 +1746,8 @@ sessionsServer user =
   where
     listSessions mp mps = do
       ensureModule ModuleScheduling user
-      let pageNum    = clampPage (fromMaybe 1 mp)
-          pageSize'  = clampPageSize (fromMaybe 50 mps)
+      (pageNum, pageSize') <- either throwError pure (validatePageParams mp mps)
+      let
           pageOffset = (pageNum - 1) * pageSize'
           opts       = [Desc SessionStartAt, LimitTo pageSize', OffsetBy pageOffset]
       (sessions, totalCount, roomEntities) <- withPool $ do
@@ -559,19 +1767,26 @@ sessionsServer user =
 
     createSessionH req = do
       ensureModule ModuleScheduling user
-      roomKeys <- traverse (parseKey @Room) (scRoomIds req)
+      either throwError pure (validateSessionInputRowsWrite (scInputListRows req))
+      parsedRoomKeys <- traverse (parseKey @Room) (scRoomIds req)
+      roomKeys <- either throwError pure (validateDistinctSessionRooms parsedRoomKeys)
       bandKey  <- traverse (parseKey @Band) (scBandId req)
-      let statusVal = scStatus req >>= parseSessionStatus
+      statusVal <- either throwError pure (validateSessionStatusInput (scStatus req))
+      serviceClean <- either throwError pure (validateSessionRequiredTextField "service" (scService req))
+      engineerRefClean <- either throwError pure (validateSessionRequiredTextField "engineerRef" (scEngineerRef req))
+      either throwError pure (validateSessionTimeRange (scStartAt req) (scEndAt req))
+      either throwError pure =<< withPool (validateSessionReferences bandKey roomKeys)
+      let
           status'   = fromMaybe InPrep statusVal
       (sessionEnt, rooms) <- withPool $ do
         newSessionId <- insert Session
           { sessionBookingRef           = scBookingRef req
           , sessionBandId               = bandKey
           , sessionClientPartyRef       = scClientPartyRef req
-          , sessionService              = scService req
+          , sessionService              = serviceClean
           , sessionStartAt              = scStartAt req
           , sessionEndAt                = scEndAt req
-          , sessionEngineerRef          = scEngineerRef req
+          , sessionEngineerRef          = engineerRefClean
           , sessionAssistantRef         = scAssistantRef req
           , sessionStatus               = status'
           , sessionSampleRate           = scSampleRate req
@@ -604,7 +1819,10 @@ sessionsServer user =
 
     patchSessionH rawId req = do
       ensureModule ModuleScheduling user
+      either throwError pure (validateSessionInputRowsWrite (suInputListRows req))
       sessionKey <- parseKey @Session rawId
+      existingSession <- withPool $ getEntity sessionKey
+      existing <- maybe (throwError err404) pure existingSession
       bandUpdate <- case suBandId req of
         Nothing          -> pure Nothing
         Just Nothing     -> pure (Just Nothing)
@@ -613,16 +1831,27 @@ sessionsServer user =
           pure (Just (Just parsed))
       roomKeysUpdate <- case suRoomIds req of
         Nothing     -> pure Nothing
-        Just rooms  -> Just <$> traverse (parseKey @Room) rooms
-      let statusVal   = suStatus req >>= parseSessionStatus
+        Just rooms  -> do
+          parsedRoomKeys <- traverse (parseKey @Room) rooms
+          Just <$> either throwError pure (validateDistinctSessionRooms parsedRoomKeys)
+      statusVal <- either throwError pure (validateSessionStatusInput (suStatus req))
+      serviceUpdate <- traverse (either throwError pure . validateSessionRequiredTextField "service") (suService req)
+      engineerRefUpdate <- traverse (either throwError pure . validateSessionRequiredTextField "engineerRef") (suEngineerRef req)
+      let currentSession = entityVal existing
+          effectiveStartAt = fromMaybe (sessionStartAt currentSession) (suStartAt req)
+          effectiveEndAt = fromMaybe (sessionEndAt currentSession) (suEndAt req)
+      either throwError pure (validateSessionTimeRange effectiveStartAt effectiveEndAt)
+      either throwError pure =<< withPool
+        (validateSessionReferences (join bandUpdate) (fromMaybe [] roomKeysUpdate))
+      let
           updates     = catMaybes
             [ fmap (SessionBookingRef =.)           (suBookingRef req)
             , fmap (SessionBandId =.)               bandUpdate
             , fmap (SessionClientPartyRef =.)       (suClientPartyRef req)
-            , fmap (SessionService =.)              (suService req)
+            , fmap (SessionService =.)              serviceUpdate
             , fmap (SessionStartAt =.)              (suStartAt req)
             , fmap (SessionEndAt =.)                (suEndAt req)
-            , fmap (SessionEngineerRef =.)          (suEngineerRef req)
+            , fmap (SessionEngineerRef =.)          engineerRefUpdate
             , fmap (SessionAssistantRef =.)         (suAssistantRef req)
             , fmap (SessionStatus =.)               statusVal
             , fmap (SessionSampleRate =.)           (suSampleRate req)
@@ -632,24 +1861,20 @@ sessionsServer user =
             , fmap (SessionNotes =.)                (suNotes req)
             ]
       result <- withPool $ do
-        mSession <- getEntity sessionKey
-        case mSession of
-          Nothing -> pure Nothing
-          Just _  -> do
-            unless (null updates) (update sessionKey updates)
-            case roomKeysUpdate of
-              Nothing      -> pure ()
-              Just roomIds -> do
-                deleteWhere [SessionRoomSessionId ==. sessionKey]
-                for_ roomIds $ \roomKey ->
-                  insert_ SessionRoom
-                    { sessionRoomSessionId = sessionKey
-                    , sessionRoomRoomId    = roomKey
-                    }
-            ent <- getJustEntity sessionKey
-            rooms <- selectList [SessionRoomSessionId ==. sessionKey] [Asc SessionRoomId]
-            pure (Just (ent, rooms))
-      maybe (throwError err404) (\(ent, rooms) -> pure (toSessionDTO ent rooms)) result
+        unless (null updates) (update sessionKey updates)
+        case roomKeysUpdate of
+          Nothing      -> pure ()
+          Just roomIds -> do
+            deleteWhere [SessionRoomSessionId ==. sessionKey]
+            for_ roomIds $ \roomKey ->
+              insert_ SessionRoom
+                { sessionRoomSessionId = sessionKey
+                , sessionRoomRoomId    = roomKey
+                }
+        ent <- getJustEntity sessionKey
+        rooms <- selectList [SessionRoomSessionId ==. sessionKey] [Asc SessionRoomId]
+        pure (ent, rooms)
+      pure (toSessionDTO (fst result) (snd result))
 
     sessionInputListH rawId = do
       ensureModule ModuleScheduling user
@@ -777,16 +2002,20 @@ pipelinesServer user rawType =
 
     createCard kind req = do
       ensureModule ModuleScheduling user
+      titleClean <- either throwError pure (normalizePipelineCardTitle (pccTitle req))
       stageValue <- resolveStage kind (pccStage req)
+      sortOrderValue <- either throwError pure (validatePipelineCardSortOrder (pccSortOrder req))
+      let artistValue = normalizeOptionalTextField (pccArtist req)
+          notesValue = normalizeOptionalTextField (pccNotes req)
       now <- liftIO getCurrentTime
       entity <- withPool $ do
         newId <- insert ME.PipelineCard
           { ME.pipelineCardServiceKind = kind
-          , ME.pipelineCardTitle       = pccTitle req
-          , ME.pipelineCardArtist      = pccArtist req
+          , ME.pipelineCardTitle       = titleClean
+          , ME.pipelineCardArtist      = artistValue
           , ME.pipelineCardStage       = stageValue
-          , ME.pipelineCardSortOrder   = fromMaybe 0 (pccSortOrder req)
-          , ME.pipelineCardNotes       = pccNotes req
+          , ME.pipelineCardSortOrder   = fromMaybe 0 sortOrderValue
+          , ME.pipelineCardNotes       = notesValue
           , ME.pipelineCardCreatedAt   = now
           , ME.pipelineCardUpdatedAt   = now
           }
@@ -812,9 +2041,15 @@ pipelinesServer user rawType =
     updateCard kind rawId req = do
       ensureModule ModuleScheduling user
       cardKey <- parseKey @ME.PipelineCard rawId
+      titleUpdate <- either throwError pure (normalizePipelineCardTitleUpdate (pcuTitle req))
       stageUpdate <- case pcuStage req of
         Nothing   -> pure Nothing
         Just raw  -> Just <$> resolveStage kind (Just raw)
+      sortOrderUpdate <- either throwError pure (validatePipelineCardSortOrder (pcuSortOrder req))
+      let artistUpdate = normalizeOptionalTextFieldUpdate (pcuArtist req)
+          notesUpdate = normalizeOptionalTextFieldUpdate (pcuNotes req)
+      either throwError pure
+        (validatePipelineCardPatchIntent titleUpdate artistUpdate stageUpdate sortOrderUpdate notesUpdate)
       now <- liftIO getCurrentTime
       result <- withPool $ do
         mEntity <- getEntity cardKey
@@ -824,11 +2059,11 @@ pipelinesServer user rawType =
             | ME.pipelineCardServiceKind card /= kind -> pure Nothing
             | otherwise -> do
                 let updates = catMaybes
-                      [ fmap (ME.PipelineCardTitle =.) (pcuTitle req)
-                      , fmap (ME.PipelineCardArtist =.) (pcuArtist req)
+                      [ fmap (ME.PipelineCardTitle =.) titleUpdate
+                      , fmap (ME.PipelineCardArtist =.) artistUpdate
                       , fmap (ME.PipelineCardStage =.) stageUpdate
-                      , fmap (ME.PipelineCardSortOrder =.) (pcuSortOrder req)
-                      , fmap (ME.PipelineCardNotes =.) (pcuNotes req)
+                      , fmap (ME.PipelineCardSortOrder =.) sortOrderUpdate
+                      , fmap (ME.PipelineCardNotes =.) notesUpdate
                       ]
                     updates' = if null updates
                       then []
@@ -883,9 +2118,11 @@ roomsServer user = listRooms :<|> createRoomH :<|> patchRoomH
 
     createRoomH req = do
       ensureModule ModuleScheduling user
+      nameClean <- either throwError pure (normalizeRoomName (rcName req))
+      ensureRoomNameAvailable Nothing nameClean
       entity <- withPool $ do
         newRoomId <- insert Room
-          { roomName              = rcName req
+          { roomName              = nameClean
           , roomIsBookable        = True
           , roomCapacity          = Nothing
           , roomChannelCount      = Nothing
@@ -898,8 +2135,11 @@ roomsServer user = listRooms :<|> createRoomH :<|> patchRoomH
     patchRoomH rawId req = do
       ensureModule ModuleScheduling user
       roomKey <- parseKey @Room rawId
+      nameUpdate <- either throwError pure (normalizeRoomNameUpdate (ruName req))
+      either throwError pure (validateRoomPatchIntent nameUpdate (ruIsBookable req))
+      for_ nameUpdate (ensureRoomNameAvailable (Just roomKey))
       let updates = catMaybes
-            [ (RoomName =.)       <$> ruName req
+            [ (RoomName =.)       <$> nameUpdate
             , (RoomIsBookable =.) <$> ruIsBookable req
             ]
       result <- withPool $ do
@@ -911,12 +2151,216 @@ roomsServer user = listRooms :<|> createRoomH :<|> patchRoomH
             getEntity roomKey
       maybe (throwError err404) (pure . toRoomDTO) result
 
+    ensureRoomNameAvailable currentRoomKey nameClean = do
+      let canonicalName = canonicalRoomName nameClean
+      duplicate <- withPool $ do
+        existing <- selectList ([] :: [Filter Room]) []
+        pure $
+          any
+            (\(Entity existingKey room) ->
+                maybe True (/= existingKey) currentRoomKey
+                  && canonicalRoomName (roomName room) == canonicalName
+            )
+            existing
+      when duplicate $
+        throwError err409 { errBody = "A room with this name already exists" }
+
 toRoomDTO :: Entity Room -> RoomDTO
 toRoomDTO (Entity key room) = RoomDTO
   { roomId    = toPathPiece key
   , rName     = roomName room
   , rBookable = roomIsBookable room
   }
+
+normalizeBandName :: Text -> Either ServerError Text
+normalizeBandName rawName =
+  let normalized = normalizeBandNameValue rawName
+  in if T.null normalized
+       then Left err400 { errBody = "Band name is required" }
+       else Right normalized
+
+normalizeBandNameValue :: Text -> Text
+normalizeBandNameValue = T.unwords . T.words
+
+canonicalBandName :: Text -> Text
+canonicalBandName = T.toCaseFold . normalizeBandNameValue
+
+normalizeRoomName :: Text -> Either ServerError Text
+normalizeRoomName rawName =
+  let normalized = normalizeRoomNameValue rawName
+  in if T.null normalized
+       then Left err400 { errBody = "Room name is required" }
+       else Right normalized
+
+normalizeRoomNameUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+normalizeRoomNameUpdate Nothing = Right Nothing
+normalizeRoomNameUpdate (Just rawName) =
+  Just <$> normalizeRoomName rawName
+
+validateRoomPatchIntent :: Maybe Text -> Maybe Bool -> Either ServerError ()
+validateRoomPatchIntent Nothing Nothing =
+  Left err400 { errBody = "Room patch requires at least one of ruName or ruIsBookable" }
+validateRoomPatchIntent _ _ =
+  Right ()
+
+normalizeRoomNameValue :: Text -> Text
+normalizeRoomNameValue = T.unwords . T.words
+
+canonicalRoomName :: Text -> Text
+canonicalRoomName = T.toCaseFold . normalizeRoomNameValue
+
+normalizePipelineCardTitle :: Text -> Either ServerError Text
+normalizePipelineCardTitle rawTitle =
+  let trimmed = T.strip rawTitle
+  in if T.null trimmed
+       then Left err400 { errBody = "Pipeline card title is required" }
+       else if T.any isUnsafePipelineCardTitleChar trimmed
+         then
+           Left err400
+             { errBody =
+                 "Pipeline card title must not contain control characters or hidden formatting characters"
+             }
+       else Right trimmed
+
+isUnsafePipelineCardTitleChar :: Char -> Bool
+isUnsafePipelineCardTitleChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+normalizePipelineCardTitleUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+normalizePipelineCardTitleUpdate Nothing = Right Nothing
+normalizePipelineCardTitleUpdate (Just rawTitle) =
+  Just <$> normalizePipelineCardTitle rawTitle
+
+validatePipelineCardSortOrder :: Maybe Int -> Either ServerError (Maybe Int)
+validatePipelineCardSortOrder Nothing = Right Nothing
+validatePipelineCardSortOrder (Just sortOrderValue)
+  | sortOrderValue < 0 =
+      Left err400 { errBody = "Pipeline card sortOrder must be greater than or equal to 0" }
+  | otherwise =
+      Right (Just sortOrderValue)
+
+normalizeOptionalTextFieldUpdate :: Maybe (Maybe Text) -> Maybe (Maybe Text)
+normalizeOptionalTextFieldUpdate = fmap normalizeOptionalTextField
+
+validatePipelineCardPatchIntent
+  :: Maybe Text
+  -> Maybe (Maybe Text)
+  -> Maybe Text
+  -> Maybe Int
+  -> Maybe (Maybe Text)
+  -> Either ServerError ()
+validatePipelineCardPatchIntent Nothing Nothing Nothing Nothing Nothing =
+  Left err400 { errBody = "Pipeline card patch requires at least one field to update" }
+validatePipelineCardPatchIntent _ _ _ _ _ =
+  Right ()
+
+normalizeAssetName :: Text -> Either ServerError Text
+normalizeAssetName rawName =
+  validateRequiredAssetTextField "Asset name" assetNameMaxLength rawName
+
+normalizeAssetNameUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+normalizeAssetNameUpdate Nothing = Right Nothing
+normalizeAssetNameUpdate (Just rawName) =
+  Just <$> normalizeAssetName rawName
+
+normalizeAssetCategory :: Text -> Either ServerError Text
+normalizeAssetCategory rawCategory =
+  validateRequiredAssetTextField "Asset category" assetCategoryMaxLength rawCategory
+
+normalizeAssetCategoryUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+normalizeAssetCategoryUpdate Nothing = Right Nothing
+normalizeAssetCategoryUpdate (Just rawCategory) =
+  Just <$> normalizeAssetCategory rawCategory
+
+validateRequiredAssetTextField :: Text -> Int -> Text -> Either ServerError Text
+validateRequiredAssetTextField fieldName maxLength rawValue =
+  let trimmed = T.strip rawValue
+  in if T.null trimmed
+      then Left err400 { errBody = BL.fromStrict (TE.encodeUtf8 (fieldName <> " is required")) }
+      else if T.length trimmed > maxLength
+        then Left err400
+          { errBody =
+              BL.fromStrict
+                (TE.encodeUtf8 (fieldName <> " must be " <> T.pack (show maxLength) <> " characters or fewer"))
+          }
+        else if T.any isUnsafeAssetLabelChar trimmed
+          then Left err400
+            { errBody =
+                BL.fromStrict
+                  ( TE.encodeUtf8
+                      (fieldName <> " must not contain control characters or hidden formatting characters")
+                  )
+            }
+          else Right trimmed
+
+isUnsafeAssetLabelChar :: Char -> Bool
+isUnsafeAssetLabelChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+assetNameMaxLength :: Int
+assetNameMaxLength = 160
+
+assetCategoryMaxLength :: Int
+assetCategoryMaxLength = 120
+
+validateAssetPhotoUrl :: Maybe Text -> Either ServerError (Maybe Text)
+validateAssetPhotoUrl Nothing = Right Nothing
+validateAssetPhotoUrl (Just rawUrl) =
+  case normalizeOptionalTextField (Just rawUrl) of
+    Nothing -> Right Nothing
+    Just trimmedUrl
+      | "https://" `T.isPrefixOf` T.toLower trimmedUrl
+          && TrialsServer.isValidHttpUrl trimmedUrl
+          && not ("#" `T.isInfixOf` trimmedUrl) ->
+          Right (Just trimmedUrl)
+      | Just normalizedPath <- normalizeAssetPhotoPath trimmedUrl -> Right (Just normalizedPath)
+      | otherwise ->
+          Left err400
+            { errBody =
+                "photoUrl must be an absolute https URL without a fragment "
+                  <> "or an inventory asset path"
+            }
+
+validateAssetPhotoUrlUpdate :: Maybe Text -> Either ServerError (Maybe (Maybe Text))
+validateAssetPhotoUrlUpdate Nothing = Right Nothing
+validateAssetPhotoUrlUpdate (Just rawUrl) =
+  case normalizeOptionalTextField (Just rawUrl) of
+    Nothing ->
+      Right (Just Nothing)
+    Just _ ->
+      Just <$> validateAssetPhotoUrl (Just rawUrl)
+
+normalizeAssetPhotoPath :: Text -> Maybe Text
+normalizeAssetPhotoPath rawPath =
+  let trimmed = T.strip rawPath
+      path0 = T.dropWhile (== '/') trimmed
+      path1
+        | "assets/serve/" `T.isPrefixOf` path0 = T.drop (T.length ("assets/serve/" :: Text)) path0
+        | "assets/" `T.isPrefixOf` path0 = T.drop (T.length ("assets/" :: Text)) path0
+        | otherwise = path0
+      pathSegments = T.splitOn "/" path1
+  in if "inventory/" `T.isPrefixOf` path1
+        && all isValidAssetPhotoPathSegment pathSegments
+        && hasSupportedAssetPhotoExtension path1
+       then Just path1
+       else Nothing
+
+isValidAssetPhotoPathSegment :: Text -> Bool
+isValidAssetPhotoPathSegment segment =
+  not (T.null segment)
+    && segment /= "."
+    && segment /= ".."
+    && not ("." `T.isPrefixOf` segment)
+    && T.all isValidAssetPhotoPathChar segment
+
+isValidAssetPhotoPathChar :: Char -> Bool
+isValidAssetPhotoPathChar ch =
+  isAscii ch && (isAlphaNum ch || ch `elem` ("._-" :: String))
+
+hasSupportedAssetPhotoExtension :: Text -> Bool
+hasSupportedAssetPhotoExtension path =
+  T.toLower (T.pack (takeExtension (T.unpack path))) `elem`
+    [".jpg", ".jpeg", ".png", ".webp", ".gif"]
 
 roomsPublicServer
   :: ( MonadReader Env m
@@ -996,10 +2440,12 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
     createH ServiceCatalogCreate{..} = do
       ensureModule ModuleScheduling user
       nameClean <- normalizeName sccName
+      currencyClean <- either throwError pure (validateServiceCatalogCurrency sccCurrency)
+      taxClean <- either throwError pure (validateServiceCatalogTaxBps sccTaxBps)
+      billingUnitClean <-
+        either throwError pure (validateServiceCatalogBillingUnit sccBillingUnit)
       when (maybe False (< 0) sccRateCents) $
         throwError err400 { errBody = "La tarifa debe ser mayor o igual a cero" }
-      when (maybe False (< 0) sccTaxBps) $
-        throwError err400 { errBody = "Impuesto inválido" }
       duplicate <- withPool $ selectFirst [M.ServiceCatalogName ==. nameClean] []
       when (isJust duplicate) $
         throwError err409 { errBody = "Ya existe un servicio con ese nombre" }
@@ -1009,9 +2455,9 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
               , M.serviceCatalogKind = fromMaybe M.Recording sccKind
               , M.serviceCatalogPricingModel = fromMaybe M.Hourly sccPricingModel
               , M.serviceCatalogDefaultRateCents = sccRateCents
-              , M.serviceCatalogTaxBps = sccTaxBps
-              , M.serviceCatalogCurrency = normalizeCurrency (fromMaybe "USD" sccCurrency)
-              , M.serviceCatalogBillingUnit = normalizeTextMaybe sccBillingUnit
+              , M.serviceCatalogTaxBps = taxClean
+              , M.serviceCatalogCurrency = currencyClean
+              , M.serviceCatalogBillingUnit = billingUnitClean
               , M.serviceCatalogActive = fromMaybe True sccActive
               }
         newId <- insert record
@@ -1020,19 +2466,16 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
 
     updateH rawId ServiceCatalogUpdate{..} = do
       ensureModule ModuleScheduling user
-      let svcKey = toSqlKey rawId :: Key M.ServiceCatalog
+      svcId <- either throwError pure (validateServiceCatalogId rawId)
+      let svcKey = toSqlKey svcId :: Key M.ServiceCatalog
       let rateCandidate = join scuRateCents
-          taxCandidate  = join scuTaxBps
+      currencyUpdate <- either throwError pure (validateServiceCatalogCurrencyUpdate scuCurrency)
+      taxUpdate <- either throwError pure (validateServiceCatalogTaxBpsUpdate scuTaxBps)
+      billingUnitUpdate <-
+        either throwError pure (validateServiceCatalogBillingUnitUpdate scuBillingUnit)
       when (maybe False (< 0) rateCandidate) $
         throwError err400 { errBody = "La tarifa debe ser mayor o igual a cero" }
-      when (maybe False (< 0) taxCandidate) $
-        throwError err400 { errBody = "Impuesto inválido" }
-      let nameClean :: Maybe Text
-          nameClean = case scuName of
-            Nothing   -> Nothing
-            Just nm ->
-              let trimmed = T.strip nm
-              in if T.null trimmed then Nothing else Just trimmed
+      nameClean <- either throwError pure (normalizeServiceCatalogNameUpdate scuName)
       case nameClean of
         Just nm -> do
           conflict <- withPool $ selectFirst
@@ -1048,22 +2491,14 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
         case mExisting of
           Nothing -> pure Nothing
           Just _ -> do
-            let billingClean :: Maybe (Maybe Text)
-                billingClean = case scuBillingUnit of
-                  Nothing -> Nothing
-                  Just inner -> case inner of
-                    Nothing -> Just Nothing
-                    Just val ->
-                      let trimmed = T.strip val
-                      in Just (if T.null trimmed then Nothing else Just trimmed)
-                updates = catMaybes
+            let updates = catMaybes
                   [ (M.ServiceCatalogName =.) <$> nameClean
                   , (M.ServiceCatalogKind =.) <$> scuKind
                   , (M.ServiceCatalogPricingModel =.) <$> scuPricingModel
                   , (M.ServiceCatalogDefaultRateCents =.) <$> scuRateCents
-                  , (M.ServiceCatalogTaxBps =.) <$> scuTaxBps
-                  , (M.ServiceCatalogCurrency =.) . normalizeCurrency <$> scuCurrency
-                  , (M.ServiceCatalogBillingUnit =.) <$> billingClean
+                  , (M.ServiceCatalogTaxBps =.) <$> taxUpdate
+                  , (M.ServiceCatalogCurrency =.) <$> currencyUpdate
+                  , (M.ServiceCatalogBillingUnit =.) <$> billingUnitUpdate
                   , (M.ServiceCatalogActive =.) <$> scuActive
                   ]
             unless (null updates) (update svcKey updates)
@@ -1072,7 +2507,8 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
 
     deleteH rawId = do
       ensureModule ModuleScheduling user
-      let svcKey = toSqlKey rawId :: Key M.ServiceCatalog
+      svcId <- either throwError pure (validateServiceCatalogId rawId)
+      let svcKey = toSqlKey svcId :: Key M.ServiceCatalog
       found <- withPool $ do
         mSvc <- getEntity svcKey
         case mSvc of
@@ -1081,18 +2517,101 @@ serviceCatalogServer user = listH :<|> createH :<|> updateH :<|> deleteH
       if found then pure NoContent else throwError err404
 
     normalizeName txt =
-      let trimmed = T.strip txt
-      in if T.null trimmed then throwError err400 { errBody = "Nombre requerido" } else pure trimmed
+      either throwError pure (normalizeServiceCatalogName txt)
 
-    normalizeCurrency txt =
-      let trimmed = T.toUpper (T.strip txt)
-      in if T.null trimmed then "USD" else trimmed
+normalizeServiceCatalogNameUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+normalizeServiceCatalogNameUpdate Nothing = Right Nothing
+normalizeServiceCatalogNameUpdate (Just rawName) =
+  Just <$> normalizeServiceCatalogName rawName
 
-    normalizeTextMaybe mTxt = case mTxt of
-      Nothing -> Nothing
-      Just raw ->
-        let trimmed = T.strip raw
-        in if T.null trimmed then Nothing else Just trimmed
+normalizeServiceCatalogName :: Text -> Either ServerError Text
+normalizeServiceCatalogName rawName =
+  let trimmed = T.strip rawName
+  in if T.null trimmed
+       then Left err400 { errBody = "Nombre requerido" }
+       else if T.length trimmed > 160
+         then Left err400 { errBody = "Nombre debe tener 160 caracteres o menos" }
+         else if T.any isUnsafeServiceCatalogLabelChar trimmed
+           then Left err400
+             { errBody =
+                 "Nombre no debe contener caracteres de control o marcas de formato ocultas"
+             }
+         else Right trimmed
+
+isUnsafeServiceCatalogLabelChar :: Char -> Bool
+isUnsafeServiceCatalogLabelChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+validateServiceCatalogId :: Int64 -> Either ServerError Int64
+validateServiceCatalogId rawId
+  | rawId > 0 = Right rawId
+  | otherwise = Left err400 { errBody = "serviceCatalogId must be a positive integer" }
+
+validateServiceCatalogBillingUnit :: Maybe Text -> Either ServerError (Maybe Text)
+validateServiceCatalogBillingUnit Nothing = Right Nothing
+validateServiceCatalogBillingUnit (Just rawBillingUnit) =
+  case normalizeOptionalTextField (Just rawBillingUnit) of
+    Nothing -> Right Nothing
+    Just billingUnit -> Just <$> validateServiceCatalogBillingUnitValue billingUnit
+
+validateServiceCatalogBillingUnitUpdate
+  :: Maybe (Maybe Text)
+  -> Either ServerError (Maybe (Maybe Text))
+validateServiceCatalogBillingUnitUpdate Nothing = Right Nothing
+validateServiceCatalogBillingUnitUpdate (Just Nothing) = Right (Just Nothing)
+validateServiceCatalogBillingUnitUpdate (Just (Just rawBillingUnit)) =
+  case normalizeOptionalTextField (Just rawBillingUnit) of
+    Nothing ->
+      Left err400 { errBody = "Unidad debe omitirse, ser null, o contener texto" }
+    Just billingUnit ->
+      Just . Just <$> validateServiceCatalogBillingUnitValue billingUnit
+
+validateServiceCatalogBillingUnitValue :: Text -> Either ServerError Text
+validateServiceCatalogBillingUnitValue billingUnit
+  | T.length billingUnit > 80 =
+      Left err400 { errBody = "Unidad debe tener 80 caracteres o menos" }
+  | T.any isUnsafeServiceCatalogLabelChar billingUnit =
+      Left err400
+        { errBody =
+            "Unidad no debe contener caracteres de control o marcas de formato ocultas"
+        }
+  | otherwise =
+      Right billingUnit
+
+validateServiceCatalogCurrency :: Maybe Text -> Either ServerError Text
+validateServiceCatalogCurrency Nothing = Right "USD"
+validateServiceCatalogCurrency (Just rawCurrency) =
+  let trimmed = T.toUpper (T.strip rawCurrency)
+  in if T.null trimmed
+       then invalidCurrency
+       else
+         if T.length trimmed == 3 && T.all isAsciiUpper trimmed
+           then Right trimmed
+           else invalidCurrency
+  where
+    invalidCurrency =
+      Left err400 { errBody = "Moneda inválida. Usa un código ISO de 3 letras, por ejemplo USD" }
+
+validateServiceCatalogCurrencyUpdate :: Maybe Text -> Either ServerError (Maybe Text)
+validateServiceCatalogCurrencyUpdate Nothing = Right Nothing
+validateServiceCatalogCurrencyUpdate (Just rawCurrency) =
+  Just <$> validateServiceCatalogCurrency (Just rawCurrency)
+
+validateServiceCatalogTaxBps :: Maybe Int -> Either ServerError (Maybe Int)
+validateServiceCatalogTaxBps Nothing = Right Nothing
+validateServiceCatalogTaxBps (Just rawTaxBps)
+  | rawTaxBps < 0 = invalidTaxBps
+  | rawTaxBps > 10000 = invalidTaxBps
+  | otherwise = Right (Just rawTaxBps)
+  where
+    invalidTaxBps =
+      Left err400 { errBody = "Impuesto inválido. Usa basis points entre 0 y 10000" }
+
+validateServiceCatalogTaxBpsUpdate :: Maybe (Maybe Int) -> Either ServerError (Maybe (Maybe Int))
+validateServiceCatalogTaxBpsUpdate Nothing = Right Nothing
+validateServiceCatalogTaxBpsUpdate (Just Nothing) = Right (Just Nothing)
+validateServiceCatalogTaxBpsUpdate (Just (Just rawTaxBps)) =
+  Just <$> validateServiceCatalogTaxBps (Just rawTaxBps)
 
 serviceCatalogToDTO :: Entity M.ServiceCatalog -> ServiceCatalogDTO
 serviceCatalogToDTO (Entity key svc) = ServiceCatalogDTO
@@ -1111,11 +2630,81 @@ mkPage :: Int -> Int -> Int -> [a] -> Page a
 mkPage current size totalCount values =
   Page { items = values, page = current, pageSize = size, total = totalCount }
 
-clampPage :: Int -> Int
-clampPage = max 1
+validatePageParams :: Maybe Int -> Maybe Int -> Either ServerError (Int, Int)
+validatePageParams mPage mPageSize = do
+  pageNum <- case mPage of
+    Nothing -> Right 1
+    Just n
+      | n < 1 -> Left err400 { errBody = "page must be greater than or equal to 1" }
+      | otherwise -> Right n
+  pageSize <- case mPageSize of
+    Nothing -> Right 50
+    Just n
+      | n < 1 || n > 100 -> Left err400 { errBody = "pageSize must be between 1 and 100" }
+      | otherwise -> Right n
+  pure (pageNum, pageSize)
 
-clampPageSize :: Int -> Int
-clampPageSize = max 1 . min 100
+validateInventoryPageParams :: Maybe Int -> Maybe Int -> Either ServerError (Int, Int)
+validateInventoryPageParams = validatePageParams
+
+normalizeAssetSearchQuery :: Maybe Text -> Maybe Text
+normalizeAssetSearchQuery Nothing = Nothing
+normalizeAssetSearchQuery (Just rawQuery) =
+  let normalized = T.toCaseFold (T.strip rawQuery)
+  in if T.null normalized then Nothing else Just normalized
+
+validateAssetSearchQuery :: Maybe Text -> Either ServerError (Maybe Text)
+validateAssetSearchQuery Nothing = Right Nothing
+validateAssetSearchQuery (Just rawQuery) =
+  let cleanQuery = T.strip rawQuery
+  in if T.null cleanQuery
+       then Right Nothing
+       else if T.length cleanQuery > assetSearchQueryMaxLength
+         then
+           Left err400
+             { errBody =
+                 BL.fromStrict
+                   ( TE.encodeUtf8
+                       ( "q must be "
+                           <> T.pack (show assetSearchQueryMaxLength)
+                           <> " characters or fewer"
+                       )
+                   )
+             }
+         else if T.any isUnsafeAssetSearchQueryChar cleanQuery
+           then
+             Left err400
+               { errBody = "q must not contain control characters or hidden formatting characters"
+               }
+           else Right (Just (T.toCaseFold cleanQuery))
+
+assetSearchQueryMaxLength :: Int
+assetSearchQueryMaxLength = 120
+
+isUnsafeAssetSearchQueryChar :: Char -> Bool
+isUnsafeAssetSearchQueryChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+assetMatchesSearchQuery :: Text -> Asset -> Bool
+assetMatchesSearchQuery normalizedQuery asset =
+  any (T.isInfixOf normalizedQuery . T.toCaseFold)
+    ( assetName asset
+    : assetCategory asset
+    : catMaybes
+        [ assetBrand asset
+        , assetModel asset
+        , assetSerialNumber asset
+        , Just (assetOwner asset)
+        , assetNotes asset
+        ]
+    )
+
+filterAssetsByQuery :: Maybe Text -> [Entity Asset] -> [Entity Asset]
+filterAssetsByQuery maybeQuery assets =
+  case normalizeAssetSearchQuery maybeQuery of
+    Nothing -> assets
+    Just normalizedQuery ->
+      filter (assetMatchesSearchQuery normalizedQuery . entityVal) assets
 
 withPool
   :: (MonadReader Env m, MonadIO m)
@@ -1133,7 +2722,76 @@ parseKey
   => Text
   -> m (Key record)
 parseKey raw =
-  maybe (throwError err400 { errBody = "Invalid identifier" }) pure (fromPathPiece raw)
+  maybe
+    (throwError err400 { errBody = "Invalid identifier" })
+    pure
+    (parseCanonicalPathPiece raw)
+
+parseOptionalKeyField
+  :: forall record.
+     PathPiece (Key record)
+  => Text
+  -> Maybe Text
+  -> Either ServerError (Maybe (Key record))
+parseOptionalKeyField _ Nothing = Right Nothing
+parseOptionalKeyField fieldName (Just raw) =
+  let trimmed = T.strip raw
+  in if T.null trimmed
+      then Right Nothing
+      else maybe
+        ( Left err400
+            { errBody =
+                BL.fromStrict (TE.encodeUtf8 (fieldName <> " must be a valid identifier"))
+            }
+        )
+        (Right . Just)
+        (parseCanonicalPathPiece trimmed)
+
+parseCanonicalPathPiece :: PathPiece a => Text -> Maybe a
+parseCanonicalPathPiece raw = do
+  parsed <- fromPathPiece raw
+  guard (toPathPiece parsed == raw)
+  pure parsed
+
+validateAssetQrToken :: Text -> Either ServerError Text
+validateAssetQrToken rawToken =
+  case UUID.fromText (T.strip rawToken) of
+    Just uuid ->
+      let canonicalToken = UUID.toText uuid
+      in if canonicalToken == "00000000-0000-0000-0000-000000000000"
+           then Left err400 { errBody = "Invalid asset QR token" }
+           else Right canonicalToken
+    Nothing -> Left err400 { errBody = "Invalid asset QR token" }
+
+normalizeOptionalTextField :: Maybe Text -> Maybe Text
+normalizeOptionalTextField Nothing = Nothing
+normalizeOptionalTextField (Just raw) =
+  let trimmed = T.strip raw
+  in if T.null trimmed then Nothing else Just trimmed
+
+normalizeAssetNotesUpdate :: Maybe Text -> Either ServerError (Maybe (Maybe Text))
+normalizeAssetNotesUpdate Nothing = Right Nothing
+normalizeAssetNotesUpdate (Just rawNotes) =
+  case normalizeOptionalTextField (Just rawNotes) of
+    Nothing -> Right (Just Nothing)
+    Just _ ->
+      Just <$> validateInventoryNotesField "Asset notes" (Just rawNotes)
+
+normalizeAssetCheckinFields :: AssetCheckinRequest -> Either ServerError (Maybe Text, Maybe Text, Maybe Text)
+normalizeAssetCheckinFields AssetCheckinRequest{..} =
+  (\conditionIn notesVal photoUrl -> (conditionIn, notesVal, photoUrl))
+    <$> validateInventoryConditionField "conditionIn" ciConditionIn
+    <*> validateInventoryNotesField "notes" ciNotes
+    <*> validateAssetPhotoUrl ciPhotoUrl
+
+prepareCheckinNotesUpdate :: Maybe Text -> Maybe Text -> Either ServerError (Maybe (Maybe Text))
+prepareCheckinNotesUpdate _ Nothing = Right Nothing
+prepareCheckinNotesUpdate Nothing (Just checkinNotes) = Right (Just (Just checkinNotes))
+prepareCheckinNotesUpdate (Just existingNotes) (Just checkinNotes)
+  | existingNotes == checkinNotes =
+      Right (Just (Just existingNotes))
+  | otherwise =
+      Just <$> validateInventoryNotesField "notes" (Just (existingNotes <> "\n\nCheck-in: " <> checkinNotes))
 
 parseAssetStatus :: Text -> Maybe AssetStatus
 parseAssetStatus = lookupStatus . normalise
@@ -1145,6 +2803,75 @@ parseAssetStatus = lookupStatus . normalise
       "retired"            -> Just Retired
       _                     -> Nothing
     normalise = T.toLower . T.filter (`notElem` [' ', '_'])
+
+validateAssetStatusUpdate :: Maybe Text -> Either ServerError (Maybe AssetStatus)
+validateAssetStatusUpdate Nothing = Right Nothing
+validateAssetStatusUpdate (Just rawStatus) =
+  case parseAssetStatus rawStatus of
+    Just statusValue -> Right (Just statusValue)
+    Nothing -> Left err400
+      { errBody = "Invalid asset status. Allowed values: active, booked, out_for_maintenance, retired"
+      }
+
+validateAssetPatchStatusInvariant
+  :: AssetStatus
+  -> Maybe AssetStatus
+  -> Maybe AssetStatus
+  -> Either ServerError ()
+validateAssetPatchStatusInvariant currentStatus requestedStatus mActiveCheckoutStatus =
+  case requestedStatus of
+    Just requestedStatusValue
+      | Just activeCheckoutStatus <- mActiveCheckoutStatus
+      , requestedStatusValue /= activeCheckoutStatus ->
+          Left err409
+            { errBody = "Asset status cannot change while an active checkout exists"
+            }
+    Just Booked
+      | isJust mActiveCheckoutStatus || currentStatus == Booked ->
+          Right ()
+      | otherwise ->
+          Left err409
+            { errBody = "Asset status can only become booked through the checkout endpoint"
+            }
+    _ ->
+      Right ()
+
+validateAssetPatchIntent
+  :: Maybe Text
+  -> Maybe Text
+  -> Maybe AssetStatus
+  -> Maybe (Key Room)
+  -> Maybe (Maybe Text)
+  -> Maybe (Maybe Text)
+  -> Either ServerError ()
+validateAssetPatchIntent nameUpdate categoryUpdate statusUpdate locationUpdate notesUpdate photoUpdate
+  | any
+      isJust
+      [ fmap (const ()) nameUpdate
+      , fmap (const ()) categoryUpdate
+      , fmap (const ()) statusUpdate
+      , fmap (const ()) locationUpdate
+      , fmap (const ()) notesUpdate
+      , fmap (const ()) photoUpdate
+      ] =
+      Right ()
+  | otherwise =
+      Left err400 { errBody = "Asset patch requires at least one field to update" }
+
+validateAssetCheckoutStatus :: AssetStatus -> Either ServerError ()
+validateAssetCheckoutStatus Active = Right ()
+validateAssetCheckoutStatus Booked =
+  Left err409
+    { errBody = "Asset status is booked; resolve the existing checkout state before creating a new checkout"
+    }
+validateAssetCheckoutStatus OutForMaintenance =
+  Left err409
+    { errBody = "Asset is out for maintenance and cannot be checked out"
+    }
+validateAssetCheckoutStatus Retired =
+  Left err409
+    { errBody = "Asset is retired and cannot be checked out"
+    }
 
 parseSessionStatus :: Text -> Maybe SessionStatus
 parseSessionStatus = lookupStatus . normalise
@@ -1160,14 +2887,136 @@ parseSessionStatus = lookupStatus . normalise
       _             -> Nothing
     normalise = T.toLower . T.filter (`notElem` [' ', '_'])
 
+validateSessionRequiredTextField :: Text -> Text -> Either ServerError Text
+validateSessionRequiredTextField fieldName rawValue =
+  let cleanValue = T.strip rawValue
+  in if T.null cleanValue
+       then Left err400
+         { errBody = BL.fromStrict (TE.encodeUtf8 (fieldName <> " is required"))
+         }
+       else if T.length cleanValue > maxSessionRequiredTextChars
+         then Left err400
+           { errBody =
+               BL.fromStrict
+                 (TE.encodeUtf8 (fieldName <> " must be " <> T.pack (show maxSessionRequiredTextChars) <> " characters or fewer"))
+           }
+       else if T.any isUnsafeSessionRequiredTextChar cleanValue
+         then Left err400
+           { errBody =
+               BL.fromStrict
+                 (TE.encodeUtf8 (fieldName <> " must not contain control characters or hidden formatting characters"))
+           }
+       else Right cleanValue
+
+isUnsafeSessionRequiredTextChar :: Char -> Bool
+isUnsafeSessionRequiredTextChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+maxSessionRequiredTextChars :: Int
+maxSessionRequiredTextChars = 160
+
+validateSessionStatusInput :: Maybe Text -> Either ServerError (Maybe SessionStatus)
+validateSessionStatusInput Nothing = Right Nothing
+validateSessionStatusInput (Just rawStatus) =
+  case parseSessionStatus rawStatus of
+    Just statusValue -> Right (Just statusValue)
+    Nothing -> Left err400
+      { errBody = "Invalid session status. Allowed values: in_prep, in_session, break, editing, approved, delivered, closed"
+      }
+
+validateSessionTimeRange :: UTCTime -> UTCTime -> Either ServerError ()
+validateSessionTimeRange startAt endAt
+  | endAt > startAt = Right ()
+  | otherwise = Left err400
+      { errBody = "sessionEndAt must be after sessionStartAt"
+      }
+
+validateSessionInputRowsWrite :: Maybe [SessionInputRow] -> Either ServerError ()
+validateSessionInputRowsWrite Nothing = Right ()
+validateSessionInputRowsWrite (Just _) = Left err400
+  { errBody =
+      "Session input list rows are read-only on session writes; "
+        <> "omit scInputListRows/suInputListRows"
+  }
+
+validateDistinctSessionRooms :: [Key Room] -> Either ServerError [Key Room]
+validateDistinctSessionRooms roomKeys
+  | length roomKeys == Set.size (Set.fromList roomKeys) = Right roomKeys
+  | otherwise = Left err400
+      { errBody = "roomIds must not contain duplicates"
+      }
+
+validateSessionReferences
+  :: MonadIO m
+  => Maybe (Key Band)
+  -> [Key Room]
+  -> SqlPersistT m (Either ServerError ())
+validateSessionReferences mBandKey roomKeys = do
+  mBand <- join <$> traverse getEntity mBandKey
+  existingRoomKeys <-
+    if null roomKeys
+      then pure Set.empty
+      else Set.fromList . map entityKey <$> selectList [RoomId <-. roomKeys] []
+  pure $
+    if isJust mBandKey && isNothing mBand
+      then Left err400 { errBody = "bandId references an unknown band" }
+      else if any (`Set.notMember` existingRoomKeys) roomKeys
+        then Left err400 { errBody = "roomIds reference one or more unknown rooms" }
+        else Right ()
+
+validateCheckoutTargetReferences
+  :: MonadIO m
+  => Maybe (Key Room)
+  -> Maybe (Key ME.Session)
+  -> SqlPersistT m (Either ServerError ())
+validateCheckoutTargetReferences mRoomKey mSessionKey = do
+  mRoom <- join <$> traverse getEntity mRoomKey
+  mSession <- join <$> traverse getEntity mSessionKey
+  pure $
+    if isJust mRoomKey && isNothing mRoom
+      then Left err400 { errBody = "targetRoom references an unknown room" }
+      else if isJust mSessionKey && isNothing mSession
+        then Left err400 { errBody = "targetSession references an unknown session" }
+        else Right ()
+
+validateAssetLocationReference
+  :: MonadIO m
+  => Maybe (Key Room)
+  -> SqlPersistT m (Either ServerError ())
+validateAssetLocationReference Nothing = pure (Right ())
+validateAssetLocationReference (Just roomKey) = do
+  mRoom <- getEntity roomKey
+  pure $
+    if isNothing mRoom
+      then Left err400 { errBody = "locationId references an unknown room" }
+      else Right ()
+
+validateDistinctBandMemberIds :: [Key Party] -> Either ServerError [Key Party]
+validateDistinctBandMemberIds partyKeys
+  | any ((<= 0) . fromSqlKey) partyKeys = Left err400
+      { errBody = "band member party ids must be positive"
+      }
+  | length partyKeys == Set.size (Set.fromList partyKeys) = Right partyKeys
+  | otherwise = Left err400
+      { errBody = "band members must not contain duplicates"
+      }
+
 ensureModule
   :: (MonadError ServerError m)
   => ModuleAccess
   -> AuthedUser
   -> m ()
 ensureModule moduleTag user =
-  unless (hasModuleAccess moduleTag user) $
-    throwError err403 { errBody = "Missing required module access" }
+  case validateModuleAccess moduleTag user of
+    Right () -> pure ()
+    Left err
+      | errBody err == missingModuleBody ->
+          throwError err403 { errBody = "Missing required module access" }
+      | otherwise ->
+          throwError err
+  where
+    missingModuleBody =
+      BL.fromStrict (TE.encodeUtf8 ("Missing access to module: " <> moduleName moduleTag))
 
 -- Basic payments server (manual payouts / honorarios)
 paymentsServer
@@ -1184,29 +3033,42 @@ paymentsServer user =
   where
     listPaymentsH mPartyId = do
       ensureModule ModuleAdmin user
-      let filt = maybe [] (\pid -> [M.PaymentPartyId ==. toSqlKey pid]) mPartyId
+      partyIdFilter <- either throwError pure (validateOptionalPositivePaymentReferenceId "partyId" mPartyId)
+      let filt = maybe [] (\pid -> [M.PaymentPartyId ==. toSqlKey pid]) partyIdFilter
       recs <- withPool $ selectList filt [Desc M.PaymentReceivedAt, LimitTo 200]
       pure (map toPaymentDTO recs)
 
     createPaymentH PaymentCreate{..} = do
       ensureModule ModuleAdmin user
-      paidAt <- parseUTCTimeText pcPaidAt
+      partyId <- either throwError pure (validatePositivePaymentReferenceId "partyId" pcPartyId)
+      orderId <- either throwError pure (validateOptionalPositivePaymentReferenceId "orderId" pcOrderId)
+      invoiceId <- either throwError pure (validateOptionalPositivePaymentReferenceId "invoiceId" pcInvoiceId)
+      parsedPaidAt <- parseUTCTimeText pcPaidAt
       now <- liftIO getCurrentTime
-      let partyKey   = toSqlKey pcPartyId
-          mOrderKey  = toSqlKey <$> pcOrderId
-          mInvoiceKey= toSqlKey <$> pcInvoiceId
+      paidAt <- either throwError pure (validatePaymentPaidAt now parsedPaidAt)
+      amountCents <- either throwError pure (validatePaymentAmountCents pcAmountCents)
+      _ <- either throwError pure (validatePaymentCurrency pcCurrency)
+      conceptVal <- either throwError pure (validatePaymentConcept pcConcept)
+      paymentMethodVal <- either throwError pure (validatePaymentMethod pcMethod)
+      referenceVal <- either throwError pure (validatePaymentReference pcReference)
+      periodVal <- either throwError pure (validatePaymentPeriod pcPeriod)
+      attachmentUrl <- either throwError pure (validatePaymentAttachmentUrl pcAttachmentUrl)
+      let partyKey   = toSqlKey partyId
+          mOrderKey  = toSqlKey <$> orderId
+          mInvoiceKey= toSqlKey <$> invoiceId
+      either throwError pure =<< withPool (validatePaymentReferences partyKey mOrderKey mInvoiceKey)
       ent <- withPool $ do
         payId <- insert Payment
           { paymentInvoiceId   = mInvoiceKey
           , paymentOrderId     = mOrderKey
           , paymentPartyId     = partyKey
-          , paymentMethod      = parseMethod pcMethod
-          , paymentAmountCents = pcAmountCents
+          , paymentMethod      = paymentMethodVal
+          , paymentAmountCents = amountCents
           , paymentReceivedAt  = paidAt
-          , paymentReference   = pcReference
-          , paymentConcept     = Just pcConcept
-          , paymentPeriod      = pcPeriod
-          , paymentAttachment  = pcAttachmentUrl
+          , paymentReference   = referenceVal
+          , paymentConcept     = Just conceptVal
+          , paymentPeriod      = periodVal
+          , paymentAttachment  = attachmentUrl
           , paymentCreatedBy   = Just (auPartyId user)
           , paymentCreatedAt   = Just now
           }
@@ -1215,7 +3077,8 @@ paymentsServer user =
 
     getPaymentH pid = do
       ensureModule ModuleAdmin user
-      mEnt <- withPool $ getEntity (toSqlKey pid :: Key Payment)
+      paymentId <- either throwError pure (validatePositivePaymentReferenceId "paymentId" pid)
+      mEnt <- withPool $ getEntity (toSqlKey paymentId :: Key Payment)
       maybe (throwError err404) (pure . toPaymentDTO) mEnt
 
     toPaymentDTO (Entity key p) = PaymentDTO
@@ -1223,27 +3086,218 @@ paymentsServer user =
       , payPartyId     = fromSqlKey (paymentPartyId p)
       , payOrderId     = fmap fromSqlKey (paymentOrderId p)
       , payInvoiceId   = fmap fromSqlKey (paymentInvoiceId p)
-      , payAmountCents = paymentAmountCents p
+      , payAmountCents = M.paymentAmountCents p
       , payCurrency    = "USD"
       , payMethod      = T.pack (show (paymentMethod p))
-      , payReference   = paymentReference p
+      , payReference   = M.paymentReference p
       , payPaidAt      = T.pack (show (paymentReceivedAt p))
       , payConcept     = fromMaybe "" (paymentConcept p)
       , payPeriod      = paymentPeriod p
       , payAttachment  = paymentAttachment p
       }
 
-parseMethod :: Text -> PaymentMethod
-parseMethod t =
-  case T.toLower (T.strip t) of
-    "bank" -> BankTransferM
-    "banktransfer" -> BankTransferM
-    "transferencia" -> BankTransferM
-    "produbanco" -> BankTransferM
-    "cash" -> CashM
-    "efectivo" -> CashM
-    "crypto" -> CryptoM
-    _ -> BankTransferM
+validatePaymentAmountCents :: Int -> Either ServerError Int
+validatePaymentAmountCents amountCents
+  | amountCents > 0 = Right amountCents
+  | otherwise = Left err400 { errBody = "amountCents must be greater than 0" }
+
+validatePaymentPaidAt :: UTCTime -> UTCTime -> Either ServerError UTCTime
+validatePaymentPaidAt now paidAt
+  | paidAt <= now = Right paidAt
+  | otherwise = Left err400 { errBody = "paidAt must not be in the future" }
+
+validatePositivePaymentReferenceId :: Text -> Int64 -> Either ServerError Int64
+validatePositivePaymentReferenceId fieldName rawId
+  | rawId > 0 = Right rawId
+  | otherwise =
+      Left err400
+        { errBody = BL.fromStrict (TE.encodeUtf8 (fieldName <> " must be a positive integer"))
+        }
+
+validateOptionalPositivePaymentReferenceId :: Text -> Maybe Int64 -> Either ServerError (Maybe Int64)
+validateOptionalPositivePaymentReferenceId _ Nothing = Right Nothing
+validateOptionalPositivePaymentReferenceId fieldName (Just rawId) =
+  Just <$> validatePositivePaymentReferenceId fieldName rawId
+
+validatePaymentReferences
+  :: MonadIO m
+  => Key Party
+  -> Maybe (Key M.ServiceOrder)
+  -> Maybe (Key M.Invoice)
+  -> SqlPersistT m (Either ServerError ())
+validatePaymentReferences partyKey mOrderKey mInvoiceKey = do
+  mParty <- getEntity partyKey
+  mOrder <- join <$> traverse getEntity mOrderKey
+  mInvoice <- join <$> traverse getEntity mInvoiceKey
+  mInvoiceOrderLine <- case (mOrderKey, mInvoiceKey) of
+    (Just orderKey, Just invoiceKey) ->
+      selectFirst
+        [ M.InvoiceLineInvoiceId ==. invoiceKey
+        , M.InvoiceLineServiceOrderId ==. Just orderKey
+        ]
+        []
+    _ -> pure Nothing
+  pure $
+    if isNothing mParty
+      then Left err400 { errBody = "partyId references an unknown party" }
+      else if isJust mOrderKey && isNothing mOrder
+        then Left err400 { errBody = "orderId references an unknown service order" }
+        else if isJust mInvoiceKey && isNothing mInvoice
+          then Left err400 { errBody = "invoiceId references an unknown invoice" }
+          else if maybe False ((/= partyKey) . M.serviceOrderCustomerId . entityVal) mOrder
+            then Left err400 { errBody = "orderId does not belong to partyId" }
+            else if maybe False ((/= partyKey) . M.invoiceCustomerId . entityVal) mInvoice
+              then Left err400 { errBody = "invoiceId does not belong to partyId" }
+              else if isJust mOrderKey && isJust mInvoiceKey && isNothing mInvoiceOrderLine
+                then Left err400 { errBody = "invoiceId does not include orderId" }
+              else Right ()
+
+validatePaymentConcept :: Text -> Either ServerError Text
+validatePaymentConcept rawConcept =
+  let trimmed = T.strip rawConcept
+  in if T.null trimmed
+       then Left err400 { errBody = "concept is required" }
+       else if T.length trimmed > 240
+         then Left err400 { errBody = "concept must be 240 characters or fewer" }
+         else if T.any isUnsafePaymentTextChar trimmed
+           then Left err400
+             { errBody =
+                 "concept must not contain control characters or hidden formatting characters"
+             }
+           else Right trimmed
+
+validatePaymentReference :: Maybe Text -> Either ServerError (Maybe Text)
+validatePaymentReference =
+  validateOptionalPaymentTextField "reference" 160
+
+validatePaymentPeriod :: Maybe Text -> Either ServerError (Maybe Text)
+validatePaymentPeriod rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just value
+      | T.any isUnsafePaymentTextChar value ->
+          Left err400
+            { errBody =
+                BL.fromStrict $
+                  TE.encodeUtf8 $
+                    "period must not contain control characters or hidden formatting characters"
+            }
+      | hasValidPaymentPeriodShape value ->
+          Right (Just value)
+      | otherwise ->
+          Left err400
+            { errBody =
+                BL.fromStrict $
+                  TE.encodeUtf8 "period must be in YYYY-MM format"
+            }
+  where
+    hasValidPaymentPeriodShape periodValue =
+      case T.splitOn "-" periodValue of
+        [yearPart, monthPart]
+          | T.length yearPart == 4
+              && T.length monthPart == 2
+              && T.all isDigit (yearPart <> monthPart) ->
+                  case readMaybe (T.unpack monthPart) :: Maybe Int of
+                    Just monthNumber -> monthNumber >= 1 && monthNumber <= 12
+                    Nothing -> False
+        _ -> False
+
+validateOptionalPaymentTextField :: Text -> Int -> Maybe Text -> Either ServerError (Maybe Text)
+validateOptionalPaymentTextField fieldName maxLength rawValue =
+  case normalizeOptionalTextField rawValue of
+    Nothing -> Right Nothing
+    Just value
+      | T.length value > maxLength ->
+          Left err400
+            { errBody =
+                BL.fromStrict $
+                  TE.encodeUtf8 $
+                    fieldName <> " must be " <> T.pack (show maxLength) <> " characters or fewer"
+            }
+      | T.any isUnsafePaymentTextChar value ->
+          Left err400
+            { errBody =
+                BL.fromStrict $
+                  TE.encodeUtf8 $
+                    fieldName <> " must not contain control characters or hidden formatting characters"
+            }
+      | otherwise ->
+          Right (Just value)
+
+isUnsafePaymentTextChar :: Char -> Bool
+isUnsafePaymentTextChar ch =
+  isControl ch || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+validatePaymentMethod :: Text -> Either ServerError PaymentMethod
+validatePaymentMethod rawMethod
+  | T.any isUnsafePaymentTextChar rawMethod =
+      Left err400
+        { errBody =
+            "paymentMethod must not contain control characters or hidden formatting characters"
+        }
+  | otherwise =
+      case normalized of
+        "cash" -> Right CashM
+        "cashm" -> Right CashM
+        "efectivo" -> Right CashM
+        "bank" -> Right BankTransferM
+        "banktransfer" -> Right BankTransferM
+        "banktransferm" -> Right BankTransferM
+        "transferencia" -> Right BankTransferM
+        "produbanco" -> Right BankTransferM
+        "card" -> Right CardPOSM
+        "cardpos" -> Right CardPOSM
+        "cardposm" -> Right CardPOSM
+        "paypal" -> Right PayPalM
+        "paypalm" -> Right PayPalM
+        "stripe" -> Right StripeM
+        "stripem" -> Right StripeM
+        "wompi" -> Right WompiM
+        "wompim" -> Right WompiM
+        "payphone" -> Right PayPhoneM
+        "payphonem" -> Right PayPhoneM
+        "crypto" -> Right CryptoM
+        "cryptom" -> Right CryptoM
+        "other" -> Right OtherM
+        "otherm" -> Right OtherM
+        _ -> invalidPaymentMethod
+  where
+    normalized =
+      T.toLower (T.filter (`notElem` [' ', '_', '-']) (T.strip rawMethod))
+    invalidPaymentMethod =
+      Left err400
+        { errBody =
+            "paymentMethod must be one of: cash, bank_transfer, bank, transferencia, produbanco, card, paypal, stripe, wompi, payphone, crypto, other"
+        }
+
+validatePaymentCurrency :: Text -> Either ServerError Text
+validatePaymentCurrency rawCurrency =
+  let trimmed = T.strip rawCurrency
+      normalized = T.toUpper trimmed
+  in if T.any isUnsafePaymentTextChar rawCurrency
+       then Left err400
+         { errBody = "currency must not contain control characters or hidden formatting characters"
+         }
+     else if T.null trimmed
+       then Left err400 { errBody = "currency is required" }
+     else if normalized == "USD"
+       then Right normalized
+       else Left err400 { errBody = "Only USD manual payments are currently supported" }
+
+validatePaymentAttachmentUrl :: Maybe Text -> Either ServerError (Maybe Text)
+validatePaymentAttachmentUrl Nothing = Right Nothing
+validatePaymentAttachmentUrl (Just rawUrl) =
+  case normalizeOptionalTextField (Just rawUrl) of
+    Nothing -> Right Nothing
+    Just attachmentUrl
+      | "https://" `T.isPrefixOf` T.toLower attachmentUrl
+          && TrialsServer.isValidHttpUrl attachmentUrl
+          && not ("#" `T.isInfixOf` attachmentUrl) ->
+          Right (Just attachmentUrl)
+      | otherwise ->
+          Left err400
+            { errBody = "attachmentUrl must be an absolute https URL without a fragment"
+            }
 
 data MetaChannel = MetaInstagram | MetaFacebook
   deriving (Eq, Show)
@@ -1259,7 +3313,8 @@ data IGWebhook = IGWebhook
   } deriving (Show)
 
 data IGEntry = IGEntry
-  { igMessaging :: [IGMessaging]
+  { igEntryId :: Maybe Text
+  , igMessaging :: [IGMessaging]
   , igChanges :: [IGChange]
   } deriving (Show)
 
@@ -1271,6 +3326,7 @@ data IGMessage = IGMessage
   { igMid    :: Maybe Text
   , igText   :: Maybe Text
   , igIsEcho :: Maybe Bool
+  , igIsDeleted :: Maybe Bool
   , igReferral :: Maybe IGReferral
   , igAttachments :: Maybe [A.Value]
   } deriving (Show)
@@ -1302,6 +3358,8 @@ data IGChangeValue = IGChangeValue
   , igChangeFrom :: Maybe IGChangeActor
   , igChangeTimestamp :: Maybe Int
   , igChangeReferral :: Maybe IGReferral
+  , igChangeDeleted :: Maybe Bool
+  , igChangeMid :: Maybe Text
   } deriving (Show)
 
 data IGChangeActor = IGChangeActor
@@ -1316,6 +3374,7 @@ instance A.FromJSON IGWebhook where
 
 instance A.FromJSON IGEntry where
   parseJSON = withObject "IGEntry" $ \o -> do
+    igEntryId <- o .:? "id"
     igMessaging <- o .:? "messaging" .!= []
     igChanges <- o .:? "changes" .!= []
     pure IGEntry{..}
@@ -1330,6 +3389,7 @@ instance A.FromJSON IGMessage where
     igMid <- o .:? "mid"
     igText <- o .:? "text"
     igIsEcho <- o .:? "is_echo"
+    igIsDeleted <- o .:? "is_deleted" <|> o .:? "deleted"
     igReferral <- o .:? "referral"
     igAttachments <- o .:? "attachments"
     pure IGMessage{..}
@@ -1367,6 +3427,8 @@ instance A.FromJSON IGChangeValue where
     rawTs <- o .:? "timestamp"
     igChangeTimestamp <- parseTimestampMaybe rawTs
     igChangeReferral <- o .:? "referral"
+    igChangeDeleted <- o .:? "is_deleted" <|> o .:? "deleted"
+    igChangeMid <- o .:? "mid"
     pure IGChangeValue{..}
 
 instance A.FromJSON IGChangeActor where
@@ -1376,7 +3438,7 @@ instance A.FromJSON IGChangeActor where
       <|> o .:? "name"
     pure IGChangeActor{..}
 
-parseTimestampMaybe :: Maybe A.Value -> A.Parser (Maybe Int)
+parseTimestampMaybe :: Maybe A.Value -> Parser (Maybe Int)
 parseTimestampMaybe Nothing = pure Nothing
 parseTimestampMaybe (Just raw) =
   case raw of
@@ -1400,57 +3462,110 @@ data IGInbound = IGInbound
   , igInboundCampaignExternalId :: Maybe Text
   , igInboundCampaignName :: Maybe Text
   , igInboundMetadata   :: Maybe Text
-  } deriving (Show)
+  } deriving (Eq, Show)
 
-extractMetaInbound :: A.Value -> [IGInbound]
+data IGInboundDeleted = IGInboundDeleted
+  { igInboundDeletedExternalId :: Text
+  , igInboundDeletedSenderId :: Text
+  , igInboundDeletedSenderName :: Maybe Text
+  , igInboundDeletedMetadata :: Maybe Text
+  } deriving (Eq, Show)
+
+data MetaInboundEvent
+  = MetaInboundMessage IGInbound
+  | MetaInboundDeleted IGInboundDeleted
+  deriving (Eq, Show)
+
+validateMetaInboundPayload :: A.Value -> Either ServerError [MetaInboundEvent]
+validateMetaInboundPayload payload =
+  case parseEither A.parseJSON payload of
+    Left parseErr ->
+      Left err400
+        { errBody =
+            BL8.pack ("Invalid Meta webhook payload: " <> parseErr)
+        }
+    Right IGWebhook{igEntries} ->
+      Right (concatMap extractEntry igEntries)
+
+extractMetaInbound :: A.Value -> [MetaInboundEvent]
 extractMetaInbound payload =
-  case parseMaybe A.parseJSON payload of
-    Nothing -> []
-    Just IGWebhook{igEntries} -> concatMap extractEntry igEntries
+  case validateMetaInboundPayload payload of
+    Left _ -> []
+    Right events -> events
+
+extractEntry :: IGEntry -> [MetaInboundEvent]
+extractEntry IGEntry{igEntryId, igMessaging, igChanges} =
+  mapMaybe (extractMessagingEvent igEntryId) igMessaging <> mapMaybe (extractChangeEvent igEntryId) igChanges
   where
-    extractEntry IGEntry{igMessaging, igChanges} =
-      mapMaybe extractMessagingEvent igMessaging <> mapMaybe extractChangeEvent igChanges
+    extractMessagingEvent mEntryId IGMessaging{igSender, igRecipient, igMessage, igReferral = eventReferral, igTimestamp} = do
+      msg@IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments, igIsDeleted} <- igMessage
+      if fromMaybe False igIsDeleted
+        then buildDeleted
+          (igId igSender)
+          Nothing
+          (igId <$> igRecipient)
+          mEntryId
+          (igMid <|> (stripDeletedMessageId msg))
+          (eventReferral <|> msgReferral)
+          igTimestamp
+        else buildInbound
+          (igId igSender)
+          Nothing
+          (igId <$> igRecipient)
+          mEntryId
+          igMid
+          igText
+          igIsEcho
+          (eventReferral <|> msgReferral)
+          igAttachments
+          igTimestamp
 
-    extractMessagingEvent IGMessaging{igSender, igMessage, igReferral = eventReferral, igTimestamp} = do
-      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments} <- igMessage
-      buildInbound
-        (igId igSender)
-        Nothing
-        igMid
-        igText
-        igIsEcho
-        (eventReferral <|> msgReferral)
-        igAttachments
-        igTimestamp
-
-    extractChangeEvent IGChange{igChangeField, igChangeValue} = do
+    extractChangeEvent mEntryId IGChange{igChangeField, igChangeValue} = do
       guard (maybe True (\raw -> T.toCaseFold (T.strip raw) == "messages") igChangeField)
-      IGChangeValue{igChangeMessage, igChangeFrom, igChangeTimestamp, igChangeReferral} <- igChangeValue
+      IGChangeValue{igChangeMessage, igChangeFrom, igChangeTimestamp, igChangeReferral, igChangeDeleted, igChangeMid} <- igChangeValue
       IGChangeActor{igActorId, igActorName} <- igChangeFrom
-      IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments} <- igChangeMessage
-      buildInbound
-        igActorId
-        igActorName
-        igMid
-        igText
-        igIsEcho
-        (igChangeReferral <|> msgReferral)
-        igAttachments
-        igChangeTimestamp
+      case igChangeMessage of
+        Just msg@IGMessage{igMid, igText, igIsEcho, igReferral = msgReferral, igAttachments, igIsDeleted} ->
+          if fromMaybe False (igIsDeleted <|> igChangeDeleted)
+            then buildDeleted
+              igActorId
+              igActorName
+              Nothing
+              mEntryId
+              (igMid <|> igChangeMid <|> stripDeletedMessageId msg)
+              (igChangeReferral <|> msgReferral)
+              igChangeTimestamp
+            else buildInbound
+              igActorId
+              igActorName
+              Nothing
+              mEntryId
+              igMid
+              igText
+              igIsEcho
+              (igChangeReferral <|> msgReferral)
+              igAttachments
+              igChangeTimestamp
+        Nothing ->
+          guard (fromMaybe False igChangeDeleted) >>
+          buildDeleted
+            igActorId
+            igActorName
+            Nothing
+            mEntryId
+            igChangeMid
+            igChangeReferral
+            igChangeTimestamp
 
-    buildInbound senderId senderName mMid mText mIsEcho mReferral mAttachments mTs = do
+    buildInbound rawSenderId senderName mRecipientId mEntryId mMid mText mIsEcho mReferral mAttachments mTs = do
       guard (not (fromMaybe False mIsEcho))
+      senderId <- normalizeMetaWebhookActorId rawSenderId
       let (adExt, adName, campExt, campName, refMeta) = toReferralMeta mReferral
+          cleanRecipientId = mRecipientId >>= normalizeMetaWebhookActorId
           attachmentPairs = case mAttachments of
             Just xs | not (null xs) -> ["attachments" .= xs]
             _ -> []
-          senderNamePairs = case senderName of
-            Just nm | not (T.null (T.strip nm)) -> ["sender_name" .= nm]
-            _ -> []
-          metaPairs = refMeta ++ attachmentPairs ++ senderNamePairs
-          meta = if null metaPairs
-            then Nothing
-            else Just (TE.decodeUtf8 (BL.toStrict (A.encode (object metaPairs))))
+          meta = encodeMeta refMeta senderName cleanRecipientId mEntryId attachmentPairs
           rawText = fromMaybe "" mText
           body = if not (T.null (T.strip rawText))
             then rawText
@@ -1461,13 +3576,15 @@ extractMetaInbound payload =
       let fallbackBase = T.intercalate "|"
             [ senderId
             , fromMaybe "" senderName
+            , fromMaybe "" cleanRecipientId
+            , fromMaybe "" mEntryId
             , maybe "" (T.pack . show) mTs
             , body
             , fromMaybe "" meta
             ]
           fallbackId = senderId <> "-" <> toHashText fallbackBase
-          externalId = fromMaybe fallbackId mMid
-      pure IGInbound
+          externalId = fromMaybe fallbackId (normalizeMetaWebhookExternalId mMid)
+      pure (MetaInboundMessage IGInbound
         { igInboundExternalId = externalId
         , igInboundSenderId = senderId
         , igInboundSenderName = senderName
@@ -1477,8 +3594,57 @@ extractMetaInbound payload =
         , igInboundCampaignExternalId = campExt
         , igInboundCampaignName = campName
         , igInboundMetadata = meta
-        }
+        })
 
+    buildDeleted rawSenderId senderName mRecipientId mEntryId mMid mReferral _mTs = do
+      senderId <- normalizeMetaWebhookActorId rawSenderId
+      externalId <- normalizeMetaWebhookExternalId mMid
+      let (_, _, _, _, refMeta) = toReferralMeta mReferral
+          cleanRecipientId = mRecipientId >>= normalizeMetaWebhookActorId
+          meta = encodeMeta refMeta senderName cleanRecipientId mEntryId ["event" .= ("message_deleted" :: Text)]
+      pure (MetaInboundDeleted IGInboundDeleted
+        { igInboundDeletedExternalId = externalId
+        , igInboundDeletedSenderId = senderId
+        , igInboundDeletedSenderName = senderName
+        , igInboundDeletedMetadata = meta
+        })
+
+    encodeMeta refMeta senderName mRecipientId mEntryId extraPairs =
+      let senderNamePairs = case senderName of
+            Just nm | not (T.null (T.strip nm)) -> ["sender_name" .= nm]
+            _ -> []
+          recipientPairs = case mRecipientId of
+            Just rid | not (T.null (T.strip rid)) -> ["recipient_id" .= rid]
+            _ -> []
+          entryPairs = case mEntryId of
+            Just eid | not (T.null (T.strip eid)) -> ["entry_id" .= eid]
+            _ -> []
+          metaPairs = refMeta ++ extraPairs ++ senderNamePairs ++ recipientPairs ++ entryPairs
+      in if null metaPairs
+          then Nothing
+          else Just (TE.decodeUtf8 (BL.toStrict (A.encode (object metaPairs))))
+
+    stripDeletedMessageId :: IGMessage -> Maybe Text
+    stripDeletedMessageId IGMessage{igAttachments} =
+      igAttachments >>= extractDeletedMidFromAttachments
+
+    extractDeletedMidFromAttachments :: [A.Value] -> Maybe Text
+    extractDeletedMidFromAttachments [] = Nothing
+    extractDeletedMidFromAttachments (raw:rest) =
+      extractDeletedMid raw <|> extractDeletedMidFromAttachments rest
+
+    extractDeletedMid :: A.Value -> Maybe Text
+    extractDeletedMid raw =
+      join (parseMaybe (withObject "IGAttachment" (\o -> do
+        attachmentPayload <- o .:? "payload"
+        case attachmentPayload of
+          Just rawPayload ->
+            withObject "IGAttachmentPayload" (\payloadObj ->
+              payloadObj .:? "mid" <|> payloadObj .:? "message_id" <|> payloadObj .:? "id"
+            ) rawPayload
+          Nothing ->
+            o .:? "mid" <|> o .:? "message_id" <|> o .:? "id"
+      )) raw)
     simpleHash64 = T.foldl' step (14695981039346656037 :: Word64)
       where
         step h c = (h `xor` fromIntegral (ord c)) * 1099511628211
@@ -1515,21 +3681,42 @@ extractMetaChannel payload =
         Just "facebook" -> Just MetaFacebook
         _ -> Nothing
 
+validateMetaWebhookChannel :: MetaChannel -> A.Value -> Either ServerError MetaChannel
+validateMetaWebhookChannel expected payload =
+  case extractMetaChannel payload of
+    Nothing ->
+      Left err400 { errBody = "Meta webhook object must be one of: instagram, page, facebook" }
+    Just actual
+      | actual == expected -> Right actual
+      | otherwise ->
+          Left err400
+            { errBody =
+                "Meta webhook object does not match the webhook endpoint"
+            }
+
 persistMetaInbound
   :: MonadIO m
   => MetaChannel
   -> UTCTime
-  -> [IGInbound]
+  -> [MetaInboundEvent]
   -> SqlPersistT m ()
 persistMetaInbound channel now incoming =
-  for_ incoming $ \IGInbound{..} ->
-    case channel of
-      MetaInstagram ->
-        upsertInstagram igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
-          igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
-      MetaFacebook ->
-        upsertFacebook igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
-          igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
+  for_ incoming $ \event ->
+    case event of
+      MetaInboundMessage IGInbound{..} ->
+        case channel of
+          MetaInstagram ->
+            upsertInstagram igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
+              igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
+          MetaFacebook ->
+            upsertFacebook igInboundExternalId igInboundSenderId igInboundSenderName igInboundText
+              igInboundAdExternalId igInboundAdName igInboundCampaignExternalId igInboundCampaignName igInboundMetadata
+      MetaInboundDeleted IGInboundDeleted{..} ->
+        case channel of
+          MetaInstagram ->
+            tombstoneInstagram igInboundDeletedExternalId igInboundDeletedSenderId igInboundDeletedSenderName igInboundDeletedMetadata
+          MetaFacebook ->
+            tombstoneFacebook igInboundDeletedExternalId igInboundDeletedSenderId igInboundDeletedSenderName igInboundDeletedMetadata
   where
     upsertInstagram externalId senderId senderName body adExt adName campExt campName meta = do
       _ <- upsert (M.InstagramMessage externalId
@@ -1542,19 +3729,27 @@ persistMetaInbound channel now incoming =
                     campExt
                     campName
                     meta
+                    "pending"
+                    Nothing
+                    Nothing
+                    Nothing
+                    0
+                    Nothing
                     Nothing
                     Nothing
                     Nothing
                     now)
-           [ M.InstagramMessageSenderName =. senderName
-           , M.InstagramMessageText =. Just body
-           , M.InstagramMessageDirection =. "incoming"
-           , M.InstagramMessageAdExternalId =. adExt
-           , M.InstagramMessageAdName =. adName
-           , M.InstagramMessageCampaignExternalId =. campExt
-           , M.InstagramMessageCampaignName =. campName
-           , M.InstagramMessageMetadata =. meta
-           ]
+           ( [ M.InstagramMessageDirection =. "incoming"
+             , M.InstagramMessageReplyStatus =. "pending"
+             , M.InstagramMessageText =. Just body
+             ]
+             ++ maybe [] (\value -> [M.InstagramMessageSenderName =. Just value]) senderName
+             ++ maybe [] (\value -> [M.InstagramMessageAdExternalId =. Just value]) adExt
+             ++ maybe [] (\value -> [M.InstagramMessageAdName =. Just value]) adName
+             ++ maybe [] (\value -> [M.InstagramMessageCampaignExternalId =. Just value]) campExt
+             ++ maybe [] (\value -> [M.InstagramMessageCampaignName =. Just value]) campName
+             ++ maybe [] (\value -> [M.InstagramMessageMetadata =. Just value]) meta
+           )
       pure ()
 
     upsertFacebook externalId senderId senderName body adExt adName campExt campName meta = do
@@ -1568,41 +3763,197 @@ persistMetaInbound channel now incoming =
                     campExt
                     campName
                     meta
+                    "pending"
+                    Nothing
+                    Nothing
+                    Nothing
+                    0
+                    Nothing
                     Nothing
                     Nothing
                     Nothing
                     now)
-           [ ME.FacebookMessageSenderName =. senderName
-           , ME.FacebookMessageText =. Just body
-           , ME.FacebookMessageDirection =. "incoming"
-           , ME.FacebookMessageAdExternalId =. adExt
-           , ME.FacebookMessageAdName =. adName
-           , ME.FacebookMessageCampaignExternalId =. campExt
-           , ME.FacebookMessageCampaignName =. campName
-           , ME.FacebookMessageMetadata =. meta
-           ]
+           ( [ ME.FacebookMessageDirection =. "incoming"
+             , ME.FacebookMessageReplyStatus =. "pending"
+             , ME.FacebookMessageText =. Just body
+             ]
+             ++ maybe [] (\value -> [ME.FacebookMessageSenderName =. Just value]) senderName
+             ++ maybe [] (\value -> [ME.FacebookMessageAdExternalId =. Just value]) adExt
+             ++ maybe [] (\value -> [ME.FacebookMessageAdName =. Just value]) adName
+             ++ maybe [] (\value -> [ME.FacebookMessageCampaignExternalId =. Just value]) campExt
+             ++ maybe [] (\value -> [ME.FacebookMessageCampaignName =. Just value]) campName
+             ++ maybe [] (\value -> [ME.FacebookMessageMetadata =. Just value]) meta
+           )
+      pure ()
+
+    tombstoneInstagram externalId senderId senderName meta = do
+      _ <- upsert (M.InstagramMessage externalId
+                    senderId
+                    senderName
+                    Nothing
+                    "incoming"
+                    Nothing
+                    Nothing
+                    Nothing
+                    Nothing
+                    meta
+                    "pending"
+                    Nothing
+                    Nothing
+                    Nothing
+                    0
+                    Nothing
+                    Nothing
+                    Nothing
+                    (Just now)
+                    now)
+           ( [ M.InstagramMessageDeletedAt =. Just now ]
+             ++ maybe [] (\value -> [M.InstagramMessageSenderName =. Just value]) senderName
+             ++ maybe [] (\value -> [M.InstagramMessageMetadata =. Just value]) meta
+           )
+      pure ()
+
+    tombstoneFacebook externalId senderId senderName meta = do
+      _ <- upsert (ME.FacebookMessage externalId
+                    senderId
+                    senderName
+                    Nothing
+                    "incoming"
+                    Nothing
+                    Nothing
+                    Nothing
+                    Nothing
+                    meta
+                    "pending"
+                    Nothing
+                    Nothing
+                    Nothing
+                    0
+                    Nothing
+                    Nothing
+                    Nothing
+                    (Just now)
+                    now)
+           ( [ ME.FacebookMessageDeletedAt =. Just now ]
+             ++ maybe [] (\value -> [ME.FacebookMessageSenderName =. Just value]) senderName
+             ++ maybe [] (\value -> [ME.FacebookMessageMetadata =. Just value]) meta
+           )
       pure ()
 
 verifyMetaWebhook
   :: ( MonadReader Env m
      , MonadError ServerError m
      )
-  => Text
+  => MetaChannel
+  -> Maybe Text
   -> Maybe Text
   -> Maybe Text
   -> m Text
-verifyMetaWebhook platformLabel mToken mChallenge = do
+verifyMetaWebhook channel mMode mToken mChallenge = do
   Env{envConfig} <- ask
-  let expected =
-        instagramVerifyToken envConfig
-          <|> instagramMessagingToken envConfig
-          <|> instagramAppToken envConfig
-  case expected of
-    Nothing -> throwError err403 { errBody = "Meta verify token not configured" }
-    Just token ->
-      case mToken of
-        Just provided | provided == token -> pure (fromMaybe "" mChallenge)
-        _ -> throwError err403 { errBody = BL8.pack ("Meta verify token mismatch for " <> T.unpack platformLabel) }
+  either throwError pure $
+    validateMetaWebhookVerifyRequest
+      (metaChannelLabel channel)
+      mMode
+      mChallenge
+      mToken
+      (metaWebhookVerifyTokenCandidates channel envConfig)
+
+metaWebhookVerifyTokenCandidates :: MetaChannel -> AppConfig -> [Maybe Text]
+metaWebhookVerifyTokenCandidates channel cfg =
+  case channel of
+    MetaInstagram ->
+      [ instagramVerifyToken cfg
+      ]
+    MetaFacebook ->
+      [ facebookMessagingToken cfg
+      ]
+
+validateMetaWebhookVerifyRequest
+  :: Text
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Text
+  -> [Maybe Text]
+  -> Either ServerError Text
+validateMetaWebhookVerifyRequest platformLabel mMode mChallenge mToken expectedCandidates =
+  case validateConfiguredMetaVerifyToken expectedCandidates of
+    Left err ->
+      Left err
+    Right expected ->
+      case fmap T.toLower (nonBlankText mMode) of
+        Nothing ->
+          Left err400 { errBody = "hub.mode is required" }
+        Just "subscribe" ->
+          case nonBlankText mChallenge of
+            Nothing ->
+              Left err400 { errBody = "hub.challenge is required" }
+            Just challenge ->
+              case validateMetaHookChallenge challenge of
+                Left err ->
+                  Left err
+                Right challengeVal ->
+                  case nonBlankText mToken of
+                    Nothing ->
+                      Left err400 { errBody = "hub.verify_token is required" }
+                    Just provided
+                      | T.any isUnsafeMetaVerifyTokenChar provided ->
+                          Left err400
+                            { errBody = "hub.verify_token must not contain whitespace or control characters" }
+                      | T.any isHiddenMetaWebhookTextChar provided ->
+                          Left err400
+                            { errBody =
+                                "hub.verify_token must not contain hidden formatting characters"
+                            }
+                      | provided == expected -> Right challengeVal
+                      | otherwise ->
+                          Left err403
+                            { errBody =
+                                BL8.pack
+                                  ("Meta verify token mismatch for " <> T.unpack platformLabel)
+                            }
+        Just _ ->
+          Left err400 { errBody = "hub.mode must be subscribe" }
+  where
+    validateConfiguredMetaVerifyToken :: [Maybe Text] -> Either ServerError Text
+    validateConfiguredMetaVerifyToken candidates =
+      case mapMaybe nonBlankText candidates of
+        [] ->
+          Left err403 { errBody = "Meta verify token not configured" }
+        expected : rest
+          | any (T.any isUnsafeMetaVerifyTokenChar) (expected : rest) ->
+              Left err403 { errBody = "Meta verify token is misconfigured" }
+          | any (T.any isHiddenMetaWebhookTextChar) (expected : rest) ->
+              Left err403 { errBody = "Meta verify token is misconfigured" }
+          | any (/= expected) rest ->
+              Left err403 { errBody = "Meta verify token candidates conflict" }
+          | otherwise ->
+              Right expected
+
+    nonBlankText :: Maybe Text -> Maybe Text
+    nonBlankText mTxt =
+      case fmap T.strip mTxt of
+        Just txt | not (T.null txt) -> Just txt
+        _ -> Nothing
+
+    validateMetaHookChallenge :: Text -> Either ServerError Text
+    validateMetaHookChallenge challenge
+      | T.length challenge > 512 =
+          Left err400 { errBody = "hub.challenge must be 512 characters or fewer" }
+      | T.any isControl challenge =
+          Left err400 { errBody = "hub.challenge must not contain control characters" }
+      | T.any isSpace challenge =
+          Left err400 { errBody = "hub.challenge must not contain whitespace" }
+      | T.any isHiddenMetaWebhookTextChar challenge =
+          Left err400
+            { errBody = "hub.challenge must not contain hidden formatting characters" }
+      | otherwise =
+          Right challenge
+
+    isUnsafeMetaVerifyTokenChar ch = isSpace ch || isControl ch
+
+    isHiddenMetaWebhookTextChar ch =
+      generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
 
 instagramWebhookServer
   :: ( MonadIO m
@@ -1614,16 +3965,21 @@ instagramWebhookServer =
        verifyWebhook
   :<|> handleWebhook
   where
-    verifyWebhook _ mToken mChallenge = verifyMetaWebhook "instagram" mToken mChallenge
+    verifyWebhook mMode mToken mChallenge =
+      verifyMetaWebhook MetaInstagram mMode mToken mChallenge
 
-    handleWebhook payload = do
-      Env{..} <- ask
+    handleWebhook mSignature rawBody = do
+      Env{envConfig, envPool} <- ask
+      either throwError pure (verifyMetaWebhookSignature (facebookAppSecret envConfig) mSignature rawBody)
+      payload <- case A.eitherDecode rawBody of
+        Left parseErr -> throwError err400 { errBody = BL8.pack ("Invalid JSON body: " <> parseErr) }
+        Right val -> pure val
       now <- liftIO getCurrentTime
-      let incoming = extractMetaInbound payload
-          channel = fromMaybe MetaInstagram (extractMetaChannel payload)
+      channel <- either throwError pure (validateMetaWebhookChannel MetaInstagram payload)
+      incoming <- either throwError pure (validateMetaInboundPayload payload)
       liftIO $ do
         hPutStrLn stderr ("[" <> T.unpack (metaChannelLabel channel) <> "] received webhook payload")
-        BL8.hPutStrLn stderr (A.encode payload)
+        BL8.hPutStrLn stderr rawBody
         flip runSqlPool envPool (persistMetaInbound channel now incoming)
       pure NoContent
 
@@ -1637,16 +3993,21 @@ facebookWebhookServer =
        verifyWebhook
   :<|> handleWebhook
   where
-    verifyWebhook _ mToken mChallenge = verifyMetaWebhook "facebook" mToken mChallenge
+    verifyWebhook mMode mToken mChallenge =
+      verifyMetaWebhook MetaFacebook mMode mToken mChallenge
 
-    handleWebhook payload = do
-      Env{..} <- ask
+    handleWebhook mSignature rawBody = do
+      Env{envConfig, envPool} <- ask
+      either throwError pure (verifyMetaWebhookSignature (facebookAppSecret envConfig) mSignature rawBody)
+      payload <- case A.eitherDecode rawBody of
+        Left parseErr -> throwError err400 { errBody = BL8.pack ("Invalid JSON body: " <> parseErr) }
+        Right val -> pure val
       now <- liftIO getCurrentTime
-      let incoming = extractMetaInbound payload
-          channel = fromMaybe MetaFacebook (extractMetaChannel payload)
+      channel <- either throwError pure (validateMetaWebhookChannel MetaFacebook payload)
+      incoming <- either throwError pure (validateMetaInboundPayload payload)
       liftIO $ do
         hPutStrLn stderr ("[" <> T.unpack (metaChannelLabel channel) <> "] received webhook payload")
-        BL8.hPutStrLn stderr (A.encode payload)
+        BL8.hPutStrLn stderr rawBody
         flip runSqlPool envPool (persistMetaInbound channel now incoming)
       pure NoContent
 
@@ -1655,59 +4016,122 @@ instagramServer
      , MonadReader Env m
      , MonadError ServerError m
      )
-  => ServerT IG.InstagramAPI m
-instagramServer =
+  => AuthedUser
+  -> ServerT IG.InstagramAPI m
+instagramServer user =
        handleReply
   :<|> listMessages
   where
+    ensureInboxAccess =
+      unless (hasSocialInboxAccess user) $
+        throwError err403 { errBody = "Missing required module access" }
+
     handleReply req = do
+      ensureInboxAccess
       now <- liftIO getCurrentTime
-      -- store outgoing message (stub)
       Env{..} <- ask
+      recipient <- either throwError pure (validateSocialReplySenderId (IG.irSenderId req))
+      mExternalId <- either throwError pure (validateSocialReplyExternalId (IG.irExternalId req))
+      body <- either throwError pure (validateSocialReplyBody (IG.irMessage req))
+      mReplyTarget <-
+        liftIO $
+          flip runSqlPool envPool $
+            case mExternalId of
+              Nothing -> pure Nothing
+              Just extId -> getBy (M.UniqueInstagramMessage extId)
+      _ <- either throwError pure $
+        validateInstagramReplyTarget recipient mExternalId mReplyTarget
+      (mTargetAccountId, mTargetAccessToken) <-
+        liftIO $
+          flip runSqlPool envPool $
+            resolveInstagramReplyContext mExternalId
+      sendResult <- liftIO $ sendInstagramTextWithContext envConfig mTargetAccessToken mTargetAccountId recipient body
+      let (replyStatusValue, replyErrorValue) = socialReplyOutcomeFields sendResult
       liftIO $ flip runSqlPool envPool $ do
-        _ <- upsert (M.InstagramMessage (IG.irSenderId req <> "-out-" <> T.pack (show now))
-                         (IG.irSenderId req)
-                         Nothing
-                         (Just (IG.irMessage req))
-                         "outgoing"
-                         Nothing
-                         Nothing
-                         Nothing
-                         Nothing
-                         Nothing
-                         Nothing
-                         Nothing
-                         Nothing
-                         now)
-             [ M.InstagramMessageText =. Just (IG.irMessage req)
-             , M.InstagramMessageDirection =. "outgoing"
-             ]
-        pure ()
-      let msg = T.concat
-            [ "Respuesta automática: Hola! Gracias por escribir. "
-            , "Recibimos: \"", T.take 200 (T.strip (IG.irMessage req)), "\". "
-            , "Pronto te contactaremos. (stub local)"
-            ]
-      pure (object ["status" .= ("ok" :: Text), "message" .= msg, "echoRecipient" .= IG.irSenderId req])
+        insert_ (M.InstagramMessage (recipient <> "-out-" <> T.pack (show now))
+                  recipient
+                  Nothing
+                  (Just body)
+                  "outgoing"
+                  Nothing
+                  Nothing
+                  Nothing
+                  Nothing
+                  Nothing
+                  replyStatusValue
+                  Nothing
+                  Nothing
+                  (Just now)
+                  1
+                  Nothing
+                  Nothing
+                  replyErrorValue
+                  Nothing
+                  now)
+        for_ mExternalId $ \extId -> do
+          let baseFilters =
+                [ M.InstagramMessageExternalId ==. extId
+                , M.InstagramMessageDirection ==. "incoming"
+                , M.InstagramMessageRepliedAt ==. Nothing
+                , M.InstagramMessageDeletedAt ==. Nothing
+                ]
+          case sendResult of
+            Left err ->
+              updateWhere baseFilters
+                [ M.InstagramMessageReplyStatus =. replyStatusValue
+                , M.InstagramMessageReplyError =. Just err
+                ]
+            Right _ ->
+              updateWhere baseFilters
+                [ M.InstagramMessageReplyStatus =. replyStatusValue
+                , M.InstagramMessageRepliedAt =. Just now
+                , M.InstagramMessageReplyText =. Just body
+                , M.InstagramMessageReplyError =. Nothing
+                ]
+      case sendResult of
+        Left err ->
+          pure (object ["status" .= ("error" :: Text), "message" .= err])
+        Right responseBody ->
+          pure (object ["status" .= ("ok" :: Text), "message" .= ("sent" :: Text), "response" .= responseBody])
+
 
     listMessages mLimit mDirection mRepliedOnly = do
+      ensureInboxAccess
       Env{..} <- ask
-      let limit = normalizeSocialLimit mLimit
+      limit <- either throwError pure (validateSocialLimit mLimit)
       direction <- parseSocialDirectionParam mDirection
       repliedOnly <- parseSocialBoolParam mRepliedOnly
       let filters =
             concat
-              [ maybe [] (\dir -> [M.InstagramMessageDirection ==. dir]) direction
+              [ [M.InstagramMessageDeletedAt ==. Nothing]
+              , maybe [] (\dir -> [M.InstagramMessageDirection ==. dir]) direction
               , if repliedOnly then [M.InstagramMessageRepliedAt !=. Nothing] else []
               ]
       rows <- liftIO $
         flip runSqlPool envPool $
           selectList filters [Desc M.InstagramMessageCreatedAt, LimitTo limit]
-      let toObj (Entity _ m) = object
+      let missing =
+            [ (key, M.instagramMessageSenderId m)
+            | Entity key m <- rows
+            , isNothing (normalizeSenderLabelText (M.instagramMessageSenderName m) <|> extractSenderNameFromMetadata (M.instagramMessageMetadata m))
+            ]
+      resolved <- liftIO $ resolveMetaSenderLabels envConfig MetaInstagram (map snd missing)
+      liftIO $ flip runSqlPool envPool $
+        for_ missing $ \(key, sid) ->
+          for_ (Map.lookup (T.strip sid) resolved) $ \label ->
+            update key [M.InstagramMessageSenderName =. Just label]
+      let toObj (Entity _ m) =
+            let sid = M.instagramMessageSenderId m
+                senderName =
+                  normalizeSenderLabelText (M.instagramMessageSenderName m)
+                    <|> extractSenderNameFromMetadata (M.instagramMessageMetadata m)
+                    <|> Map.lookup (T.strip sid) resolved
+            in object
             [ "externalId" .= M.instagramMessageExternalId m
             , "senderId"   .= M.instagramMessageSenderId m
-            , "senderName" .= M.instagramMessageSenderName m
+            , "senderName" .= senderName
             , "text"       .= M.instagramMessageText m
+            , "metadata"   .= M.instagramMessageMetadata m
             , "direction"  .= M.instagramMessageDirection m
             , "repliedAt"  .= M.instagramMessageRepliedAt m
             , "replyText"  .= M.instagramMessageReplyText m
@@ -1721,28 +4145,117 @@ facebookServer
      , MonadReader Env m
      , MonadError ServerError m
      )
-  => ServerT FB.FacebookAPI m
-facebookServer =
-  listMessages
+  => AuthedUser
+  -> ServerT FB.FacebookAPI m
+facebookServer user =
+       handleReply
+  :<|> listMessages
   where
-    listMessages mLimit mDirection mRepliedOnly = do
+    ensureInboxAccess =
+      unless (hasSocialInboxAccess user) $
+        throwError err403 { errBody = "Missing required module access" }
+
+    handleReply req = do
+      ensureInboxAccess
+      now <- liftIO getCurrentTime
       Env{..} <- ask
-      let limit = normalizeSocialLimit mLimit
+      recipient <- either throwError pure (validateSocialReplySenderId (FB.frSenderId req))
+      mExternalId <- either throwError pure (validateSocialReplyExternalId (FB.frExternalId req))
+      body <- either throwError pure (validateSocialReplyBody (FB.frMessage req))
+      mReplyTarget <-
+        liftIO $
+          flip runSqlPool envPool $
+            case mExternalId of
+              Nothing -> pure Nothing
+              Just extId -> getBy (ME.UniqueFacebookMessage extId)
+      _ <- either throwError pure $
+        validateFacebookReplyTarget recipient mExternalId mReplyTarget
+      sendResult <- liftIO $ sendFacebookText envConfig recipient body
+      let (replyStatusValue, replyErrorValue) = socialReplyOutcomeFields sendResult
+      liftIO $ flip runSqlPool envPool $ do
+        insert_ (ME.FacebookMessage (recipient <> "-out-" <> T.pack (show now))
+                  recipient
+                  Nothing
+                  (Just body)
+                  "outgoing"
+                  Nothing
+                  Nothing
+                  Nothing
+                  Nothing
+                  Nothing
+                  replyStatusValue
+                  Nothing
+                  Nothing
+                  (Just now)
+                  1
+                  Nothing
+                  Nothing
+                  replyErrorValue
+                  Nothing
+                  now)
+        for_ mExternalId $ \extId -> do
+          let baseFilters =
+                [ ME.FacebookMessageExternalId ==. extId
+                , ME.FacebookMessageDirection ==. "incoming"
+                , ME.FacebookMessageRepliedAt ==. Nothing
+                , ME.FacebookMessageDeletedAt ==. Nothing
+                ]
+          case sendResult of
+            Left err ->
+              updateWhere baseFilters
+                [ ME.FacebookMessageReplyStatus =. replyStatusValue
+                , ME.FacebookMessageReplyError =. Just err
+                ]
+            Right _ ->
+              updateWhere baseFilters
+                [ ME.FacebookMessageReplyStatus =. replyStatusValue
+                , ME.FacebookMessageRepliedAt =. Just now
+                , ME.FacebookMessageReplyText =. Just body
+                , ME.FacebookMessageReplyError =. Nothing
+                ]
+      case sendResult of
+        Left err ->
+          pure (object ["status" .= ("error" :: Text), "message" .= err])
+        Right responseBody ->
+          pure (object ["status" .= ("ok" :: Text), "message" .= ("sent" :: Text), "response" .= responseBody])
+
+    listMessages mLimit mDirection mRepliedOnly = do
+      ensureInboxAccess
+      Env{..} <- ask
+      limit <- either throwError pure (validateSocialLimit mLimit)
       direction <- parseSocialDirectionParam mDirection
       repliedOnly <- parseSocialBoolParam mRepliedOnly
       let filters =
             concat
-              [ maybe [] (\dir -> [ME.FacebookMessageDirection ==. dir]) direction
+              [ [ME.FacebookMessageDeletedAt ==. Nothing]
+              , maybe [] (\dir -> [ME.FacebookMessageDirection ==. dir]) direction
               , if repliedOnly then [ME.FacebookMessageRepliedAt !=. Nothing] else []
               ]
       rows <- liftIO $
         flip runSqlPool envPool $
           selectList filters [Desc ME.FacebookMessageCreatedAt, LimitTo limit]
-      let toObj (Entity _ m) = object
+      let missing =
+            [ (key, ME.facebookMessageSenderId m)
+            | Entity key m <- rows
+            , isNothing (normalizeSenderLabelText (ME.facebookMessageSenderName m) <|> extractSenderNameFromMetadata (ME.facebookMessageMetadata m))
+            ]
+      resolved <- liftIO $ resolveMetaSenderLabels envConfig MetaFacebook (map snd missing)
+      liftIO $ flip runSqlPool envPool $
+        for_ missing $ \(key, sid) ->
+          for_ (Map.lookup (T.strip sid) resolved) $ \label ->
+            update key [ME.FacebookMessageSenderName =. Just label]
+      let toObj (Entity _ m) =
+            let sid = ME.facebookMessageSenderId m
+                senderName =
+                  normalizeSenderLabelText (ME.facebookMessageSenderName m)
+                    <|> extractSenderNameFromMetadata (ME.facebookMessageMetadata m)
+                    <|> Map.lookup (T.strip sid) resolved
+            in object
             [ "externalId" .= ME.facebookMessageExternalId m
             , "senderId"   .= ME.facebookMessageSenderId m
-            , "senderName" .= ME.facebookMessageSenderName m
+            , "senderName" .= senderName
             , "text"       .= ME.facebookMessageText m
+            , "metadata"   .= ME.facebookMessageMetadata m
             , "direction"  .= ME.facebookMessageDirection m
             , "repliedAt"  .= ME.facebookMessageRepliedAt m
             , "replyText"  .= ME.facebookMessageReplyText m
@@ -1751,8 +4264,357 @@ facebookServer =
             ]
       pure (A.toJSON (map toObj rows))
 
-normalizeSocialLimit :: Maybe Int -> Int
-normalizeSocialLimit = max 1 . min 200 . fromMaybe 100
+data MetaProfile = MetaProfile
+  { mpUsername :: Maybe Text
+  , mpName :: Maybe Text
+  , mpFirstName :: Maybe Text
+  , mpLastName :: Maybe Text
+  } deriving (Show)
+
+instance A.FromJSON MetaProfile where
+  parseJSON = withObject "MetaProfile" $ \o -> do
+    mpUsername <- o .:? "username"
+    mpName <- o .:? "name"
+    mpFirstName <- o .:? "first_name"
+    mpLastName <- o .:? "last_name"
+    pure MetaProfile{..}
+
+stripNonEmptyText :: Maybe Text -> Maybe Text
+stripNonEmptyText Nothing = Nothing
+stripNonEmptyText (Just raw) =
+  let trimmed = T.strip raw
+  in if T.null trimmed then Nothing else Just trimmed
+
+normalizeMetaWebhookActorId :: Text -> Maybe Text
+normalizeMetaWebhookActorId rawActorId =
+  stripNonEmptyText (Just rawActorId) >>= \actorId ->
+    either (const Nothing) Just (validateSocialReplyIdentifier "senderId" actorId)
+
+normalizeMetaWebhookExternalId :: Maybe Text -> Maybe Text
+normalizeMetaWebhookExternalId rawExternalId =
+  stripNonEmptyText rawExternalId >>= \externalId ->
+    either (const Nothing) Just (validateSocialReplyIdentifier "externalId" externalId)
+
+looksLikeOpaqueSenderLabel :: Text -> Bool
+looksLikeOpaqueSenderLabel raw =
+  let trimmed = T.strip raw
+      hasOpaqueShape =
+        T.length trimmed >= 48
+          && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("#+/:=_-." :: String))) trimmed
+      isVeryLongToken = T.length trimmed > 70 && not (T.any isSpace trimmed)
+  in hasOpaqueShape || isVeryLongToken
+
+normalizeSenderLabelText :: Maybe Text -> Maybe Text
+normalizeSenderLabelText mRaw =
+  stripNonEmptyText mRaw >>= \trimmed ->
+    if looksLikeOpaqueSenderLabel trimmed
+      then Nothing
+      else Just trimmed
+
+extractSenderNameFromMetadata :: Maybe Text -> Maybe Text
+extractSenderNameFromMetadata Nothing = Nothing
+extractSenderNameFromMetadata (Just raw) =
+  case A.decodeStrict' (TE.encodeUtf8 raw) of
+    Nothing -> Nothing
+    Just payload -> parseMaybe parseSender payload
+  where
+    parseSender = withObject "MetaMessageMetadata" $ \o -> do
+      mDirect <- o .:? "sender_name"
+      case normalizeSenderLabelText mDirect of
+        Just label -> pure label
+        Nothing -> do
+          mFrom <- o .:? "from"
+          fromLabel <- case mFrom of
+            Just (A.Object fromObj) -> do
+              fromName <- fromObj .:? "name"
+              fromUsername <- fromObj .:? "username"
+              pure (normalizeSenderLabelText fromName <|> normalizeSenderLabelText fromUsername)
+            _ -> pure Nothing
+          case fromLabel of
+            Just label -> pure label
+            Nothing -> do
+              mContacts <- (o .:? "contacts" :: Parser (Maybe [A.Value]))
+              case mContacts of
+                Just (firstContact : _) ->
+                  case firstContact of
+                    A.Object contactObj -> do
+                      mProfile <- contactObj .:? "profile"
+                      case mProfile of
+                        Just (A.Object profileObj) -> do
+                          profileName <- profileObj .:? "name"
+                          case normalizeSenderLabelText profileName of
+                            Just label -> pure label
+                            Nothing -> fail "contact profile name missing"
+                        _ -> fail "contact profile missing"
+                    _ -> fail "contact invalid"
+                _ -> fail "contacts missing"
+
+extractRecipientIdFromMetadata :: Maybe Text -> Maybe Text
+extractRecipientIdFromMetadata Nothing = Nothing
+extractRecipientIdFromMetadata (Just raw) =
+  case A.decodeStrict' (TE.encodeUtf8 raw) of
+    Nothing -> Nothing
+    Just payload -> parseMaybe parseRecipient payload >>= stripNonEmptyText . Just
+  where
+    parseRecipient = withObject "MetaMessageMetadata" $ \o -> do
+      mRecipient <- o .:? "recipient_id"
+      mSource <- o .:? "source_id"
+      case stripNonEmptyText mRecipient <|> stripNonEmptyText mSource of
+        Just recipientId -> pure recipientId
+        Nothing -> fail "recipient id missing"
+
+resolveInstagramReplyContext
+  :: MonadIO m
+  => Maybe Text
+  -> SqlPersistT m (Maybe Text, Maybe Text)
+resolveInstagramReplyContext mExternalId = do
+  let mCleanExternalId = stripNonEmptyText mExternalId
+  mPreferredAccountId <- case mCleanExternalId of
+    Nothing -> pure Nothing
+    Just extId -> do
+      mIncoming <- selectFirst
+        [ M.InstagramMessageExternalId ==. extId
+        , M.InstagramMessageDirection ==. "incoming"
+        ]
+        [Desc M.InstagramMessageCreatedAt]
+      pure (mIncoming >>= extractRecipientIdFromMetadata . M.instagramMessageMetadata . entityVal)
+  resolveInstagramDeliveryAccount mPreferredAccountId
+
+resolveInstagramDeliveryAccount
+  :: MonadIO m
+  => Maybe Text
+  -> SqlPersistT m (Maybe Text, Maybe Text)
+resolveInstagramDeliveryAccount mPreferredAccountId = do
+  let baseFilters =
+        [ M.SocialSyncAccountPlatform ==. "instagram"
+        , M.SocialSyncAccountStatus ==. "connected"
+        , M.SocialSyncAccountAccessToken !=. Nothing
+        ]
+      ordering = [Desc M.SocialSyncAccountUpdatedAt, Desc M.SocialSyncAccountCreatedAt]
+      mCleanPreferred = stripNonEmptyText mPreferredAccountId
+  mSelected <- case mCleanPreferred of
+    Just accountId ->
+      selectFirst ([M.SocialSyncAccountExternalUserId ==. accountId] ++ baseFilters) ordering
+    Nothing ->
+      selectFirst baseFilters ordering
+  let selectedAccountId = mSelected >>= stripNonEmptyText . Just . M.socialSyncAccountExternalUserId . entityVal
+      selectedToken = mSelected >>= stripNonEmptyText . M.socialSyncAccountAccessToken . entityVal
+      accountId = selectedAccountId <|> mCleanPreferred
+  pure (accountId, selectedToken)
+
+metaProfileLabel :: MetaChannel -> MetaProfile -> Maybe Text
+metaProfileLabel MetaInstagram MetaProfile{..} =
+  normalizeSenderLabelText (mpUsername <|> mpName)
+metaProfileLabel MetaFacebook MetaProfile{..} =
+  let first = stripNonEmptyText mpFirstName
+      lastN = stripNonEmptyText mpLastName
+      fullName =
+        case (first, lastN) of
+          (Just f, Just l) -> Just (f <> " " <> l)
+          (Just f, Nothing) -> Just f
+          (Nothing, Just l) -> Just l
+          _ -> Nothing
+  in normalizeSenderLabelText fullName <|> normalizeSenderLabelText mpName
+
+fetchMetaProfileLabel :: Manager -> Text -> Text -> MetaChannel -> Text -> IO (Maybe Text)
+fetchMetaProfileLabel manager base token channel senderId = do
+  let sid = T.strip senderId
+  if T.null sid
+    then pure Nothing
+    else do
+      let baseClean = T.dropWhileEnd (== '/') (T.strip base)
+          encodedSid = TE.decodeUtf8 (urlEncode True (TE.encodeUtf8 sid))
+          fields = case channel of
+            MetaInstagram -> "username,name"
+            MetaFacebook -> "name,first_name,last_name"
+          urlTxt = baseClean <> "/" <> encodedSid <> "?fields=" <> fields
+      reqE <- try (parseRequest (T.unpack urlTxt)) :: IO (Either SomeException Request)
+      case reqE of
+        Left _ -> pure Nothing
+        Right req0 -> do
+          let req = req0
+                { method = "GET"
+                , requestHeaders =
+                    (hAuthorization, BS.pack ("Bearer " <> T.unpack token)) : requestHeaders req0
+                }
+          respE <- try (httpLbs req manager) :: IO (Either SomeException (Response BL.ByteString))
+          case respE of
+            Left _ -> pure Nothing
+            Right resp -> do
+              let st = statusCode (responseStatus resp)
+              if st < 200 || st >= 300
+                then pure Nothing
+                else
+                  case A.eitherDecode (responseBody resp) of
+                    Left _ -> pure Nothing
+                    Right profile -> pure (metaProfileLabel channel profile)
+
+resolveMetaSenderLabels :: AppConfig -> MetaChannel -> [Text] -> IO (Map.Map Text Text)
+resolveMetaSenderLabels cfg channel senderIds = do
+  let mToken =
+        case channel of
+          MetaInstagram -> stripNonEmptyText (instagramMessagingToken cfg <|> instagramAppToken cfg)
+          MetaFacebook -> stripNonEmptyText (facebookMessagingToken cfg)
+      base = case channel of
+        MetaInstagram -> instagramMessagingApiBase cfg
+        MetaFacebook -> facebookMessagingApiBase cfg
+  case mToken of
+    Nothing -> pure Map.empty
+    Just tok -> do
+      manager <- pure sharedTlsManager
+      let uniqueIds = take 25 (Set.toList (Set.fromList (map T.strip senderIds)))
+      pairs <- mapM (\sid -> do
+        mLabel <- fetchMetaProfileLabel manager base tok channel sid
+        pure (sid, mLabel)
+        ) uniqueIds
+      pure $ Map.fromList [ (sid, label) | (sid, Just label) <- pairs, not (T.null (T.strip label)) ]
+
+validateSocialLimit :: Maybe Int -> Either ServerError Int
+validateSocialLimit Nothing = Right 100
+validateSocialLimit (Just rawLimit)
+  | rawLimit < 1 || rawLimit > 200 =
+      Left err400 { errBody = "limit must be between 1 and 200" }
+  | otherwise = Right rawLimit
+
+validateSocialReplySenderId :: Text -> Either ServerError Text
+validateSocialReplySenderId rawSenderId =
+  case normalizeOptionalTextField (Just rawSenderId) of
+    Nothing -> Left err400 { errBody = "senderId is required" }
+    Just senderId -> validateSocialReplyIdentifier "senderId" senderId
+
+validateSocialReplyExternalId :: Maybe Text -> Either ServerError (Maybe Text)
+validateSocialReplyExternalId Nothing = Right Nothing
+validateSocialReplyExternalId (Just rawExternalId) =
+  case normalizeOptionalTextField (Just rawExternalId) of
+    Nothing -> Left err400 { errBody = "externalId must be omitted or a non-empty string" }
+    Just externalId -> Just <$> validateSocialReplyIdentifier "externalId" externalId
+
+validateInstagramReplyTarget
+  :: Text
+  -> Maybe Text
+  -> Maybe (Entity M.InstagramMessage)
+  -> Either ServerError (Maybe (Entity M.InstagramMessage))
+validateInstagramReplyTarget =
+  validateMetaReplyTarget
+    "Instagram"
+    M.instagramMessageDirection
+    M.instagramMessageSenderId
+    M.instagramMessageDeletedAt
+
+validateFacebookReplyTarget
+  :: Text
+  -> Maybe Text
+  -> Maybe (Entity ME.FacebookMessage)
+  -> Either ServerError (Maybe (Entity ME.FacebookMessage))
+validateFacebookReplyTarget =
+  validateMetaReplyTarget
+    "Facebook"
+    ME.facebookMessageDirection
+    ME.facebookMessageSenderId
+    ME.facebookMessageDeletedAt
+
+validateMetaReplyTarget
+  :: Text
+  -> (record -> Text)
+  -> (record -> Text)
+  -> (record -> Maybe UTCTime)
+  -> Text
+  -> Maybe Text
+  -> Maybe (Entity record)
+  -> Either ServerError (Maybe (Entity record))
+validateMetaReplyTarget _ _ _ _ _ Nothing _ = Right Nothing
+validateMetaReplyTarget channelLabel getDirection getSenderId getDeletedAt recipient (Just _) mTarget =
+  case mTarget of
+    Nothing ->
+      Left err404
+        { errBody =
+            BL.fromStrict (TE.encodeUtf8 (channelLabel <> " reply target not found"))
+        }
+    Just target@(Entity _ row)
+      | isJust (getDeletedAt row) ->
+          Left err404
+            { errBody =
+                BL.fromStrict (TE.encodeUtf8 (channelLabel <> " reply target not found"))
+            }
+      | getDirection row /= "incoming" ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 (channelLabel <> " reply target must be an incoming message"))
+            }
+      | normalizeMetaWebhookActorId (getSenderId row) /= Just recipient ->
+          Left err400
+            { errBody =
+                BL.fromStrict
+                  (TE.encodeUtf8 (channelLabel <> " reply target does not match recipient"))
+            }
+      | otherwise ->
+          Right (Just target)
+
+validateSocialReplyBody :: Text -> Either ServerError Text
+validateSocialReplyBody rawBody
+  | T.null body =
+      Left err400 { errBody = "message is required" }
+  | T.length body > maxSocialReplyBodyChars =
+      Left err400 { errBody = "message must be 4096 characters or fewer" }
+  | T.any isUnsupportedMessageControl body =
+      Left err400 { errBody = "message must not contain unsupported control characters" }
+  | T.any isHiddenSocialReplyBodyChar body =
+      Left err400 { errBody = "message must not contain hidden formatting characters" }
+  | otherwise =
+      Right body
+  where
+    body = T.strip rawBody
+
+maxSocialReplyBodyChars :: Int
+maxSocialReplyBodyChars = 4096
+
+isUnsupportedMessageControl :: Char -> Bool
+isUnsupportedMessageControl ch =
+  isControl ch && ch `notElem` ("\n\r\t" :: String)
+
+isHiddenSocialReplyBodyChar :: Char -> Bool
+isHiddenSocialReplyBodyChar ch =
+  generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+validateSocialReplyIdentifier :: Text -> Text -> Either ServerError Text
+validateSocialReplyIdentifier fieldName value
+  | T.any isSpace value =
+      Left err400
+        { errBody = BL.fromStrict (TE.encodeUtf8 (fieldName <> " must not contain whitespace")) }
+  | T.any isControl value =
+      Left err400
+        { errBody = BL.fromStrict (TE.encodeUtf8 (fieldName <> " must not contain control characters")) }
+  | T.any isHiddenSocialReplyIdentifierChar value =
+      Left err400
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8 (fieldName <> " must not contain hidden formatting characters"))
+        }
+  | T.any (not . isAscii) value =
+      Left err400
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8 (fieldName <> " must contain only ASCII characters"))
+        }
+  | T.length value > 256 =
+      Left err400
+        { errBody =
+            BL.fromStrict
+              (TE.encodeUtf8 (fieldName <> " must be 256 characters or fewer"))
+        }
+  | otherwise =
+      Right value
+
+isHiddenSocialReplyIdentifierChar :: Char -> Bool
+isHiddenSocialReplyIdentifierChar ch =
+  generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
+
+socialReplyOutcomeFields :: Either Text a -> (Text, Maybe Text)
+socialReplyOutcomeFields sendResult =
+  case sendResult of
+    Left err -> ("error", Just err)
+    Right _ -> ("sent", Nothing)
 
 parseSocialBoolParam :: MonadError ServerError m => Maybe Text -> m Bool
 parseSocialBoolParam Nothing = pure False
@@ -1764,18 +4626,24 @@ parseSocialBoolParam (Just raw) =
     "false" -> pure False
     "0" -> pure False
     "no" -> pure False
-    "" -> pure False
-    _ -> throwError err400 { errBody = "Invalid repliedOnly value" }
+    "" -> invalidRepliedOnly
+    _ -> invalidRepliedOnly
+  where
+    invalidRepliedOnly =
+      throwError err400 { errBody = "repliedOnly must be omitted or one of: true, false, 1, 0, yes, no" }
 
 parseSocialDirectionParam :: MonadError ServerError m => Maybe Text -> m (Maybe Text)
 parseSocialDirectionParam Nothing = pure Nothing
 parseSocialDirectionParam (Just raw) =
   case T.toCaseFold (T.strip raw) of
-    "" -> pure Nothing
+    "" -> invalidDirection
     "all" -> pure Nothing
     "incoming" -> pure (Just "incoming")
     "outgoing" -> pure (Just "outgoing")
-    _ -> throwError err400 { errBody = "Invalid direction value" }
+    _ -> invalidDirection
+  where
+    invalidDirection =
+      throwError err400 { errBody = "direction must be omitted or one of: all, incoming, outgoing" }
 
 -- Shared helpers ----------------------------------------------------------
 

@@ -12,6 +12,11 @@ module TDF.Routes.Courses
   , CourseRegistrationRequest(..)
   , CourseRegistrationResponse(..)
   , CourseRegistrationStatusUpdate(..)
+  , CourseRegistrationNotesUpdate(..)
+  , CourseRegistrationReceiptCreate(..)
+  , CourseRegistrationReceiptUpdate(..)
+  , CourseRegistrationFollowUpCreate(..)
+  , CourseRegistrationFollowUpUpdate(..)
   , CourseUpsert(..)
   , CourseSessionIn(..)
   , CourseSyllabusIn(..)
@@ -21,13 +26,15 @@ module TDF.Routes.Courses
   , WhatsAppWebhookAPI
   ) where
 
-import           Data.Aeson (FromJSON, ToJSON)
+import           Data.Aeson (FromJSON(parseJSON), Options(..), ToJSON, Value(..), defaultOptions, genericParseJSON, (.:!))
 import           Data.Int (Int64)
 import           Data.Text (Text)
 import           Data.Time (Day)
+import qualified Data.ByteString.Lazy as BL
 import           GHC.Generics (Generic)
 import           Servant
 
+import           TDF.API.Types (RawJSON)
 import           TDF.WhatsApp.Types (WAMetaWebhook)
 import qualified TDF.DTO
 
@@ -82,7 +89,8 @@ data UTMTags = UTMTags
   , content  :: Maybe Text
   } deriving (Show, Generic)
 
-instance FromJSON UTMTags
+instance FromJSON UTMTags where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON UTMTags
 
 data CourseRegistrationRequest = CourseRegistrationRequest
@@ -94,7 +102,8 @@ data CourseRegistrationRequest = CourseRegistrationRequest
   , utm       :: Maybe UTMTags
   } deriving (Show, Generic)
 
-instance FromJSON CourseRegistrationRequest
+instance FromJSON CourseRegistrationRequest where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON CourseRegistrationRequest
 
 data CourseRegistrationResponse = CourseRegistrationResponse
@@ -108,15 +117,113 @@ data CourseRegistrationStatusUpdate = CourseRegistrationStatusUpdate
   { status :: Text
   } deriving (Show, Generic)
 
-instance FromJSON CourseRegistrationStatusUpdate
+instance FromJSON CourseRegistrationStatusUpdate where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON CourseRegistrationStatusUpdate
+
+data CourseRegistrationNotesUpdate = CourseRegistrationNotesUpdate
+  { notes :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationNotesUpdate where
+  parseJSON = genericParseJSON strictObjectOptions
+instance ToJSON CourseRegistrationNotesUpdate
+
+data CourseRegistrationReceiptCreate = CourseRegistrationReceiptCreate
+  { fileUrl  :: Text
+  , fileName :: Maybe Text
+  , mimeType :: Maybe Text
+  , notes    :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationReceiptCreate where
+  parseJSON = genericParseJSON strictObjectOptions
+instance ToJSON CourseRegistrationReceiptCreate
+
+data CourseRegistrationReceiptUpdate = CourseRegistrationReceiptUpdate
+  { fileUrl  :: Maybe Text
+  , fileName :: Maybe Text
+  , mimeType :: Maybe Text
+  , notes    :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationReceiptUpdate where
+  parseJSON = genericParseJSON strictObjectOptions
+instance ToJSON CourseRegistrationReceiptUpdate
+
+data CourseRegistrationFollowUpCreate = CourseRegistrationFollowUpCreate
+  { entryType      :: Maybe Text
+  , subject        :: Maybe Text
+  , notes          :: Text
+  , attachmentUrl  :: Maybe Text
+  , attachmentName :: Maybe Text
+  , nextFollowUpAt :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationFollowUpCreate where
+  parseJSON = genericParseJSON strictObjectOptions
+instance ToJSON CourseRegistrationFollowUpCreate
+
+data CourseRegistrationFollowUpUpdate = CourseRegistrationFollowUpUpdate
+  { entryType      :: Maybe Text
+  , subject        :: Maybe Text
+  , notes          :: Maybe Text
+  , attachmentUrl  :: Maybe Text
+  , attachmentName :: Maybe Text
+  , nextFollowUpAt :: Maybe (Maybe Text)
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationFollowUpUpdate where
+  parseJSON value@(Object o) = do
+    CourseRegistrationFollowUpUpdateParsed
+      { entryType = parsedEntryType
+      , subject = parsedSubject
+      , notes = parsedNotes
+      , attachmentUrl = parsedAttachmentUrl
+      , attachmentName = parsedAttachmentName
+      } <- genericParseJSON strictObjectOptions value
+    nextFollowUpAtUpdate <- o .:! "nextFollowUpAt"
+    case
+      ( parsedEntryType
+      , parsedSubject
+      , parsedNotes
+      , parsedAttachmentUrl
+      , parsedAttachmentName
+      , nextFollowUpAtUpdate
+      ) of
+      (Nothing, Nothing, Nothing, Nothing, Nothing, Nothing) ->
+        fail "CourseRegistrationFollowUpUpdate must include at least one field"
+      _ ->
+        pure CourseRegistrationFollowUpUpdate
+          { entryType = parsedEntryType
+          , subject = parsedSubject
+          , notes = parsedNotes
+          , attachmentUrl = parsedAttachmentUrl
+          , attachmentName = parsedAttachmentName
+          , nextFollowUpAt = nextFollowUpAtUpdate
+          }
+  parseJSON _ = fail "CourseRegistrationFollowUpUpdate must be an object"
+instance ToJSON CourseRegistrationFollowUpUpdate
+
+data CourseRegistrationFollowUpUpdateParsed = CourseRegistrationFollowUpUpdateParsed
+  { entryType      :: Maybe Text
+  , subject        :: Maybe Text
+  , notes          :: Maybe Text
+  , attachmentUrl  :: Maybe Text
+  , attachmentName :: Maybe Text
+  , nextFollowUpAt :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON CourseRegistrationFollowUpUpdateParsed where
+  parseJSON = genericParseJSON strictObjectOptions
 
 data CourseSessionIn = CourseSessionIn
   { label :: Text
   , date  :: Day
   , order :: Maybe Int
   } deriving (Show, Generic)
-instance FromJSON CourseSessionIn
+instance FromJSON CourseSessionIn where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON CourseSessionIn
 
 data CourseSyllabusIn = CourseSyllabusIn
@@ -124,7 +231,8 @@ data CourseSyllabusIn = CourseSyllabusIn
   , topics :: [Text]
   , order  :: Maybe Int
   } deriving (Show, Generic)
-instance FromJSON CourseSyllabusIn
+instance FromJSON CourseSyllabusIn where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON CourseSyllabusIn
 
 data CourseUpsert = CourseUpsert
@@ -150,7 +258,8 @@ data CourseUpsert = CourseUpsert
   , sessions             :: [CourseSessionIn]
   , syllabus             :: [CourseSyllabusIn]
   } deriving (Show, Generic)
-instance FromJSON CourseUpsert
+instance FromJSON CourseUpsert where
+  parseJSON = genericParseJSON strictObjectOptions
 instance ToJSON CourseUpsert
 
 type CoursesPublicAPI =
@@ -159,18 +268,31 @@ type CoursesPublicAPI =
 
 type CoursesAdminAPI =
        "courses" :> ReqBody '[JSON] CourseUpsert :> Post '[JSON] CourseMetadata
+  :<|> "courses" :> "cohorts" :> Get '[JSON] [TDF.DTO.CourseCohortOptionDTO]
   :<|> "courses" :> "registrations" :>
          QueryParam "slug" Text :>
          QueryParam "status" Text :>
          QueryParam "limit" Int :>
          Get '[JSON] [TDF.DTO.CourseRegistrationDTO]
   :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> Get '[JSON] TDF.DTO.CourseRegistrationDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "dossier" :> Get '[JSON] TDF.DTO.CourseRegistrationDossierDTO
+  :<|> "courses" :> "registrations" :> Capture "registrationId" Int64 :> "emails" :> QueryParam "limit" Int :> Get '[JSON] [TDF.DTO.CourseEmailEventDTO]
   :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "status" :> ReqBody '[JSON] CourseRegistrationStatusUpdate :> Patch '[JSON] CourseRegistrationResponse
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "notes" :> ReqBody '[JSON] CourseRegistrationNotesUpdate :> Patch '[JSON] TDF.DTO.CourseRegistrationDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "receipts" :> ReqBody '[JSON] CourseRegistrationReceiptCreate :> PostCreated '[JSON] TDF.DTO.CourseRegistrationReceiptDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "receipts" :> Capture "receiptId" Int64 :> ReqBody '[JSON] CourseRegistrationReceiptUpdate :> Patch '[JSON] TDF.DTO.CourseRegistrationReceiptDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "receipts" :> Capture "receiptId" Int64 :> Delete '[JSON] NoContent
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "follow-ups" :> ReqBody '[JSON] CourseRegistrationFollowUpCreate :> PostCreated '[JSON] TDF.DTO.CourseRegistrationFollowUpDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "follow-ups" :> Capture "followUpId" Int64 :> ReqBody '[JSON] CourseRegistrationFollowUpUpdate :> Patch '[JSON] TDF.DTO.CourseRegistrationFollowUpDTO
+  :<|> "courses" :> Capture "slug" Text :> "registrations" :> Capture "registrationId" Int64 :> "follow-ups" :> Capture "followUpId" Int64 :> Delete '[JSON] NoContent
 
 type WhatsAppWebhookAPI =
        "webhooks" :> "whatsapp" :> QueryParam "hub.mode" Text :> QueryParam "hub.verify_token" Text :> QueryParam "hub.challenge" Text :> Get '[PlainText] Text
-  :<|> "webhooks" :> "whatsapp" :> ReqBody '[JSON] WAMetaWebhook :> Post '[JSON] NoContent
+  :<|> "webhooks" :> "whatsapp" :> Header "X-Hub-Signature-256" Text :> ReqBody '[RawJSON] BL.ByteString :> Post '[JSON] NoContent
 
 type WhatsAppHooksAPI =
        "hooks" :> "whatsapp" :> QueryParam "hub.mode" Text :> QueryParam "hub.verify_token" Text :> QueryParam "hub.challenge" Text :> Get '[PlainText] Text
-  :<|> "hooks" :> "whatsapp" :> ReqBody '[JSON] WAMetaWebhook :> Post '[JSON] NoContent
+  :<|> "hooks" :> "whatsapp" :> Header "X-Hub-Signature-256" Text :> ReqBody '[RawJSON] BL.ByteString :> Post '[JSON] NoContent
+
+strictObjectOptions :: Options
+strictObjectOptions = defaultOptions { rejectUnknownFields = True }

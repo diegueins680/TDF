@@ -10,19 +10,29 @@ import           Control.Applicative ((<|>))
 import           Servant
 import           Database.Persist          (Entity)
 import           Data.Int (Int64)
+import           Data.List (sort)
 import           Data.Text (Text)
+import qualified Data.Text as T
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
-import           Data.Char (toLower)
-import           Data.Aeson (ToJSON(..), FromJSON(..), Value(..), object, (.=), defaultOptions, genericParseJSON, genericToJSON, fieldLabelModifier)
-import           Data.Aeson.Types (camelTo2, withObject, (.:?))
+import           Data.Char
+  ( GeneralCategory(Format, LineSeparator, ParagraphSeparator)
+  , generalCategory
+  , isControl
+  , isSpace
+  , toLower
+  )
+import           Data.Aeson (ToJSON(..), FromJSON(..), Object, Value(..), object, (.=), defaultOptions, genericParseJSON, genericToJSON, fieldLabelModifier, rejectUnknownFields)
+import           Data.Aeson.Types (Parser, camelTo2, withObject, (.:?))
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.ByteString.Lazy as BL
 
 import           TDF.API.Admin     (AdminAPI)
 import           TDF.API.Future    (FutureAPI)
 import           TDF.API.Bands     (BandsAPI)
 import           TDF.API.Facebook  (FacebookAPI, FacebookWebhookAPI)
-import           TDF.API.Inventory (InventoryAPI)
+import           TDF.API.Inventory (InventoryAPI, InventoryPublicAPI)
 import           TDF.API.Payments (PaymentsAPI)
 import           TDF.API.Instagram (InstagramAPI, InstagramWebhookAPI)
 import           TDF.API.InstagramOAuth (InstagramOAuthAPI)
@@ -100,7 +110,7 @@ type CmsAdminAPI =
          )
 
 type PartyAPI =
-       Get '[JSON] [PartyDTO]
+       QueryParam "limit" Int :> QueryParam "offset" Int :> Get '[JSON] [PartyDTO]
   :<|> ReqBody '[JSON] PartyCreate :> Post '[JSON] PartyDTO
       :<|> Capture "partyId" Int64 :> (
            Get '[JSON] PartyDTO
@@ -116,6 +126,8 @@ type SocialAPI =
   :<|> "friends" :> Get '[JSON] [PartyFollowDTO]
   :<|> "friends" :> Capture "partyId" Int64 :> Post '[JSON] [PartyFollowDTO]
   :<|> "friends" :> Capture "partyId" Int64 :> Delete '[JSON] NoContent
+  :<|> "profiles" :> QueryParams "partyId" Int64 :> Get '[JSON] [SocialPartyProfileDTO]
+  :<|> "profiles" :> Capture "partyId" Int64 :> Get '[JSON] SocialPartyProfileDTO
   :<|> "suggestions" :> Get '[JSON] [SuggestedFriendDTO]
 
 type ChatAPI =
@@ -136,12 +148,30 @@ type ChatKitSessionAPI =
 type TidalAgentAPI =
        "tidal-agent" :> ReqBody '[JSON] TidalAgentRequest :> Post '[JSON] TidalAgentResponse
 
+type MetaBackfillAPI =
+       "meta" :> "backfill"
+         :> ReqBody '[JSON] Value
+         :> Post '[JSON] Value
+
 type WhatsAppMessagesAPI =
        "whatsapp" :> "messages"
          :> QueryParam "limit" Int
          :> QueryParam "direction" Text
          :> QueryParam "repliedOnly" Text
          :> Get '[JSON] Value
+
+data WhatsAppReplyReq = WhatsAppReplyReq
+  { wrSenderId   :: Text
+  , wrMessage    :: Text
+  , wrExternalId :: Maybe Text
+  } deriving (Show, Generic)
+
+instance FromJSON WhatsAppReplyReq where
+  parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
+instance ToJSON WhatsAppReplyReq
+
+type WhatsAppReplyAPI =
+       "whatsapp" :> "reply" :> ReqBody '[JSON] WhatsAppReplyReq :> Post '[JSON] Value
 
 type WhatsAppConsentRoutes =
        "consent"
@@ -169,7 +199,15 @@ data WhatsAppConsentRequest = WhatsAppConsentRequest
   } deriving (Show, Generic)
 
 instance FromJSON WhatsAppConsentRequest where
-  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+  parseJSON raw = do
+    req <- genericParseJSON defaultOptions
+      { fieldLabelModifier = camelDrop 3
+      , rejectUnknownFields = True
+      } raw
+    pure req
+      { wcrName = normalizeOptionalRequestText (wcrName req)
+      , wcrSource = normalizeOptionalRequestText (wcrSource req)
+      }
 
 data WhatsAppOptOutRequest = WhatsAppOptOutRequest
   { worPhone       :: Text
@@ -178,7 +216,20 @@ data WhatsAppOptOutRequest = WhatsAppOptOutRequest
   } deriving (Show, Generic)
 
 instance FromJSON WhatsAppOptOutRequest where
-  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+  parseJSON raw = do
+    req <- genericParseJSON defaultOptions
+      { fieldLabelModifier = camelDrop 3
+      , rejectUnknownFields = True
+      } raw
+    pure req
+      { worReason = normalizeOptionalRequestText (worReason req)
+      }
+
+normalizeOptionalRequestText :: Maybe Text -> Maybe Text
+normalizeOptionalRequestText rawValue =
+  case T.strip <$> rawValue of
+    Just value | not (T.null value) -> Just value
+    _ -> Nothing
 
 data WhatsAppConsentStatus = WhatsAppConsentStatus
   { wcsPhone       :: Text
@@ -211,6 +262,15 @@ type BookingAPI =
 type BookingPublicAPI =
        "bookings" :> "public" :> ReqBody '[JSON] PublicBookingReq :> Post '[JSON] BookingDTO
 
+type ServiceMarketplaceAPI =
+       "service-marketplace" :> "ads" :> Get '[JSON] [ServiceAdDTO]
+  :<|> "service-marketplace" :> "ads" :> ReqBody '[JSON] ServiceAdCreateReq :> Post '[JSON] ServiceAdDTO
+  :<|> "service-marketplace" :> "ads" :> Capture "adId" Int64 :> "slots" :> Get '[JSON] [ServiceAdSlotDTO]
+  :<|> "service-marketplace" :> "ads" :> Capture "adId" Int64 :> "slots" :> ReqBody '[JSON] ServiceAdSlotCreateReq :> Post '[JSON] ServiceAdSlotDTO
+  :<|> "service-marketplace" :> "bookings" :> ReqBody '[JSON] ServiceMarketplaceBookingReq :> Post '[JSON] ServiceMarketplaceBookingDTO
+  :<|> "service-marketplace" :> "bookings" :> Capture "bookingId" Int64 :> "complete" :> Post '[JSON] ServiceMarketplaceBookingDTO
+  :<|> "service-marketplace" :> "bookings" :> Capture "bookingId" Int64 :> "escrow" :> "release" :> Post '[JSON] ServiceMarketplaceBookingDTO
+
 type PackageAPI =
        "products" :> Get '[JSON] [PackageProductDTO]
   :<|> "purchases" :> ReqBody '[JSON] PackagePurchaseReq :> Post '[JSON] NoContent
@@ -230,16 +290,18 @@ type ReceiptAPI =
 type HealthAPI = Get '[JSON] HealthStatus
 type McpAPI = ReqBody '[JSON] Value :> Post '[JSON] Value
 
-type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] LoginResponse
-type GoogleLoginAPI = ReqBody '[JSON] GoogleLoginRequest :> Post '[JSON] LoginResponse
+type SessionCookieHeaders = Headers '[Header "Set-Cookie" Text]
 
-type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] LoginResponse
+type LoginAPI = ReqBody '[JSON] LoginRequest :> Post '[JSON] (SessionCookieHeaders LoginResponse)
+type GoogleLoginAPI = ReqBody '[JSON] GoogleLoginRequest :> Post '[JSON] (SessionCookieHeaders LoginResponse)
+
+type SignupAPI = ReqBody '[JSON] SignupRequest :> Post '[JSON] (SessionCookieHeaders LoginResponse)
 
 type PasswordResetAPI = ReqBody '[JSON] PasswordResetRequest :> Post '[JSON] NoContent
 
-type PasswordResetConfirmAPI = ReqBody '[JSON] PasswordResetConfirmRequest :> Post '[JSON] LoginResponse
+type PasswordResetConfirmAPI = ReqBody '[JSON] PasswordResetConfirmRequest :> Post '[JSON] (SessionCookieHeaders LoginResponse)
 
-type PasswordAPI = Header "Authorization" Text :> "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] LoginResponse
+type PasswordAPI = Header "Authorization" Text :> "change" :> ReqBody '[JSON] ChangePasswordRequest :> Post '[JSON] (SessionCookieHeaders LoginResponse)
 
 type UserRolesAPI =
        "users" :> Get '[JSON] [UserRoleSummaryDTO]
@@ -258,6 +320,8 @@ type FanPublicAPI =
        "artists" :> Get '[JSON] [ArtistProfileDTO]
   :<|> "artists" :> Capture "artistId" Int64 :> Get '[JSON] ArtistProfileDTO
   :<|> "artists" :> Capture "artistId" Int64 :> "releases" :> Get '[JSON] [ArtistReleaseDTO]
+  :<|> "clubs" :> Capture "artistId" Int64 :> Get '[JSON] FanClubDTO
+  :<|> "clubs" :> Capture "artistId" Int64 :> "events" :> Get '[JSON] [FanClubEventDTO]
 
 type RadioPublicAPI =
        "radio" :> "presence" :> Capture "partyId" Int64 :> Get '[JSON] (Maybe RadioPresenceDTO)
@@ -278,12 +342,33 @@ type FanSecureAPI =
          ( Get '[JSON] ArtistProfileDTO
        :<|> ReqBody '[JSON] ArtistProfileUpsert :> Put '[JSON] ArtistProfileDTO
          )
+  :<|> "me" :> "clubs" :> Get '[JSON] [FanClubDTO]
+  :<|> "me" :> "clubs" :> Capture "artistId" Int64 :>
+         ( Get '[JSON] FanClubDTO
+      :<|> "posts" :> Get '[JSON] [FanClubPostDTO]
+      :<|> "posts" :> ReqBody '[JSON] FanClubCreatePostReq :> Post '[JSON] FanClubPostDTO
+      :<|> "posts" :> Capture "postId" Int64 :> "pin" :> Post '[JSON] NoContent
+      :<|> "posts" :> Capture "postId" Int64 :> "unpin" :> Post '[JSON] NoContent
+      :<|> "posts" :> Capture "postId" Int64 :> "hide" :> Post '[JSON] NoContent
+      :<|> "posts" :> Capture "postId" Int64 :> "unhide" :> Post '[JSON] NoContent
+      :<|> "events" :> Get '[JSON] [FanClubEventDTO]
+      :<|> "events" :> ReqBody '[JSON] FanClubCreateEventReq :> Post '[JSON] FanClubEventDTO
+      :<|> "elections" :> Get '[JSON] [FanClubElectionDTO]
+      :<|> "elections" :> ReqBody '[JSON] FanClubCreateElectionReq :> Post '[JSON] FanClubElectionDTO
+      :<|> "elections" :> Capture "electionId" Int64 :> "candidacy" :> ReqBody '[JSON] FanClubCreateCandidacyReq :> Post '[JSON] FanClubCandidacyDTO
+      :<|> "elections" :> Capture "electionId" Int64 :> "vote" :> ReqBody '[JSON] FanClubVoteReq :> Post '[JSON] NoContent
+         )
 
 type SeedAPI = Header "X-Seed-Token" Text :> Post '[JSON] NoContent
+
+type SessionAPI =
+       Header "Authorization" Text :> Header "Cookie" Text :> "session" :> Get '[JSON] (Maybe SessionResponse)
+  :<|> "session" :> "logout" :> Post '[JSON] (SessionCookieHeaders NoContent)
 
 type ProtectedAPI =
        "parties"  :> PartyAPI
   :<|> "bookings" :> BookingAPI
+  :<|> ServiceMarketplaceAPI
   :<|> ProposalsAPI
   :<|> ServiceCatalogAPI
   :<|> "packages" :> PackageAPI
@@ -305,13 +390,16 @@ type ProtectedAPI =
   :<|> FacebookAPI
   :<|> InstagramOAuthAPI
   :<|> WhatsAppMessagesAPI
+  :<|> WhatsAppReplyAPI
   :<|> WhatsAppConsentAPI
   :<|> "social" :> SocialAPI
   :<|> ChatAPI
   :<|> ChatKitSessionAPI
   :<|> TidalAgentAPI
   :<|> "social-sync" :> SocialSyncAPI
+  :<|> MetaBackfillAPI
   :<|> "social-events" :> SocialEventsAPI
+  :<|> ContractsAPI
   :<|> InternshipsAPI
   :<|> AdsAdminAPI
   :<|> "admin" :> CoursesAdminAPI
@@ -327,6 +415,7 @@ type API =
        VersionAPI
   :<|> "health" :> HealthAPI
   :<|> "mcp" :> McpAPI
+  :<|> SessionAPI
   :<|> "login"  :> LoginAPI
   :<|> "login"  :> "google" :> GoogleLoginAPI
   :<|> "signup" :> SignupAPI
@@ -345,8 +434,8 @@ type API =
   :<|> AdsPublicAPI
   :<|> CmsPublicAPI
   :<|> WhatsAppConsentPublicAPI
+  :<|> InventoryPublicAPI
   :<|> "marketplace" :> MarketplaceAPI
-  :<|> "contracts" :> ContractsAPI
   :<|> RadioPublicAPI
   :<|> RoomsPublicAPI
   :<|> ServiceCatalogPublicAPI
@@ -373,7 +462,8 @@ data CreateBookingReq = CreateBookingReq
   , cbServiceType :: Maybe Text
   , cbResourceIds :: Maybe [Text]
   } deriving (Show, Generic)
-instance FromJSON CreateBookingReq
+instance FromJSON CreateBookingReq where
+  parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
 
 data UpdateBookingReq = UpdateBookingReq
   { ubTitle       :: Maybe Text
@@ -385,7 +475,32 @@ data UpdateBookingReq = UpdateBookingReq
   , ubEngineerPartyId :: Maybe Int64
   , ubEngineerName :: Maybe Text
   } deriving (Show, Generic)
-instance FromJSON UpdateBookingReq
+instance FromJSON UpdateBookingReq where
+  parseJSON raw@(Object o) = do
+    req <- genericParseJSON defaultOptions { rejectUnknownFields = True } raw
+    if any (hasNonNullUpdateField o) updateBookingRequestFields
+      then pure req
+      else fail "UpdateBookingReq must include at least one non-null field"
+  parseJSON raw = genericParseJSON defaultOptions { rejectUnknownFields = True } raw
+
+updateBookingRequestFields :: [Text]
+updateBookingRequestFields =
+  [ "ubTitle"
+  , "ubServiceType"
+  , "ubStatus"
+  , "ubNotes"
+  , "ubStartsAt"
+  , "ubEndsAt"
+  , "ubEngineerPartyId"
+  , "ubEngineerName"
+  ]
+
+hasNonNullUpdateField :: Object -> Text -> Bool
+hasNonNullUpdateField rawObject fieldName =
+  case AesonKeyMap.lookup (AesonKey.fromText fieldName) rawObject of
+    Just Null -> False
+    Just _ -> True
+    Nothing -> False
 
 data PublicBookingReq = PublicBookingReq
   { pbFullName         :: Text
@@ -399,13 +514,110 @@ data PublicBookingReq = PublicBookingReq
   , pbEngineerName     :: Maybe Text
   , pbResourceIds      :: Maybe [Text]
   } deriving (Show, Generic)
-instance FromJSON PublicBookingReq
+instance FromJSON PublicBookingReq where
+  parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
 
 data PublicEngineerDTO = PublicEngineerDTO
   { peId   :: Int64
   , peName :: Text
   } deriving (Show, Generic)
 instance ToJSON PublicEngineerDTO
+
+
+data ServiceAdDTO = ServiceAdDTO
+  { sadId            :: Int64
+  , sadProviderPartyId :: Int64
+  , sadProviderName  :: Maybe Text
+  , sadServiceCatalogId :: Maybe Int64
+  , sadRoleTag       :: Text
+  , sadHeadline      :: Text
+  , sadDescription   :: Maybe Text
+  , sadFeeCents      :: Int
+  , sadCurrency      :: Text
+  , sadSlotMinutes   :: Int
+  , sadActive        :: Bool
+  , sadCreatedAt     :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON ServiceAdDTO where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data ServiceAdCreateReq = ServiceAdCreateReq
+  { sacServiceCatalogId :: Maybe Int64
+  , sacRoleTag          :: Text
+  , sacHeadline         :: Text
+  , sacDescription      :: Maybe Text
+  , sacFeeCents         :: Int
+  , sacCurrency         :: Maybe Text
+  , sacSlotMinutes      :: Maybe Int
+  } deriving (Show, Generic)
+instance FromJSON ServiceAdCreateReq where
+  parseJSON = genericParseJSON defaultOptions
+    { fieldLabelModifier = camelDrop 3
+    , rejectUnknownFields = True
+    }
+
+data ServiceAdSlotDTO = ServiceAdSlotDTO
+  { sasId       :: Int64
+  , sasAdId     :: Int64
+  , sasStartsAt :: UTCTime
+  , sasEndsAt   :: UTCTime
+  , sasStatus   :: Text
+  } deriving (Show, Generic)
+instance ToJSON ServiceAdSlotDTO where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+
+data ServiceAdSlotCreateReq = ServiceAdSlotCreateReq
+  { sascStartsAt :: UTCTime
+  , sascEndsAt   :: UTCTime
+  } deriving (Show, Generic)
+instance FromJSON ServiceAdSlotCreateReq where
+  parseJSON = genericParseJSON defaultOptions
+    { fieldLabelModifier = camelDrop 4
+    , rejectUnknownFields = True
+    }
+
+data ServiceMarketplaceBookingReq = ServiceMarketplaceBookingReq
+  { smbAdId         :: Int64
+  , smbSlotId       :: Int64
+  , smbTitle        :: Maybe Text
+  , smbNotes        :: Maybe Text
+  , smbPaymentMethod :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON ServiceMarketplaceBookingReq where
+  parseJSON value = do
+    req <- genericParseJSON defaultOptions
+      { fieldLabelModifier = camelDrop 3
+      , rejectUnknownFields = True
+      } value
+    titleValue <- traverse normalizeTitle (smbTitle req)
+    paymentMethodValue <- traverse normalizePaymentMethod (smbPaymentMethod req)
+    pure req
+      { smbTitle = titleValue
+      , smbPaymentMethod = paymentMethodValue
+      }
+    where
+      normalizeTitle rawTitle =
+        let trimmedTitle = T.strip rawTitle
+        in if T.null trimmedTitle
+             then fail "title cannot be blank; omit title to use the service ad headline"
+             else pure trimmedTitle
+
+      normalizePaymentMethod rawPaymentMethod =
+        let trimmedPaymentMethod = T.strip rawPaymentMethod
+        in if T.null trimmedPaymentMethod
+             then fail "paymentMethod cannot be blank; omit paymentMethod to use other"
+             else pure trimmedPaymentMethod
+
+data ServiceMarketplaceBookingDTO = ServiceMarketplaceBookingDTO
+  { smbBookingId         :: Int64
+  , smbServiceOrderId    :: Int64
+  , smbEscrowId          :: Int64
+  , smbEscrowStatus      :: Text
+  , smbEscrowAmountCents :: Int
+  , smbEscrowCurrency    :: Text
+  } deriving (Show, Generic)
+instance ToJSON ServiceMarketplaceBookingDTO where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
 
 data AdsInquiry = AdsInquiry
   { aiName    :: Maybe Text
@@ -416,7 +628,10 @@ data AdsInquiry = AdsInquiry
   , aiChannel :: Maybe Text
   } deriving (Show, Generic)
 instance FromJSON AdsInquiry where
-  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 2 }
+  parseJSON = genericParseJSON defaultOptions
+    { fieldLabelModifier = camelDrop 2
+    , rejectUnknownFields = True
+    }
 
 data AdsInquiryDTO = AdsInquiryDTO
   { aidInquiryId :: Int
@@ -449,7 +664,21 @@ data CmsContentIn = CmsContentIn
   , cciPayload :: Maybe Value
   } deriving (Show, Generic)
 instance FromJSON CmsContentIn where
-  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 3 }
+  parseJSON raw = do
+    withObject "CmsContentIn" rejectAmbiguousNulls raw
+    genericParseJSON defaultOptions
+      { fieldLabelModifier = camelDrop 3
+      , rejectUnknownFields = True
+      } raw
+    where
+      rejectAmbiguousNulls obj = do
+        rejectNullField "payload" "payload must be omitted instead of null" obj
+        rejectNullField "status" "status must be omitted instead of null" obj
+
+      rejectNullField fieldName message obj =
+        case AesonKeyMap.lookup (AesonKey.fromText fieldName) obj of
+          Just Null -> fail message
+          _ -> pure ()
 
 data CmsContentDTO = CmsContentDTO
   { ccdId        :: Int
@@ -469,16 +698,73 @@ data ChatKitSessionRequest = ChatKitSessionRequest
   { cksWorkflowId :: Maybe Text
   } deriving (Show, Generic)
 
+normalizeChatKitWorkflowId :: Text -> Text -> Either Text Text
+normalizeChatKitWorkflowId fieldName rawWorkflowId
+  | T.null trimmedWorkflowId =
+      Left (fieldName <> " cannot be blank")
+  | T.length trimmedWorkflowId > 256 =
+      Left (fieldName <> " must be 256 characters or fewer")
+  | T.any isSpace trimmedWorkflowId =
+      Left (fieldName <> " must not contain whitespace")
+  | T.any isControl trimmedWorkflowId =
+      Left (fieldName <> " must not contain control characters")
+  | T.any (not . isChatKitWorkflowIdChar) trimmedWorkflowId =
+      Left
+        ( fieldName
+            <> " must use only ASCII letters, digits, '.', '_' or '-'"
+        )
+  | otherwise =
+      Right trimmedWorkflowId
+  where
+    trimmedWorkflowId = T.strip rawWorkflowId
+    isChatKitWorkflowIdChar ch =
+      (ch >= 'a' && ch <= 'z')
+        || (ch >= 'A' && ch <= 'Z')
+        || (ch >= '0' && ch <= '9')
+        || ch `elem` ("._-" :: String)
+
 instance FromJSON ChatKitSessionRequest where
   parseJSON = withObject "ChatKitSessionRequest" $ \o -> do
-    workflowId <- o .:? "workflowId"
+    rejectUnexpectedObjectFields "ChatKitSessionRequest" ["workflowId", "workflow"] o
+    workflowId <- traverse (normalizeWorkflowId "workflowId") =<< o .:? "workflowId"
     workflow <- o .:? "workflow"
     nestedId <- case workflow of
-      Just (Object w) -> w .:? "id"
+      Just (Object w) -> do
+        rejectUnexpectedObjectFields "ChatKitSessionRequest.workflow" ["id"] w
+        mWorkflowId <- w .:? "id"
+        case mWorkflowId of
+          Nothing -> fail "workflow.id is required when workflow is provided"
+          Just rawWorkflowId ->
+            Just <$> normalizeWorkflowId "workflow.id" rawWorkflowId
+      Just _ -> fail "workflow must be an object"
       _ -> pure Nothing
+    case (workflowId, nestedId) of
+      (Just topLevelWorkflowId, Just nestedWorkflowId)
+        | topLevelWorkflowId /= nestedWorkflowId ->
+            fail "workflowId and workflow.id must match when both are provided"
+      _ -> pure ()
     pure ChatKitSessionRequest
       { cksWorkflowId = workflowId <|> nestedId
       }
+    where
+      normalizeWorkflowId fieldName rawWorkflowId =
+        either (fail . T.unpack) pure $
+          normalizeChatKitWorkflowId fieldName rawWorkflowId
+
+rejectUnexpectedObjectFields :: String -> [Text] -> Object -> Parser ()
+rejectUnexpectedObjectFields objectName allowedFields rawObject =
+  case unexpectedFields of
+    [] -> pure ()
+    _ ->
+      fail
+        ( objectName
+            <> " contains unexpected field(s): "
+            <> T.unpack (T.intercalate ", " unexpectedFields)
+        )
+  where
+    allowedSet = sort allowedFields
+    presentFields = sort (map AesonKey.toText (AesonKeyMap.keys rawObject))
+    unexpectedFields = filter (`notElem` allowedSet) presentFields
 
 data ChatKitSessionResponse = ChatKitSessionResponse
   { ckrClientSecret :: Text
@@ -494,7 +780,66 @@ data TidalAgentRequest = TidalAgentRequest
   } deriving (Show, Generic)
 
 instance FromJSON TidalAgentRequest where
-  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = camelDrop 2 }
+  parseJSON = withObject "TidalAgentRequest" $ \o -> do
+    rejectUnexpectedObjectFields "TidalAgentRequest" ["prompt", "model"] o
+    prompt <- normalizeRequiredPrompt =<< o .:? "prompt"
+    model <- traverse (normalizeOptionalTextField "model") =<< o .:? "model"
+    pure TidalAgentRequest
+      { taPrompt = prompt
+      , taModel = model
+      }
+    where
+      normalizeRequiredPrompt mRawValue =
+        case mRawValue of
+          Nothing -> fail "prompt is required"
+          Just rawValue ->
+            let trimmedValue = T.strip rawValue
+            in if T.null trimmedValue
+                 then fail "prompt cannot be blank"
+                 else validatePromptField trimmedValue
+
+      validatePromptField promptValue
+        | T.length promptValue > maxTidalAgentPromptChars =
+            fail ("prompt must be " <> show maxTidalAgentPromptChars <> " characters or fewer")
+        | T.any isUnsupportedTidalAgentPromptChar promptValue =
+            fail "prompt must not contain unsupported control or formatting characters"
+        | otherwise =
+            pure promptValue
+
+      normalizeOptionalTextField fieldName rawValue =
+        let trimmedValue = T.strip rawValue
+        in if T.null trimmedValue
+             then fail (T.unpack fieldName <> " cannot be blank")
+             else validateModelField fieldName trimmedValue
+
+      validateModelField fieldName modelValue
+        | T.length modelValue > 256 =
+            fail (T.unpack fieldName <> " must be 256 characters or fewer")
+        | T.any isSpace modelValue =
+            fail (T.unpack fieldName <> " must not contain whitespace")
+        | T.any isControl modelValue =
+            fail (T.unpack fieldName <> " must not contain control characters")
+        | T.any (not . isModelIdChar) modelValue =
+            fail
+              ( T.unpack fieldName
+                  <> " must use only ASCII letters, digits, '.', '_', '-' or ':'"
+              )
+        | otherwise =
+            pure modelValue
+
+      isModelIdChar ch =
+        (ch >= 'a' && ch <= 'z')
+          || (ch >= 'A' && ch <= 'Z')
+          || (ch >= '0' && ch <= '9')
+          || ch `elem` ("._-:" :: String)
+
+maxTidalAgentPromptChars :: Int
+maxTidalAgentPromptChars = 2000
+
+isUnsupportedTidalAgentPromptChar :: Char -> Bool
+isUnsupportedTidalAgentPromptChar ch =
+  (isControl ch && ch `notElem` ("\n\r\t" :: String))
+    || generalCategory ch `elem` [Format, LineSeparator, ParagraphSeparator]
 
 data TidalAgentResponse = TidalAgentResponse
   { taContent :: Text
