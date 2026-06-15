@@ -11,10 +11,19 @@ module TDF.DTO.SocialEventsDTO
   , EventDTO(..)
   , RsvpDTO(..)
   , InvitationDTO(..)
+  , EventLiveBroadcastDTO(..)
+  , EventLiveBroadcastCreateDTO(..)
+  , EventLiveBroadcastEndDTO(..)
+  , EventLiveBroadcastHeartbeatDTO(..)
   ) where
 
-import           Data.Aeson (FromJSON, ToJSON, withObject, (.:), (.:?), (.=), object, toJSON, parseJSON)
+import           Control.Monad (unless)
+import           Data.Aeson (FromJSON, ToJSON, Value(Null), withObject, (.:), (.:?), (.=), object, toJSON, parseJSON)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import           Data.Aeson.Types (Parser)
 import           Data.Text  (Text)
+import qualified Data.Text as T
 import           Data.Time  (UTCTime)
 import           GHC.Generics (Generic)
 
@@ -142,3 +151,94 @@ data InvitationDTO = InvitationDTO
   } deriving (Show, Eq, Generic)
 instance ToJSON InvitationDTO
 instance FromJSON InvitationDTO
+
+data EventLiveBroadcastDTO = EventLiveBroadcastDTO
+  { elbId                 :: Maybe Text
+  , elbEventId            :: Maybe Text
+  , elbArtistId           :: Text
+  , elbArtistName         :: Text
+  , elbBroadcasterName    :: Text
+  , elbBroadcasterPartyId :: Maybe Text
+  , elbTitle              :: Text
+  , elbDescription        :: Maybe Text
+  , elbStatus             :: Text
+  , elbPlaybackUrl        :: Maybe Text
+  , elbIngestUrl          :: Maybe Text
+  , elbWhipUrl            :: Maybe Text
+  , elbStreamKey          :: Maybe Text
+  , elbViewerCount        :: Int
+  , elbStartedAt          :: Maybe UTCTime
+  , elbEndedAt            :: Maybe UTCTime
+  , elbLastHeartbeatAt    :: Maybe UTCTime
+  } deriving (Show, Eq, Generic)
+instance ToJSON EventLiveBroadcastDTO
+instance FromJSON EventLiveBroadcastDTO
+
+data EventLiveBroadcastCreateDTO = EventLiveBroadcastCreateDTO
+  { elbCreateArtistId           :: Text
+  , elbCreateArtistName         :: Maybe Text
+  , elbCreateBroadcasterName    :: Maybe Text
+  , elbCreateBroadcasterPartyId :: Maybe Text
+  , elbCreateTitle              :: Maybe Text
+  , elbCreateDescription        :: Maybe Text
+  , elbCreateQuality            :: Maybe Text
+  } deriving (Show, Eq, Generic)
+instance ToJSON EventLiveBroadcastCreateDTO
+instance FromJSON EventLiveBroadcastCreateDTO where
+  parseJSON = withObject "EventLiveBroadcastCreateDTO" $ \o -> do
+    rejectUnknownKeys
+      "EventLiveBroadcastCreateDTO"
+      [ "elbCreateArtistId"
+      , "elbCreateArtistName"
+      , "elbCreateBroadcasterName"
+      , "elbCreateBroadcasterPartyId"
+      , "elbCreateTitle"
+      , "elbCreateDescription"
+      , "elbCreateQuality"
+      ]
+      o
+    EventLiveBroadcastCreateDTO
+      <$> (o .: "elbCreateArtistId")
+      <*> optionalTextField o "elbCreateArtistName"
+      <*> optionalTextField o "elbCreateBroadcasterName"
+      <*> optionalTextField o "elbCreateBroadcasterPartyId"
+      <*> optionalTextField o "elbCreateTitle"
+      <*> optionalTextField o "elbCreateDescription"
+      <*> optionalTextField o "elbCreateQuality"
+
+data EventLiveBroadcastEndDTO = EventLiveBroadcastEndDTO
+  { elbEndBroadcasterPartyId :: Maybe Text
+  } deriving (Show, Eq, Generic)
+instance ToJSON EventLiveBroadcastEndDTO
+instance FromJSON EventLiveBroadcastEndDTO where
+  parseJSON = withObject "EventLiveBroadcastEndDTO" $ \o -> do
+    rejectUnknownKeys "EventLiveBroadcastEndDTO" ["elbEndBroadcasterPartyId"] o
+    EventLiveBroadcastEndDTO
+      <$> optionalTextField o "elbEndBroadcasterPartyId"
+
+data EventLiveBroadcastHeartbeatDTO = EventLiveBroadcastHeartbeatDTO
+  { elbhViewerDelta :: Maybe Int
+  } deriving (Show, Eq, Generic)
+instance ToJSON EventLiveBroadcastHeartbeatDTO
+instance FromJSON EventLiveBroadcastHeartbeatDTO where
+  parseJSON = withObject "EventLiveBroadcastHeartbeatDTO" $ \o -> do
+    rejectUnknownKeys "EventLiveBroadcastHeartbeatDTO" ["elbhViewerDelta"] o
+    EventLiveBroadcastHeartbeatDTO <$> o .:? "elbhViewerDelta"
+
+rejectUnknownKeys :: String -> [Text] -> KeyMap.KeyMap Value -> Parser ()
+rejectUnknownKeys label allowedKeys o = do
+  let allowed = fmap Key.fromText allowedKeys
+      unknown = filter (`notElem` allowed) (KeyMap.keys o)
+  unless (null unknown) $
+    fail (label <> " contains unexpected fields: " <> show (fmap Key.toString unknown))
+
+normalizeOptionalText :: Maybe Value -> Parser (Maybe Text)
+normalizeOptionalText Nothing = pure Nothing
+normalizeOptionalText (Just Null) = fail "optional text fields must be omitted instead of null"
+normalizeOptionalText (Just value) = do
+  raw <- parseJSON value
+  let trimmed = T.strip raw
+  pure (if T.null trimmed then Nothing else Just trimmed)
+
+optionalTextField :: KeyMap.KeyMap Value -> Text -> Parser (Maybe Text)
+optionalTextField o key = normalizeOptionalText (KeyMap.lookup (Key.fromText key) o)
