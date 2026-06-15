@@ -11,7 +11,6 @@ executable tdf-hq-exe
   main-is:          Main.hs
   hs-source-dirs:   app, src
   other-modules:
-    TDF.App.Boot
     TDF.API.Admin
     TDF.API
     TDF.API.Bands
@@ -51,7 +50,6 @@ executable tdf-hq-exe
     TDF.DTO.SocialSyncDTO
     TDF.Email
     TDF.Handlers.InputList
-    TDF.Invoice.SRI
     TDF.LogBuffer
     TDF.Meta
     TDF.Models
@@ -80,7 +78,6 @@ executable tdf-hq-exe
     TDF.ServerLiveSessions
     TDF.ServerFeedback
     TDF.ServerRadio
-    TDF.ServerFanClub
     TDF.ServerFuture
     TDF.Routes.Courses
     TDF.Trials.API
@@ -92,7 +89,6 @@ executable tdf-hq-exe
     TDF.CMS.Models
     TDF.Version
     TDF.WhatsApp.Client
-    TDF.WhatsApp.History
     TDF.WhatsApp.Types
     TDF.WhatsApp.Transport
     TDF.WhatsApp.Service
@@ -164,7 +160,6 @@ test-suite tdf-hq-test
     Paths_tdf_hq
     TDF.API
     TDF.API.Admin
-    TDF.App.Boot
     TDF.API.Bands
     TDF.API.Facebook
     TDF.API.Future
@@ -205,7 +200,6 @@ test-suite tdf-hq-test
     TDF.Email
     TDF.Email.Service
     TDF.Handlers.InputList
-    TDF.Invoice.SRI
     TDF.Leads.Model
     TDF.Meta
     TDF.Models
@@ -221,10 +215,8 @@ test-suite tdf-hq-test
     TDF.Seed
     TDF.Server
     TDF.ServerAuth
-    TDF.ServerAuthSpec
     TDF.ServerAdmin
     TDF.ServerExtra
-    TDF.ServerExtraSpec
     TDF.ServerInstagramOAuth
     TDF.ServerInternships
     TDF.ServerProposals
@@ -234,11 +226,7 @@ test-suite tdf-hq-test
     TDF.ServerLiveSessions
     TDF.ServerFeedback
     TDF.ServerRadio
-    TDF.ServerFanClub
-    TDF.ServerFanClubSpec
     TDF.ServerSpec
-    TDF.ServerAdminSpec
-    TDF.ServerProposalsSpec
     TDF.Social.FollowHandlerSpec
     TDF.Social.FollowSpec
     TDF.Services
@@ -249,14 +237,11 @@ test-suite tdf-hq-test
     TDF.Trials.DTO
     TDF.Trials.Models
     TDF.Trials.Server
-    TDF.Trials.PublicLeadSpec
     TDF.UUIDInstances
     TDF.Version
     TDF.LogBuffer
     TDF.WhatsApp.Types
     TDF.WhatsApp.Client
-    TDF.WhatsApp.History
-    TDF.WhatsApp.HistorySpec
     TDF.WhatsApp.Service
     TDF.WhatsApp.Transport
   ghc-options:       -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates -Wredundant-constraints
