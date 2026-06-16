@@ -2683,7 +2683,7 @@ protectedServer user =
   :<|> driveServer user
   :<|> radioServer user
   :<|> countriesServer
-  :<|> futureServer user
+  :<|> futureServer
 
 validateCalendarRedirectUri :: Text -> Either ServerError Text
 validateCalendarRedirectUri rawRedirect =
@@ -4274,6 +4274,8 @@ toCourseRegistrationDTO (Entity rid reg) =
     , DTO.crUtmMedium = ME.courseRegistrationUtmMedium reg
     , DTO.crUtmCampaign = ME.courseRegistrationUtmCampaign reg
     , DTO.crUtmContent = ME.courseRegistrationUtmContent reg
+    , DTO.crReceiptCount = 0
+    , DTO.crFollowUpCount = 0
     , DTO.crCreatedAt = ME.courseRegistrationCreatedAt reg
     , DTO.crUpdatedAt = ME.courseRegistrationUpdatedAt reg
     }
@@ -4429,6 +4431,9 @@ createOrUpdateRegistration rawSlug CourseRegistrationRequest{..} = do
         , ME.courseRegistrationUtmMedium = utmMediumVal
         , ME.courseRegistrationUtmCampaign = utmCampaignVal
         , ME.courseRegistrationUtmContent = utmContentVal
+        , ME.courseRegistrationStripePaymentIntentId = Nothing
+        , ME.courseRegistrationStripeSubscriptionId = Nothing
+        , ME.courseRegistrationSubscriptionStatus = Nothing
         , ME.courseRegistrationCreatedAt = now
         , ME.courseRegistrationUpdatedAt = now
         }
@@ -8699,12 +8704,12 @@ generateInvoiceForSession user sessionId payload = do
           Left err ->
             pure (object ["ok" .= False, "error" .= err])
           Right result -> do
-            when (sirStatus result == "issued") $
+            when (Sri.sirStatus result == "issued") $
               liftIO $ flip runSqlPool pool $
                 update invoiceKey
                   [ InvoiceStatus =. Sent
-                  , InvoiceSriDocumentId =. sirAuthorizationNumber result
-                  , InvoiceNumber =. sirInvoiceNumber result
+                  , InvoiceSriDocumentId =. Sri.sirAuthorizationNumber result
+                  , InvoiceNumber =. Sri.sirInvoiceNumber result
                   ]
             pure (toJSON result)
       else pure Null

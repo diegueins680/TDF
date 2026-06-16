@@ -7,7 +7,15 @@
 
 module TDF.Server.SocialEventsHandlers
   ( socialEventsServer
+  , normalizeBudgetLineType
+  , normalizeEventStatus
+  , normalizeEventType
+  , normalizeFinanceDirection
+  , normalizeFinanceEntryStatus
+  , normalizeFinanceSource
   , normalizeInvitationStatus
+  , normalizeTicketOrderStatus
+  , normalizeTicketStatus
   , parseInvitationIdsEither
   , followArtistDb
   ) where
@@ -1032,6 +1040,92 @@ normalizeInvitationStatus mStatus =
     Nothing -> "pending"
     Just s | T.null s -> "pending"
     Just s -> s
+
+normalizeTicketOrderStatus :: Maybe T.Text -> T.Text
+normalizeTicketOrderStatus mStatus =
+  case fmap (T.toLower . T.strip) mStatus of
+    Just "paid" -> "paid"
+    Just "refunded" -> "refunded"
+    Just "cancelled" -> "cancelled"
+    Just "canceled" -> "cancelled"
+    _ -> "pending"
+
+normalizeTicketStatus :: Maybe T.Text -> T.Text
+normalizeTicketStatus mStatus =
+  case fmap (T.toLower . T.strip) mStatus of
+    Just "checked_in" -> "checked_in"
+    Just "checkedin" -> "checked_in"
+    Just "used" -> "checked_in"
+    Just "cancelled" -> "cancelled"
+    Just "canceled" -> "cancelled"
+    Just "refunded" -> "refunded"
+    _ -> "issued"
+
+normalizeEventType :: Maybe T.Text -> Maybe T.Text
+normalizeEventType mType =
+  case fmap (T.toLower . T.strip) mType of
+    Just "party" -> Just "party"
+    Just "concert" -> Just "concert"
+    Just "festival" -> Just "festival"
+    Just "conference" -> Just "conference"
+    Just "showcase" -> Just "showcase"
+    Just "other" -> Just "other"
+    _ -> Nothing
+
+normalizeEventStatus :: Maybe T.Text -> Maybe T.Text
+normalizeEventStatus mStatus =
+  case fmap (T.toLower . T.strip) mStatus of
+    Just "planning" -> Just "planning"
+    Just "announced" -> Just "announced"
+    Just "on_sale" -> Just "on_sale"
+    Just "live" -> Just "live"
+    Just "completed" -> Just "completed"
+    Just "cancelled" -> Just "cancelled"
+    Just "canceled" -> Just "cancelled"
+    _ -> Nothing
+
+normalizeBudgetLineType :: Maybe T.Text -> T.Text
+normalizeBudgetLineType mType =
+  case fmap (T.toLower . T.strip) mType of
+    Just "income" -> "income"
+    _ -> "expense"
+
+normalizeFinanceDirection :: Maybe T.Text -> T.Text
+normalizeFinanceDirection mDirection =
+  case fmap (T.toLower . T.strip) mDirection of
+    Just "income" -> "income"
+    _ -> "expense"
+
+normalizeFinanceSource :: Maybe T.Text -> T.Text
+normalizeFinanceSource mSource =
+  case fmap (T.toLower . T.strip) mSource of
+    Just "ticket_sale" -> "ticket_sale"
+    Just "ticket_refund" -> "ticket_refund"
+    Just "sponsorship" -> "sponsorship"
+    Just "vendor_payment" -> "vendor_payment"
+    Just "merchandise" -> "merchandise"
+    Just "operations" -> "operations"
+    Just "contract_commitment" -> "contract_commitment"
+    Just "contract_payment" -> "contract_payment"
+    Just "purchase_order" -> "purchase_order"
+    Just "purchase_payment" -> "purchase_payment"
+    Just "asset_purchase" -> "asset_purchase"
+    Just "liability_loan" -> "liability_loan"
+    Just "liability_payment" -> "liability_payment"
+    Just "accounts_receivable" -> "accounts_receivable"
+    Just "accounts_receivable_collection" -> "accounts_receivable_collection"
+    Just "accounts_receivable_settlement" -> "accounts_receivable_collection"
+    Just "manual" -> "manual"
+    Just "other" -> "other"
+    _ -> "manual"
+
+normalizeFinanceEntryStatus :: Maybe T.Text -> T.Text
+normalizeFinanceEntryStatus mStatus =
+  case fmap (T.toLower . T.strip) mStatus of
+    Just "draft" -> "draft"
+    Just "void" -> "void"
+    Just "pending" -> "pending"
+    _ -> "posted"
 
 -- | Parse event and invitation ids, returning a typed pair or an HTTP 400 error.
 parseInvitationIdsEither :: T.Text -> T.Text -> Either ServerError (SocialEventId, EventInvitationId)

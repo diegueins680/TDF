@@ -77,6 +77,18 @@ slugify :: Text -> Text
 slugify =
   T.take 60 . T.filter (\c -> isAlphaNum c || c `elem` ("._-" :: String)) . T.toLower . T.strip
 
+isValidHttpUrl :: Text -> Bool
+isValidHttpUrl rawUrl =
+  let url = T.toLower (T.strip rawUrl)
+      hasScheme = "https://" `T.isPrefixOf` url || "http://" `T.isPrefixOf` url
+      authority = T.takeWhile (`notElem` ("/?#" :: String)) $
+        if "https://" `T.isPrefixOf` url
+          then T.drop 8 url
+          else if "http://" `T.isPrefixOf` url
+            then T.drop 7 url
+            else ""
+  in hasScheme && not (T.null authority)
+
 deriveBaseUsername :: Maybe Text -> Text -> Text
 deriveBaseUsername mName emailAddr =
   let emailLocal = T.takeWhile (/= '@') emailAddr

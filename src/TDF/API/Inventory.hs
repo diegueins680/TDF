@@ -18,6 +18,9 @@ data AssetUploadForm = AssetUploadForm
   , aufName :: Maybe Text
   }
 
+validateAssetUploadForm :: AssetUploadForm -> Either Text AssetUploadForm
+validateAssetUploadForm = Right
+
 instance FromMultipart Tmp AssetUploadForm where
   fromMultipart multipart = do
     file <- lookupFile "file" multipart
@@ -45,3 +48,9 @@ type InventoryAPI =
   :<|> "assets" :> Capture "id" Text :> "history"  :> Get '[JSON] [AssetCheckoutDTO]
   :<|> "assets" :> Capture "id" Text :> "qr"       :> Post '[JSON] AssetQrDTO
   :<|> "assets" :> "qr" :> Capture "token" Text    :> Get '[JSON] AssetDTO
+
+type InventoryPublicAPI =
+       "assets" :> "qr" :> Capture "token" Text :> Get '[JSON] AssetDTO
+  :<|> "assets" :> "qr" :> Capture "token" Text :> "checkout" :> ReqBody '[JSON] AssetCheckoutRequest :> Post '[JSON] AssetCheckoutDTO
+  :<|> "assets" :> "qr" :> Capture "token" Text :> "checkin" :> ReqBody '[JSON] AssetCheckinRequest :> Post '[JSON] AssetCheckoutDTO
+  :<|> "assets" :> "qr" :> Capture "token" Text :> "upload" :> MultipartForm Tmp AssetUploadForm :> Post '[JSON] AssetUploadDTO

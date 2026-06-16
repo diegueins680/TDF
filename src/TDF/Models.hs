@@ -350,6 +350,42 @@ ServiceStatusChange
     changedBy        PartyId Maybe
     createdAt        UTCTime
     deriving Show Generic
+ServiceAd
+    providerPartyId  PartyId
+    serviceCatalogId ServiceCatalogId Maybe
+    roleTag          Text
+    headline         Text
+    description      Text Maybe
+    feeCents         Int
+    currency         Text default='USD'
+    slotMinutes      Int default=60
+    active           Bool default=True
+    createdAt        UTCTime
+    UniqueServiceAd providerPartyId headline
+    deriving Show Generic
+ServiceAdSlot
+    adId             ServiceAdId
+    startsAt         UTCTime
+    endsAt           UTCTime
+    status           Text default='open'
+    createdAt        UTCTime
+    UniqueServiceAdSlot adId startsAt endsAt
+    deriving Show Generic
+ServiceEscrow
+    bookingId        BookingId
+    serviceOrderId   ServiceOrderId
+    adId             ServiceAdId
+    patronPartyId    PartyId
+    providerPartyId  PartyId
+    amountCents      Int
+    currency         Text default='USD'
+    status           Text
+    heldPaymentId    PaymentId Maybe
+    releasedPaymentId PaymentId Maybe
+    heldAt           UTCTime
+    releasedAt       UTCTime Maybe
+    UniqueServiceEscrowBooking bookingId
+    deriving Show Generic
 Resource
     name             Text
     slug             Text
@@ -482,20 +518,26 @@ PaymentSplit
     deriving Show Generic
 
 InstagramMessage
-    externalId       Text
-    senderId         Text
-    senderName       Text Maybe
-    text             Text Maybe
-    direction        Text
-    adExternalId     Text Maybe
-    adName           Text Maybe
+    externalId         Text
+    senderId           Text
+    senderName         Text Maybe
+    text               Text Maybe
+    direction          Text
+    adExternalId       Text Maybe
+    adName             Text Maybe
     campaignExternalId Text Maybe
-    campaignName     Text Maybe
-    metadata         Text Maybe
-    repliedAt        UTCTime Maybe
-    replyText        Text Maybe
-    replyError       Text Maybe
-    createdAt        UTCTime
+    campaignName       Text Maybe
+    metadata           Text Maybe
+    replyStatus        Text default='pending'
+    holdReason         Text Maybe
+    holdRequiredFields Text Maybe
+    lastAttemptAt      UTCTime Maybe
+    attemptCount       Int default=0
+    repliedAt          UTCTime Maybe
+    replyText          Text Maybe
+    replyError         Text Maybe
+    deletedAt          UTCTime Maybe
+    createdAt          UTCTime
     UniqueInstagramMessage externalId
     deriving Show Generic
 SocialSyncAccount
