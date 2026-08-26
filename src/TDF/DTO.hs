@@ -1,5 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 module TDF.DTO where
@@ -15,6 +15,7 @@ import           Database.Persist (Entity(..))
 import           Database.Persist.Sql (fromSqlKey)
 
 import           TDF.Models
+import qualified TDF.Models as M
 import           TDF.API.Types (BandDTO)
 
 -- Parties
@@ -31,10 +32,285 @@ data PartyDTO = PartyDTO
   , emergencyContact :: Maybe Text
   , notes            :: Maybe Text
   , band             :: Maybe BandDTO
+  , hasUserAccount   :: Bool
   } deriving (Show, Generic)
 
 instance ToJSON PartyDTO
 instance FromJSON PartyDTO
+ 
+data ArtistProfileDTO = ArtistProfileDTO
+  { apArtistId        :: Int64
+  , apDisplayName     :: Text
+  , apSlug            :: Maybe Text
+  , apBio             :: Maybe Text
+  , apCity            :: Maybe Text
+  , apHeroImageUrl    :: Maybe Text
+  , apSpotifyArtistId :: Maybe Text
+  , apSpotifyUrl      :: Maybe Text
+  , apYoutubeChannelId :: Maybe Text
+  , apYoutubeUrl      :: Maybe Text
+  , apWebsiteUrl      :: Maybe Text
+  , apFeaturedVideoUrl :: Maybe Text
+  , apGenres          :: Maybe Text
+  , apHighlights      :: Maybe Text
+  , apFollowerCount   :: Int
+  , apHasUserAccount  :: Bool
+  } deriving (Show, Generic)
+instance ToJSON ArtistProfileDTO
+
+data ArtistProfileUpsert = ArtistProfileUpsert
+  { apuArtistId        :: Int64
+  , apuDisplayName     :: Maybe Text
+  , apuSlug            :: Maybe Text
+  , apuBio             :: Maybe Text
+  , apuCity            :: Maybe Text
+  , apuHeroImageUrl    :: Maybe Text
+  , apuSpotifyArtistId :: Maybe Text
+  , apuSpotifyUrl      :: Maybe Text
+  , apuYoutubeChannelId :: Maybe Text
+  , apuYoutubeUrl      :: Maybe Text
+  , apuWebsiteUrl      :: Maybe Text
+  , apuFeaturedVideoUrl :: Maybe Text
+  , apuGenres          :: Maybe Text
+  , apuHighlights      :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON ArtistProfileUpsert
+
+data ArtistReleaseDTO = ArtistReleaseDTO
+  { arArtistId     :: Int64
+  , arReleaseId    :: Int64
+  , arTitle        :: Text
+  , arReleaseDate  :: Maybe Day
+  , arDescription  :: Maybe Text
+  , arCoverImageUrl :: Maybe Text
+  , arSpotifyUrl   :: Maybe Text
+  , arYoutubeUrl   :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON ArtistReleaseDTO
+
+data ArtistReleaseUpsert = ArtistReleaseUpsert
+  { aruArtistId    :: Int64
+  , aruTitle       :: Text
+  , aruReleaseDate :: Maybe Day
+  , aruDescription :: Maybe Text
+  , aruCoverImageUrl :: Maybe Text
+  , aruSpotifyUrl  :: Maybe Text
+  , aruYoutubeUrl  :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON ArtistReleaseUpsert
+
+data FanProfileDTO = FanProfileDTO
+  { fpArtistId      :: Int64
+  , fpDisplayName   :: Maybe Text
+  , fpAvatarUrl     :: Maybe Text
+  , fpFavoriteGenres :: Maybe Text
+  , fpBio           :: Maybe Text
+  , fpCity          :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON FanProfileDTO
+
+data FanProfileUpdate = FanProfileUpdate
+  { fpuDisplayName   :: Maybe Text
+  , fpuAvatarUrl     :: Maybe Text
+  , fpuFavoriteGenres :: Maybe Text
+  , fpuBio           :: Maybe Text
+  , fpuCity          :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON FanProfileUpdate
+
+data CountryDTO = CountryDTO
+  { countryCode :: Text
+  , countryName :: Text
+  } deriving (Show, Generic)
+instance ToJSON CountryDTO
+instance FromJSON CountryDTO
+
+toCountryDTO :: Entity Country -> CountryDTO
+toCountryDTO (Entity _ Country{..}) = CountryDTO
+  { countryCode = countryCode
+  , countryName = countryName
+  }
+
+data FanFollowDTO = FanFollowDTO
+  { ffArtistId      :: Int64
+  , ffArtistName    :: Text
+  , ffHeroImageUrl  :: Maybe Text
+  , ffSpotifyUrl    :: Maybe Text
+  , ffYoutubeUrl    :: Maybe Text
+  , ffStartedAt     :: Day
+  } deriving (Show, Generic)
+instance ToJSON FanFollowDTO
+
+-- Social follows between any parties (used for vCard/NFC exchanges)
+data PartyFollowDTO = PartyFollowDTO
+  { pfFollowerId   :: Int64
+  , pfFollowingId  :: Int64
+  , pfViaNfc       :: Bool
+  , pfStartedAt    :: Day
+  } deriving (Show, Generic)
+instance ToJSON PartyFollowDTO
+
+data SuggestedFriendDTO = SuggestedFriendDTO
+  { sfPartyId       :: Int64
+  , sfMutualCount   :: Int
+  } deriving (Show, Generic)
+instance ToJSON SuggestedFriendDTO
+
+data ChatThreadDTO = ChatThreadDTO
+  { ctThreadId         :: Int64
+  , ctOtherPartyId     :: Int64
+  , ctOtherDisplayName :: Text
+  , ctLastMessage      :: Maybe Text
+  , ctLastMessageAt    :: Maybe UTCTime
+  , ctUpdatedAt        :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON ChatThreadDTO
+
+data ChatMessageDTO = ChatMessageDTO
+  { cmId            :: Int64
+  , cmThreadId      :: Int64
+  , cmSenderPartyId :: Int64
+  , cmBody          :: Text
+  , cmCreatedAt     :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON ChatMessageDTO
+
+data ChatSendMessageRequest = ChatSendMessageRequest
+  { csmBody :: Text
+  } deriving (Show, Generic)
+instance FromJSON ChatSendMessageRequest
+
+data CampaignDTO = CampaignDTO
+  { campId        :: Int64
+  , campName      :: Text
+  , campObjective :: Maybe Text
+  , campPlatform  :: Maybe Text
+  , campStatus    :: Text
+  , campBudgetCents :: Maybe Int
+  , campStartDate :: Maybe Day
+  , campEndDate   :: Maybe Day
+  } deriving (Show, Generic)
+instance ToJSON CampaignDTO
+
+data CampaignUpsert = CampaignUpsert
+  { cuId          :: Maybe Int64
+  , cuName        :: Text
+  , cuObjective   :: Maybe Text
+  , cuPlatform    :: Maybe Text
+  , cuStatus      :: Maybe Text
+  , cuBudgetCents :: Maybe Int
+  , cuStartDate   :: Maybe Day
+  , cuEndDate     :: Maybe Day
+  } deriving (Show, Generic)
+instance FromJSON CampaignUpsert
+
+data AdCreativeDTO = AdCreativeDTO
+  { adId        :: Int64
+  , adCampaignId :: Maybe Int64
+  , adExternalId :: Maybe Text
+  , adName      :: Text
+  , adChannel   :: Maybe Text
+  , adAudience  :: Maybe Text
+  , adLandingUrl :: Maybe Text
+  , adCta       :: Maybe Text
+  , adStatus    :: Text
+  , adNotes     :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON AdCreativeDTO
+
+data AdCreativeUpsert = AdCreativeUpsert
+  { acuId         :: Maybe Int64
+  , acuCampaignId :: Maybe Int64
+  , acuExternalId :: Maybe Text
+  , acuName       :: Text
+  , acuChannel    :: Maybe Text
+  , acuAudience   :: Maybe Text
+  , acuLandingUrl :: Maybe Text
+  , acuCta        :: Maybe Text
+  , acuStatus     :: Maybe Text
+  , acuNotes      :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON AdCreativeUpsert
+
+data AdConversationExampleDTO = AdConversationExampleDTO
+  { aceId              :: Int64
+  , aceAdId            :: Int64
+  , aceUserMessage     :: Text
+  , aceAssistantMessage :: Text
+  , aceTags            :: Maybe [Text]
+  } deriving (Show, Generic)
+instance ToJSON AdConversationExampleDTO
+
+data AdConversationExampleCreate = AdConversationExampleCreate
+  { aecUserMessage     :: Text
+  , aecAssistantMessage :: Text
+  , aecTags            :: Maybe [Text]
+  } deriving (Show, Generic)
+instance FromJSON AdConversationExampleCreate
+
+data AdsAssistRequest = AdsAssistRequest
+  { aarAdId       :: Maybe Int64
+  , aarCampaignId :: Maybe Int64
+  , aarMessage    :: Text
+  , aarChannel    :: Maybe Text
+  , aarPartyId    :: Maybe Int64
+  } deriving (Show, Generic)
+instance FromJSON AdsAssistRequest
+
+data AdsAssistResponse = AdsAssistResponse
+  { aasReply         :: Text
+  , aasUsedExamples  :: [AdConversationExampleDTO]
+  , aasKnowledgeUsed :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON AdsAssistResponse
+
+data RadioPresenceDTO = RadioPresenceDTO
+  { rpPartyId     :: Int64
+  , rpStreamUrl   :: Text
+  , rpStationName :: Maybe Text
+  , rpStationId   :: Maybe Text
+  , rpUpdatedAt   :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON RadioPresenceDTO
+
+data RadioPresenceUpsert = RadioPresenceUpsert
+  { rpuStreamUrl   :: Text
+  , rpuStationName :: Maybe Text
+  , rpuStationId   :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON RadioPresenceUpsert
+
+data VCardExchangeRequest = VCardExchangeRequest
+  { vcerPartyId :: Int64
+  } deriving (Show, Generic)
+instance FromJSON VCardExchangeRequest
+
+-- Course registrations (admin)
+data CourseRegistrationDTO = CourseRegistrationDTO
+  { crId          :: Int64
+  , crCourseSlug  :: Text
+  , crFullName    :: Maybe Text
+  , crEmail       :: Maybe Text
+  , crPhoneE164   :: Maybe Text
+  , crSource      :: Text
+  , crStatus      :: Text
+  , crHowHeard    :: Maybe Text
+  , crUtmSource   :: Maybe Text
+  , crUtmMedium   :: Maybe Text
+  , crUtmCampaign :: Maybe Text
+  , crUtmContent  :: Maybe Text
+  , crCreatedAt   :: UTCTime
+  , crUpdatedAt   :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CourseRegistrationDTO
+
+-- Logs
+data LogEntryDTO = LogEntryDTO
+  { logTimestamp :: UTCTime
+  , logLevel     :: Text
+  , logMessage   :: Text
+  } deriving (Show, Generic)
+instance ToJSON LogEntryDTO
 
 data PartyCreate = PartyCreate
   { cLegalName        :: Maybe Text
@@ -65,14 +341,14 @@ data PartyUpdate = PartyUpdate
   } deriving (Show, Generic)
 instance FromJSON PartyUpdate
 
-toPartyDTO :: Entity Party -> PartyDTO
+toPartyDTO :: Bool -> Entity Party -> PartyDTO
 toPartyDTO = toPartyDTOWithBand Nothing
 
-toPartyDTOWithBand :: Maybe BandDTO -> Entity Party -> PartyDTO
-toPartyDTOWithBand mBand (Entity pid p) = PartyDTO
+toPartyDTOWithBand :: Maybe BandDTO -> Bool -> Entity Party -> PartyDTO
+toPartyDTOWithBand mBand hasAccount (Entity pid p) = PartyDTO
   { partyId          = fromSqlKey pid
   , legalName        = partyLegalName p
-  , displayName      = partyDisplayName p
+  , displayName      = M.partyDisplayName p
   , isOrg            = partyIsOrg p
   , taxId            = partyTaxId p
   , primaryEmail     = partyPrimaryEmail p
@@ -82,6 +358,7 @@ toPartyDTOWithBand mBand (Entity pid p) = PartyDTO
   , emergencyContact = partyEmergencyContact p
   , notes            = partyNotes p
   , band             = mBand
+  , hasUserAccount   = hasAccount
   }
 
 -- Helper
@@ -104,8 +381,19 @@ data BookingDTO = BookingDTO
   , status      :: Text
   , notes       :: Maybe Text
   , partyId     :: Maybe Int64
+  , engineerPartyId :: Maybe Int64
+  , engineerName :: Maybe Text
   , serviceType :: Maybe Text
+  , serviceOrderId    :: Maybe Int64
+  , serviceOrderTitle :: Maybe Text
+  , customerName      :: Maybe Text
+  , partyDisplayName  :: Maybe Text
   , resources   :: [BookingResourceDTO]
+  , courseSlug        :: Maybe Text
+  , coursePrice       :: Maybe Double
+  , courseCapacity    :: Maybe Int
+  , courseRemaining   :: Maybe Int
+  , courseLocation    :: Maybe Text
   } deriving (Show, Generic)
 instance ToJSON BookingDTO
 
@@ -217,6 +505,48 @@ data LoginRequest = LoginRequest
   , password :: Text
   } deriving (Show, Generic)
 instance FromJSON LoginRequest
+
+data GoogleLoginRequest = GoogleLoginRequest
+  { idToken :: Text
+  } deriving (Show, Generic)
+instance FromJSON GoogleLoginRequest
+
+data SignupRequest = SignupRequest
+  { firstName       :: Text
+  , lastName        :: Text
+  , email           :: Text
+  , phone           :: Maybe Text
+  , password        :: Text
+  , googleIdToken   :: Maybe Text
+  , marketingOptIn  :: Maybe Bool
+  , internshipStartAt :: Maybe Day
+  , internshipEndAt   :: Maybe Day
+  , internshipRequiredHours :: Maybe Int
+  , internshipSkills  :: Maybe Text
+  , internshipAreas   :: Maybe Text
+  , roles           :: Maybe [RoleEnum]
+  , fanArtistIds    :: Maybe [Int64]
+  , claimArtistId   :: Maybe Int64
+  } deriving (Show, Generic)
+instance FromJSON SignupRequest
+
+data ChangePasswordRequest = ChangePasswordRequest
+  { username        :: Maybe Text
+  , currentPassword :: Text
+  , newPassword     :: Text
+  } deriving (Show, Generic)
+instance FromJSON ChangePasswordRequest
+
+data PasswordResetRequest = PasswordResetRequest
+  { email :: Text
+  } deriving (Show, Generic)
+instance FromJSON PasswordResetRequest
+
+data PasswordResetConfirmRequest = PasswordResetConfirmRequest
+  { token       :: Text
+  , newPassword :: Text
+  } deriving (Show, Generic)
+instance FromJSON PasswordResetConfirmRequest
 
 data LoginResponse = LoginResponse
   { token   :: Text

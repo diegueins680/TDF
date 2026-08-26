@@ -1,25 +1,28 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module TDF.Models where
 
-import           Data.Aeson (FromJSON, ToJSON)
-import           Data.Text (Text)
-import           Data.Time (Day, UTCTime)
-import           Database.Persist.TH
+import           Data.Aeson (ToJSON(..), FromJSON(..), withText, Value(String))
 import           GHC.Generics (Generic)
+import           Data.Text (Text)
+import qualified Data.Text as T
+import           Data.Time (UTCTime, Day)
+import           Data.UUID (UUID)
+import           Database.Persist.TH
+import           TDF.UUIDInstances ()
 
 -- Enums
 data ServiceKind = Recording | Mixing | Mastering | Rehearsal | Classes | EventProduction
@@ -30,7 +33,37 @@ data PricingModel = Hourly | PerSong | Package | Quote | Retainer
   deriving (Show, Read, Eq, Enum, Bounded, Generic)
 derivePersistField "PricingModel"
 
-data RoleEnum = Admin | Manager | Engineer | Teacher | Reception | Accounting | Artist | Student | Vendor | ReadOnly | Customer
+data RoleEnum
+  = Admin
+  | Manager
+  | StudioManager
+  | Engineer
+  | Teacher
+  | Reception
+  | Accounting
+  | LiveSessionsProducer
+  | Intern
+  | Artist
+  | Artista
+  | Webmaster
+  | Promotor
+  | Promoter
+  | Producer
+  | Songwriter
+  | DJ
+  | Publicist
+  | TourManager
+  | LabelRep
+  | StageManager
+  | RoadCrew
+  | Photographer
+  | AandR
+  | Student
+  | Vendor
+  | ReadOnly
+  | Customer
+  | Fan
+  | Maintenance
   deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
 derivePersistField "RoleEnum"
 
@@ -75,8 +108,12 @@ instance ToJSON ServiceKind
 instance FromJSON ServiceKind
 instance ToJSON PricingModel
 instance FromJSON PricingModel
-instance ToJSON RoleEnum
-instance FromJSON RoleEnum
+instance ToJSON RoleEnum where
+  toJSON = String . roleToText
+
+instance FromJSON RoleEnum where
+  parseJSON = withText "RoleEnum" $ \txt ->
+    maybe (fail $ "Invalid role: " <> T.unpack txt) pure (roleFromText txt)
 instance ToJSON ResourceType
 instance FromJSON ResourceType
 instance ToJSON BookingStatus
@@ -93,6 +130,84 @@ instance ToJSON InvoiceStatus
 instance FromJSON InvoiceStatus
 instance ToJSON TicketStatus
 instance FromJSON TicketStatus
+
+roleToText :: RoleEnum -> Text
+roleToText Admin         = "Admin"
+roleToText Manager       = "Manager"
+roleToText StudioManager = "Studio Manager"
+roleToText Engineer      = "Engineer"
+roleToText Teacher       = "Teacher"
+roleToText Reception     = "Reception"
+roleToText Accounting    = "Accounting"
+roleToText LiveSessionsProducer = "Live Sessions Producer"
+roleToText Intern        = "Intern"
+roleToText Artist        = "Artist"
+roleToText Artista       = "Artista"
+roleToText Webmaster     = "Webmaster"
+roleToText Promotor      = "Promotor"
+roleToText Promoter      = "Promoter"
+roleToText Producer      = "Producer"
+roleToText Songwriter    = "Songwriter"
+roleToText DJ            = "DJ"
+roleToText Publicist     = "Publicist"
+roleToText TourManager   = "TourManager"
+roleToText LabelRep      = "LabelRep"
+roleToText StageManager  = "StageManager"
+roleToText RoadCrew      = "RoadCrew"
+roleToText Photographer  = "Photographer"
+roleToText AandR         = "A&R"
+roleToText Student       = "Student"
+roleToText Vendor        = "Vendor"
+roleToText ReadOnly      = "ReadOnly"
+roleToText Customer      = "Customer"
+roleToText Fan           = "Fan"
+roleToText Maintenance   = "Maintenance"
+
+roleFromText :: Text -> Maybe RoleEnum
+roleFromText raw = 
+  let normalized = T.toLower (T.strip raw)
+  in case normalized of
+    "admin"        -> Just Admin
+    "manager"      -> Just Manager
+    "studio-manager" -> Just StudioManager
+    "studiomanager" -> Just StudioManager
+    "studio manager" -> Just StudioManager
+    "engineer"     -> Just Engineer
+    "teacher"      -> Just Teacher
+    "reception"    -> Just Reception
+    "accounting"   -> Just Accounting
+    "live-sessions-producer" -> Just LiveSessionsProducer
+    "livesessionsproducer" -> Just LiveSessionsProducer
+    "live-session-producer" -> Just LiveSessionsProducer
+    "live sessions producer" -> Just LiveSessionsProducer
+    "live session producer" -> Just LiveSessionsProducer
+    "intern"       -> Just Intern
+    "pasante"      -> Just Intern
+    "practicante"  -> Just Intern
+    "artist"       -> Just Artist
+    "artista"      -> Just Artista
+    "webmaster"    -> Just Webmaster
+    "promotor"     -> Just Promotor
+    "promoter"     -> Just Promoter
+    "producer"     -> Just Producer
+    "songwriter"   -> Just Songwriter
+    "dj"           -> Just DJ
+    "publicist"    -> Just Publicist
+    "tourmanager"  -> Just TourManager
+    "labelrep"     -> Just LabelRep
+    "stagemanager" -> Just StageManager
+    "roadcrew"     -> Just RoadCrew
+    "photographer" -> Just Photographer
+    "a&r"          -> Just AandR
+    "aandr"        -> Just AandR
+    "ar"           -> Just AandR
+    "student"      -> Just Student
+    "vendor"       -> Just Vendor
+    "readonly"     -> Just ReadOnly
+    "customer"     -> Just Customer
+    "fan"          -> Just Fan
+    "maintenance"  -> Just Maintenance
+    _              -> Nothing
 instance ToJSON StockTxnReason
 instance FromJSON StockTxnReason
 
@@ -130,12 +245,88 @@ PartyRole
     active           Bool
     UniquePartyRole  partyId role
     deriving Show Generic
+ArtistProfile
+    artistPartyId    PartyId
+    slug             Text Maybe
+    bio              Text Maybe
+    city             Text Maybe
+    heroImageUrl     Text Maybe
+    spotifyArtistId  Text Maybe
+    spotifyUrl       Text Maybe
+    youtubeChannelId Text Maybe
+    youtubeUrl       Text Maybe
+    websiteUrl       Text Maybe
+    featuredVideoUrl Text Maybe
+    genres           Text Maybe
+    highlights       Text Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime Maybe
+    UniqueArtistProfile artistPartyId
+    deriving Show Generic
+ArtistRelease
+    artistPartyId    PartyId
+    title            Text
+    releaseDate      Day Maybe
+    description      Text Maybe
+    coverImageUrl    Text Maybe
+    spotifyUrl       Text Maybe
+    youtubeUrl       Text Maybe
+    createdAt        UTCTime
+    deriving Show Generic
+FanProfile
+    fanPartyId       PartyId
+    displayName      Text Maybe
+    avatarUrl        Text Maybe
+    favoriteGenres   Text Maybe
+    bio              Text Maybe
+    city             Text Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime Maybe
+    UniqueFanProfile fanPartyId
+    deriving Show Generic
+FanFollow
+    fanPartyId       PartyId
+    artistPartyId    PartyId
+    createdAt        UTCTime
+    UniqueFanFollow  fanPartyId artistPartyId
+    deriving Show Generic
+PartyFollow
+    followerPartyId  PartyId
+    followingPartyId PartyId
+    viaNfc           Bool
+    createdAt        UTCTime
+    UniquePartyFollow followerPartyId followingPartyId
+    deriving Show Generic
+ChatThread
+    dmPartyA         PartyId
+    dmPartyB         PartyId
+    createdAt        UTCTime
+    updatedAt        UTCTime
+    UniqueChatThread dmPartyA dmPartyB
+    deriving Show Generic
+ChatMessage
+    threadId         ChatThreadId
+    senderPartyId    PartyId
+    body             Text
+    createdAt        UTCTime
+    deriving Show Generic
+    IndexChatMessageThread threadId
+PartyRadioPresence
+    partyId          PartyId
+    streamUrl        Text
+    stationName      Text Maybe
+    stationId        Text Maybe
+    updatedAt        UTCTime
+    UniquePartyPresence partyId
+    deriving Show Generic
 ServiceCatalog
     name             Text
     kind             ServiceKind
     pricingModel     PricingModel
     defaultRateCents Int Maybe
     taxBps           Int Maybe
+    currency         Text default='USD'
+    billingUnit      Text Maybe
     active           Bool
     deriving Show Generic
 ServiceOrder
@@ -172,6 +363,8 @@ Booking
     serviceOrderId   ServiceOrderId Maybe
     partyId          PartyId Maybe
     serviceType      Text Maybe
+    engineerPartyId  PartyId Maybe
+    engineerName     Text Maybe
     startsAt         UTCTime
     endsAt           UTCTime
     status           BookingStatus
@@ -269,17 +462,87 @@ ReceiptLine
     totalCents       Int
     deriving Show Generic
 Payment
-    invoiceId        InvoiceId
+    invoiceId        InvoiceId Maybe
+    orderId          ServiceOrderId Maybe
+    partyId          PartyId
     method           PaymentMethod
     amountCents      Int
     receivedAt       UTCTime
     reference        Text Maybe
+    concept          Text Maybe
+    period           Text Maybe
+    attachment       Text Maybe
     createdBy        PartyId Maybe
+    createdAt        UTCTime Maybe
     deriving Show Generic
 PaymentSplit
     paymentId        PaymentId
     payerId          PartyId
     amountCents      Int
+    deriving Show Generic
+
+InstagramMessage
+    externalId       Text
+    senderId         Text
+    senderName       Text Maybe
+    text             Text Maybe
+    direction        Text
+    adExternalId     Text Maybe
+    adName           Text Maybe
+    campaignExternalId Text Maybe
+    campaignName     Text Maybe
+    metadata         Text Maybe
+    repliedAt        UTCTime Maybe
+    replyText        Text Maybe
+    replyError       Text Maybe
+    createdAt        UTCTime
+    UniqueInstagramMessage externalId
+    deriving Show Generic
+SocialSyncAccount
+    partyId          PartyId Maybe
+    artistProfileId  ArtistProfileId Maybe
+    platform         Text
+    externalUserId   Text
+    handle           Text Maybe
+    accessToken      Text Maybe
+    tokenExpiresAt   UTCTime Maybe
+    status           Text
+    lastSyncedAt     UTCTime Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime Maybe
+    UniqueSocialSyncAccount platform externalUserId
+    deriving Show Generic
+SocialSyncPost
+    accountId        SocialSyncAccountId Maybe
+    platform         Text
+    externalPostId   Text
+    artistPartyId    PartyId Maybe
+    artistProfileId  ArtistProfileId Maybe
+    caption          Text Maybe
+    permalink        Text Maybe
+    mediaUrls        Text Maybe
+    postedAt         UTCTime Maybe
+    fetchedAt        UTCTime
+    tags             Text Maybe
+    summary          Text Maybe
+    ingestSource     Text
+    likeCount        Int Maybe
+    commentCount     Int Maybe
+    shareCount       Int Maybe
+    viewCount        Int Maybe
+    createdAt        UTCTime
+    updatedAt        UTCTime
+    UniqueSocialSyncPost platform externalPostId
+    deriving Show Generic
+SocialSyncRun
+    platform         Text
+    ingestSource     Text
+    startedAt        UTCTime
+    endedAt          UTCTime Maybe
+    status           Text
+    newPosts         Int
+    updatedPosts     Int
+    errorMessage     Text Maybe
     deriving Show Generic
 ExternalCalendarMapping
     resourceId       ResourceId
@@ -294,5 +557,89 @@ AuditLog
     action           Text
     diff             Text Maybe
     createdAt        UTCTime
+    deriving Show Generic
+
+AcademyUser
+    Id UUID default=gen_random_uuid()
+    email     Text
+    role      Text
+    platform  Text Maybe
+    createdAt UTCTime default=now()
+    UniqueAcademyUserEmail email
+    deriving Show Generic
+
+AcademyMicrocourse
+    Id UUID default=gen_random_uuid()
+    slug     Text
+    title    Text
+    summary  Text Maybe
+    createdAt UTCTime default=now()
+    UniqueAcademyMicrocourseSlug slug
+    deriving Show Generic
+
+AcademyLesson
+    Id UUID default=gen_random_uuid()
+    microcourseId AcademyMicrocourseId
+    day      Int
+    title    Text
+    body     Text
+    UniqueAcademyLesson microcourseId day
+    deriving Show Generic
+
+AcademyProgress
+    userId   AcademyUserId
+    lessonId AcademyLessonId
+    completedAt UTCTime default=now()
+    Primary userId lessonId
+    deriving Show Generic
+
+ReferralCode
+    Id Text
+    ownerUserId AcademyUserId Maybe
+    createdAt   UTCTime default=now()
+    deriving Show Generic
+
+ReferralClaim
+    Id UUID default=gen_random_uuid()
+    codeId         ReferralCodeId
+    claimantUserId AcademyUserId Maybe
+    email          Text
+    claimedAt      UTCTime default=now()
+    UniqueReferralClaim codeId email
+    deriving Show Generic
+
+Country
+    code Text
+    name Text
+    UniqueCountryCode code
+    deriving Show Generic
+
+Cohort
+    Id UUID default=gen_random_uuid()
+    slug     Text
+    title    Text
+    startsAt UTCTime
+    endsAt   UTCTime
+    seatCap  Int
+    UniqueCohortSlug slug
+    deriving Show Generic
+
+CohortEnrollment
+    cohortId CohortId
+    userId   AcademyUserId
+    createdAt UTCTime default=now()
+    Primary cohortId userId
+    deriving Show Generic
+
+RadioStream
+    streamUrl      Text
+    name           Text Maybe
+    country        Text Maybe
+    genre          Text Maybe
+    isActive       Bool
+    lastCheckedAt  UTCTime Maybe
+    createdAt      UTCTime default=now()
+    updatedAt      UTCTime default=now()
+    UniqueRadioStreamUrl streamUrl
     deriving Show Generic
 |]

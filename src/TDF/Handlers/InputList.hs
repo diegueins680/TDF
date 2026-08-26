@@ -1,9 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module TDF.Handlers.InputList
   ( InventoryItem
   , InputListEntry
+  , AssetField(..)
+  , parseAssetField
   , listInventoryDB
   , seedInventoryDB
   , seedHQDB
@@ -11,27 +13,30 @@ module TDF.Handlers.InputList
   , fetchSessionInputRowsByKey
   , renderInputListLatex
   , generateInputListPdf
+  , generateInputListPdfWithAssets
   , sanitizeFileName
   ) where
 
 import           Control.Applicative        ((<|>))
-import           Control.Exception          (IOException, catch)
+import           Control.Monad              (forM_, guard, when)
 import           Data.Char                  (isAlphaNum)
+import           Data.List                  (find)
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (mapMaybe)
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
 import qualified Data.Text.IO               as TIO
 import qualified Data.ByteString.Lazy       as BL
-import           Data.Aeson                 (ToJSON(..), object, (.=))
 import           Data.Time                  (UTCTime)
 import           Database.Persist
 import           Database.Persist.Sql       (SqlPersistT)
-import           Web.PathPieces             (toPathPiece)
-import           System.Directory           (createDirectoryIfMissing, removeFile)
+import           System.Directory           (copyFile, createDirectoryIfMissing, doesDirectoryExist,
+                                             findExecutable, listDirectory, withCurrentDirectory)
 import           System.Exit                (ExitCode(..))
-import           System.FilePath            ((</>))
+import           System.FilePath            ((</>), takeFileName)
 import           System.Process             (readProcessWithExitCode)
+import           System.IO.Temp             (withSystemTempDirectory)
+import qualified Data.Set                   as Set
 
 import qualified TDF.ModelsExtra            as ME
 import           TDF.Seed                   (seedHolgerSession, seedInventoryAssets)
@@ -39,38 +44,67 @@ import           TDF.Seed                   (seedHolgerSession, seedInventoryAss
 type InventoryItem = ME.Asset
 type InputListEntry = ME.InputRow
 
-instance ToJSON (Entity InventoryItem) where
-  toJSON (Entity key item) = object
-    [ "id"        .= toPathPiece key
-    , "name"      .= ME.assetName item
-    , "category"  .= ME.assetCategory item
-    , "brand"     .= ME.assetBrand item
-    , "model"     .= ME.assetModel item
-    , "status"    .= T.pack (show (ME.assetStatus item))
-    , "locationId" .= fmap toPathPiece (ME.assetLocationId item)
-    ]
+data AssetField
+  = AssetFieldMic
+  | AssetFieldPreamp
+  | AssetFieldInterface
+  deriving (Eq, Show)
 
-instance ToJSON (Entity InputListEntry) where
-  toJSON (Entity key row) = object
-    [ "id"             .= toPathPiece key
-    , "channel"        .= ME.inputRowChannelNumber row
-    , "trackName"      .= ME.inputRowTrackName row
-    , "instrument"     .= ME.inputRowInstrument row
-    , "micId"          .= fmap toPathPiece (ME.inputRowMicId row)
-    , "standId"        .= fmap toPathPiece (ME.inputRowStandId row)
-    , "cableId"        .= fmap toPathPiece (ME.inputRowCableId row)
-    , "preampId"       .= fmap toPathPiece (ME.inputRowPreampId row)
-    , "insertOutboard" .= fmap toPathPiece (ME.inputRowInsertOutboardId row)
-    , "converter"      .= ME.inputRowConverterChannel row
-    , "phantom"        .= ME.inputRowPhantom row
-    , "polarity"       .= ME.inputRowPolarity row
-    , "hpf"            .= ME.inputRowHpf row
-    , "pad"            .= ME.inputRowPad row
-    , "notes"          .= ME.inputRowNotes row
-    ]
+parseAssetField :: Text -> Maybe AssetField
+parseAssetField raw =
+  case T.toLower (T.strip raw) of
+    "mic"         -> Just AssetFieldMic
+    "microphone"  -> Just AssetFieldMic
+    "pre"         -> Just AssetFieldPreamp
+    "preamp"      -> Just AssetFieldPreamp
+    "pre-amp"     -> Just AssetFieldPreamp
+    "preamplifier"-> Just AssetFieldPreamp
+    "interface"   -> Just AssetFieldInterface
+    "converter"   -> Just AssetFieldInterface
+    _             -> Nothing
 
-listInventoryDB :: SqlPersistT IO [Entity InventoryItem]
-listInventoryDB = selectList [] [Asc ME.AssetName]
+listInventoryDB
+  :: Maybe AssetField
+  -> Maybe ME.SessionId
+  -> Maybe Int
+  -> SqlPersistT IO [Entity InventoryItem]
+listInventoryDB mField mSession mChannel = do
+  allAssets <- selectList [] [Asc ME.AssetName]
+  let activeAssets = filter (isAssetActive . entityVal) allAssets
+      fieldFiltered = maybe activeAssets (\field -> filter (matchesField field) activeAssets) mField
+  case (mField, mSession) of
+    (Just field, Just sessionId) -> do
+      rows <- loadLatestInputRows sessionId
+      let usedIds = Set.fromList (mapMaybe (rowAsset field) (map entityVal rows))
+          keepId  = currentChannelAsset field rows mChannel
+          available = filter (assetAvailable usedIds keepId) fieldFiltered
+      pure available
+    _ -> pure fieldFiltered
+  where
+    isAssetActive asset = ME.assetStatus asset == ME.Active
+
+    matchesField field (Entity _ item) =
+      let category = T.toLower (ME.assetCategory item)
+      in case field of
+           AssetFieldMic    -> "mic" `T.isInfixOf` category || "di" `T.isInfixOf` category
+           AssetFieldPreamp -> "pre" `T.isInfixOf` category
+           AssetFieldInterface -> "interface" `T.isInfixOf` category || "converter" `T.isInfixOf` category
+
+    rowAsset field row =
+      case field of
+        AssetFieldMic    -> ME.inputRowMicId row
+        AssetFieldPreamp -> ME.inputRowPreampId row
+        AssetFieldInterface -> Nothing
+
+    currentChannelAsset field rows mChan = do
+      channelNum <- mChan
+      guard (channelNum >= 1)
+      row <- find ((== channelNum) . ME.inputRowChannelNumber) (map entityVal rows)
+      rowAsset field row
+
+    assetAvailable usedIds keepId (Entity key _) =
+      let inUse = Set.member key usedIds
+      in not inUse || Just key == keepId
 
 seedInventoryDB :: SqlPersistT IO ()
 seedInventoryDB = seedInventoryAssets
@@ -196,34 +230,76 @@ latexEscape = T.concatMap escapeChar
       _    -> T.singleton c
 
 generateInputListPdf :: Text -> IO (Either Text BL.ByteString)
-generateInputListPdf latex = do
-  let tmpDir  = "/tmp/tdf"
-      texFile = tmpDir </> "inputlist.tex"
-      pdfFile = tmpDir </> "inputlist.pdf"
-  createDirectoryIfMissing True tmpDir
-  TIO.writeFile texFile latex
-  (exitCode, _out, err) <- readProcessWithExitCode "tectonic" ["-Z", "shell-escape", "-o", tmpDir, texFile] ""
-  case exitCode of
-    ExitSuccess -> do
-      pdfBytes <- BL.readFile pdfFile
-      safeRemove texFile
-      safeRemove pdfFile
-      pure (Right pdfBytes)
-    ExitFailure code -> do
-      safeRemove texFile
-      let errMsg = T.concat
-            [ "tectonic exited with "
-            , T.pack (show code)
-            , ": "
-            , T.strip (T.pack err)
-            ]
-      pure (Left errMsg)
+generateInputListPdf = generateInputListPdfWithAssets Nothing
 
-safeRemove :: FilePath -> IO ()
-safeRemove path = removeFile path `catch` handleErr
-  where
-    handleErr :: IOException -> IO ()
-    handleErr _ = pure ()
+generateInputListPdfWithAssets :: Maybe FilePath -> Text -> IO (Either Text BL.ByteString)
+generateInputListPdfWithAssets mAssetsDir latex =
+  withSystemTempDirectory "tdf-latex" $ \tmpDir -> do
+    let texFile = tmpDir </> "inputlist.tex"
+        pdfFile = tmpDir </> "inputlist.pdf"
+        assetsDir = tmpDir </> "assets"
+    TIO.writeFile texFile latex
+    forM_ mAssetsDir (`copyAssetsDir` assetsDir)
+    tectonicResult <- runTectonic tmpDir texFile
+    case tectonicResult of
+      Right () -> Right <$> BL.readFile pdfFile
+      Left tectonicErr -> do
+        mXe <- findExecutable "xelatex"
+        case mXe of
+          Nothing -> pure (Left tectonicErr)
+          Just _ -> do
+            xeResult <- runXeLaTeX tmpDir texFile
+            case xeResult of
+              Right () -> Right <$> BL.readFile pdfFile
+              Left xeErr -> pure (Left (tectonicErr <> "\n" <> xeErr))
+
+runTectonic :: FilePath -> FilePath -> IO (Either Text ())
+runTectonic tmpDir texFile = do
+  (exitCode, out, err) <- readProcessWithExitCode "tectonic"
+    ["-Z", "shell-escape", "-o", tmpDir, texFile] ""
+  case exitCode of
+    ExitSuccess -> pure (Right ())
+    ExitFailure code -> pure (Left (formatProcessError "tectonic" code out err))
+
+runXeLaTeX :: FilePath -> FilePath -> IO (Either Text ())
+runXeLaTeX tmpDir texFile =
+  withCurrentDirectory tmpDir $ do
+    let inputName = takeFileName texFile
+    (exitCode, out, err) <- readProcessWithExitCode "xelatex"
+      ["-interaction=nonstopmode", "-halt-on-error", inputName] ""
+    case exitCode of
+      ExitSuccess -> pure (Right ())
+      ExitFailure code -> pure (Left (formatProcessError "xelatex" code out err))
+
+formatProcessError :: Text -> Int -> String -> String -> Text
+formatProcessError name code out err =
+  let errText = T.strip (T.pack err)
+      outText = T.strip (T.pack out)
+      detail = if T.null errText then outText else errText
+  in T.concat
+       [ name
+       , " exited with "
+       , T.pack (show code)
+       , ": "
+       , detail
+       ]
+
+copyAssetsDir :: FilePath -> FilePath -> IO ()
+copyAssetsDir src dest = do
+  dirExists <- doesDirectoryExist src
+  when dirExists (copyDirRecursive src dest)
+
+copyDirRecursive :: FilePath -> FilePath -> IO ()
+copyDirRecursive src dest = do
+  createDirectoryIfMissing True dest
+  entries <- listDirectory src
+  forM_ entries $ \entry -> do
+    let srcPath = src </> entry
+        destPath = dest </> entry
+    isDir <- doesDirectoryExist srcPath
+    if isDir
+      then copyDirRecursive srcPath destPath
+      else copyFile srcPath destPath
 
 sanitizeFileName :: Text -> Text
 sanitizeFileName txt =

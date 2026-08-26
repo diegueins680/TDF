@@ -2,23 +2,27 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 module TDF.ServerAdmin
   ( adminServer
   ) where
 
+import           Control.Exception      (SomeException, try)
 import           Control.Monad          (unless, when)
 import           Control.Monad.Except   (MonadError)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
 import           Control.Monad.Reader   (MonadReader, asks)
 import           Crypto.BCrypt          (hashPasswordUsingPolicy, slowerBcryptHashingPolicy)
 import           Data.Foldable          (for_)
-import           Data.Maybe             (fromMaybe, isJust)
+import           Data.Char              (isAlphaNum)
+import           Data.Maybe             (catMaybes, fromMaybe, isJust)
 import qualified Data.Set               as Set
 import           Data.Text              (Text)
 import qualified Data.Text              as T
 import qualified Data.Text.Encoding     as TE
-import           Data.Time              (getCurrentTime)
+import qualified Data.ByteString.Lazy   as BL
+import           Data.Time              (diffUTCTime, getCurrentTime)
 import           Database.Persist       ( (==.), (!=.)
                                         , (=.)
                                         , Entity(..)
@@ -26,7 +30,9 @@ import           Database.Persist       ( (==.), (!=.)
                                         , SelectOpt(..)
                                         , selectFirst
                                         , selectList
+                                        , get
                                         , getBy
+                                        , getJust
                                         , update
                                         , getEntity
                                         , getJustEntity
@@ -37,7 +43,15 @@ import           Database.Persist.Sql   (SqlPersistT, fromSqlKey, runSqlPool, to
 import           Servant
 import           Web.PathPieces         (PathPiece, fromPathPiece, toPathPiece)
 
-import           TDF.API.Admin          (AdminAPI)
+import           TDF.API.Admin          ( AdminAPI
+                                        , BrainEntryCreate(..)
+                                        , BrainEntryDTO(..)
+                                        , BrainEntryUpdate(..)
+                                        , EmailTestRequest(..)
+                                        , EmailTestResponse(..)
+                                        , RagIndexStatus(..)
+                                        , RagRefreshResponse(..)
+                                        )
 import           TDF.API.Types          ( DropdownOptionCreate(..)
                                         , DropdownOptionDTO(..)
                                         , DropdownOptionUpdate(..)
@@ -46,6 +60,10 @@ import           TDF.API.Types          ( DropdownOptionCreate(..)
                                         , UserAccountDTO(..)
                                         , UserAccountUpdate(..)
                                         )
+import           TDF.DTO                ( ArtistProfileUpsert(..)
+                                        , ArtistReleaseDTO(..)
+                                        , ArtistReleaseUpsert(..)
+                                        )
 import           TDF.Auth               ( AuthedUser
                                         , ModuleAccess(..)
                                         , hasModuleAccess
@@ -53,10 +71,20 @@ import           TDF.Auth               ( AuthedUser
                                         , modulesForRoles
                                         )
 import           TDF.DB                 (Env(..))
+import           TDF.Config             (ragRefreshHours)
 import           TDF.Models
 import           TDF.ModelsExtra (DropdownOption(..))
 import qualified TDF.ModelsExtra as ME
 import           TDF.Seed               (seedAll)
+import qualified TDF.Email              as Email
+import qualified TDF.Email.Service      as EmailSvc
+import           TDF.Profiles.Artist    ( loadAllArtistProfilesDTO
+                                        , upsertArtistProfileRecord
+                                        )
+import           TDF.LogBuffer          ( LogEntry(..), LogLevel(..), addLog, getRecentLogs, clearLogs )
+import           TDF.DTO                ( LogEntryDTO(..) )
+import           TDF.RagStore           (getRagIndexStats, refreshRagIndex)
+import           System.IO              (hPutStrLn, stderr)
 
 adminServer
   :: ( MonadReader Env m
@@ -65,7 +93,16 @@ adminServer
      )
   => AuthedUser
   -> ServerT AdminAPI m
-adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHandler
+adminServer user =
+       seedHandler
+  :<|> dropdownRouter
+  :<|> usersRouter
+  :<|> rolesHandler
+  :<|> artistsRouter
+  :<|> logsRouter
+  :<|> emailTestHandler
+  :<|> brainRouter
+  :<|> ragRouter
   where
     seedHandler = do
       ensureModule ModuleAdmin user
@@ -90,11 +127,231 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
       ensureModule ModuleAdmin user
       pure (map roleDetail [minBound .. maxBound])
 
+    artistsRouter =
+      (listArtistProfilesAdmin :<|> upsertArtistProfileAdmin)
+      :<|> (createArtistReleaseAdmin :<|> updateArtistReleaseAdmin)
+
+    logsRouter =
+      getLogs :<|> clearLogsHandler
+
+    emailTestHandler EmailTestRequest{..} = do
+      ensureModule ModuleAdmin user
+      cfg <- asks envConfig
+      let emailSvc = EmailSvc.mkEmailService cfg
+          subj = fromMaybe "Correo de prueba TDF" etrSubject
+          body = maybe ["Correo de prueba desde TDF HQ."] (\txt -> [txt]) etrBody
+          targetName = fromMaybe "" etrName
+          preMsg = "[Admin][EmailTest] Sending to " <> etrEmail <> " | subject: " <> subj
+      liftIO $ addLog LogInfo preMsg
+      sendResult <- liftIO $ try $
+        EmailSvc.sendTestEmail
+          emailSvc
+          targetName
+          etrEmail
+          subj
+          body
+          etrCtaUrl
+      case sendResult of
+        Left (err :: SomeException) -> do
+          let msg = "[Admin][EmailTest] Failed for " <> etrEmail <> ": " <> T.pack (show err)
+          liftIO $ addLog LogError msg
+          liftIO $ hPutStrLn stderr (T.unpack msg)
+          pure EmailTestResponse { status = "error", message = Just msg }
+        Right () -> do
+          let msg = "[Admin][EmailTest] Sent to " <> etrEmail
+          liftIO $ addLog LogInfo msg
+          liftIO $ hPutStrLn stderr (T.unpack msg)
+          pure EmailTestResponse { status = "sent", message = Nothing }
+
+    brainRouter =
+      brainListHandler :<|> brainCreateHandler :<|> brainUpdateHandler
+
+    ragRouter =
+      ragStatusHandler :<|> ragRefreshHandler
+
+    brainListHandler mIncludeInactive = do
+      ensureModule ModuleAdmin user
+      rows <- withPool $ do
+        let filters =
+              case mIncludeInactive of
+                Just True -> []
+                _ -> [ME.StudioBrainEntryActive ==. True]
+        selectList filters [Desc ME.StudioBrainEntryUpdatedAt, LimitTo 200]
+      pure (map brainEntryToDTO rows)
+
+    brainCreateHandler BrainEntryCreate{..} = do
+      ensureModule ModuleAdmin user
+      let title = T.strip becTitle
+          body = T.strip becBody
+          category = cleanMaybe becCategory
+          tags = cleanTags becTags
+          active = fromMaybe True becActive
+      when (T.null title) $ throwError err400 { errBody = "Título requerido" }
+      when (T.null body) $ throwError err400 { errBody = "Contenido requerido" }
+      now <- liftIO getCurrentTime
+      entryId <- withPool $ insert ME.StudioBrainEntry
+        { ME.studioBrainEntryTitle = title
+        , ME.studioBrainEntryBody = body
+        , ME.studioBrainEntryCategory = category
+        , ME.studioBrainEntryTags = tags
+        , ME.studioBrainEntryActive = active
+        , ME.studioBrainEntryCreatedAt = now
+        , ME.studioBrainEntryUpdatedAt = now
+        }
+      row <- withPool $ getJust entryId
+      pure (brainEntryToDTO (Entity entryId row))
+
+    brainUpdateHandler entryId BrainEntryUpdate{..} = do
+      ensureModule ModuleAdmin user
+      let entryKey = toSqlKey entryId :: ME.StudioBrainEntryId
+          titleUpdate = T.strip <$> beuTitle
+          bodyUpdate = T.strip <$> beuBody
+      for_ titleUpdate $ \t -> when (T.null t) $
+        throwError err400 { errBody = "Título requerido" }
+      for_ bodyUpdate $ \t -> when (T.null t) $
+        throwError err400 { errBody = "Contenido requerido" }
+      now <- liftIO getCurrentTime
+      let tagsUpdate =
+            case beuTags of
+              Nothing -> Nothing
+              Just tags -> Just (ME.StudioBrainEntryTags =. cleanTags (Just tags))
+          updates = catMaybes
+            [ (ME.StudioBrainEntryTitle =.) <$> titleUpdate
+            , (ME.StudioBrainEntryBody =.) <$> bodyUpdate
+            , (ME.StudioBrainEntryCategory =.) <$> fmap cleanMaybe beuCategory
+            , tagsUpdate
+            , (ME.StudioBrainEntryActive =.) <$> beuActive
+            ]
+      let updates' = updates <> [ME.StudioBrainEntryUpdatedAt =. now]
+      result <- withPool $ do
+        mEntry <- get entryKey
+        case mEntry of
+          Nothing -> pure (Left err404)
+          Just _ -> do
+            if null updates
+              then pure (Left err400 { errBody = "Sin cambios para actualizar" })
+              else do
+                update entryKey updates'
+                Right <$> getEntity entryKey
+      case result of
+        Left err -> throwError err
+        Right maybeEntry -> maybe (throwError err404) (pure . brainEntryToDTO) maybeEntry
+
+    ragStatusHandler = do
+      ensureModule ModuleAdmin user
+      pool <- asks envPool
+      cfg <- asks envConfig
+      (countVal, updatedAt) <- liftIO $ getRagIndexStats pool
+      now <- liftIO getCurrentTime
+      let stale = case updatedAt of
+            Nothing -> True
+            Just ts ->
+              let hours = realToFrac (diffUTCTime now ts) / 3600 :: Double
+              in hours >= fromIntegral (ragRefreshHours cfg)
+      pure RagIndexStatus
+        { risCount = countVal
+        , risUpdatedAt = updatedAt
+        , risStale = stale
+        }
+
+    ragRefreshHandler = do
+      ensureModule ModuleAdmin user
+      pool <- asks envPool
+      cfg <- asks envConfig
+      result <- liftIO $ refreshRagIndex cfg pool
+      case result of
+        Left err ->
+          throwError err500 { errBody = BL.fromStrict (TE.encodeUtf8 err) }
+        Right chunkCount ->
+          pure RagRefreshResponse
+            { rrrStatus = "ok"
+            , rrrChunks = chunkCount
+      }
+
+    brainEntryToDTO (Entity key entry) = BrainEntryDTO
+      { bedId = fromSqlKey key
+      , bedTitle = ME.studioBrainEntryTitle entry
+      , bedBody = ME.studioBrainEntryBody entry
+      , bedCategory = ME.studioBrainEntryCategory entry
+      , bedTags = fromMaybe [] (ME.studioBrainEntryTags entry)
+      , bedActive = ME.studioBrainEntryActive entry
+      , bedUpdatedAt = ME.studioBrainEntryUpdatedAt entry
+      }
+
+    cleanMaybe Nothing = Nothing
+    cleanMaybe (Just txt) =
+      let trimmed = T.strip txt
+      in if T.null trimmed then Nothing else Just trimmed
+
+    cleanTags Nothing = Nothing
+    cleanTags (Just tags) =
+      let cleaned = filter (not . T.null) (map T.strip tags)
+      in if null cleaned then Nothing else Just cleaned
+
     roleDetail role = RoleDetailDTO
       { role    = role
-      , label   = T.pack (show role)
+      , label   = roleToText role
       , modules = map moduleName (Set.toList (modulesForRoles [role]))
       }
+
+    listArtistProfilesAdmin = do
+      ensureModule ModuleAdmin user
+      withPool loadAllArtistProfilesDTO
+
+    upsertArtistProfileAdmin payload@ArtistProfileUpsert{..} = do
+      ensureModule ModuleAdmin user
+      let artistKey = toSqlKey apuArtistId
+      mParty <- withPool $ get artistKey
+      case mParty of
+        Nothing -> throwError err404
+        Just _ -> do
+          now <- liftIO getCurrentTime
+          dto <- withPool $ upsertArtistProfileRecord artistKey payload now
+          pure dto
+
+    createArtistReleaseAdmin ArtistReleaseUpsert{..} = do
+      ensureModule ModuleAdmin user
+      now <- liftIO getCurrentTime
+      let artistKey = toSqlKey aruArtistId
+      dto <- withPool $ do
+        mProfile <- getBy (UniqueArtistProfile artistKey)
+        case mProfile of
+          Nothing -> pure Nothing
+          Just _ -> do
+            releaseId <- insert ArtistRelease
+              { artistReleaseArtistPartyId = artistKey
+              , artistReleaseTitle         = aruTitle
+              , artistReleaseReleaseDate   = aruReleaseDate
+              , artistReleaseDescription   = aruDescription
+              , artistReleaseCoverImageUrl = aruCoverImageUrl
+              , artistReleaseSpotifyUrl    = aruSpotifyUrl
+              , artistReleaseYoutubeUrl    = aruYoutubeUrl
+              , artistReleaseCreatedAt     = now
+              }
+            entity <- getJustEntity releaseId
+            pure (Just (artistReleaseEntityToDTOAdmin entity))
+      maybe (throwError err404) pure dto
+
+    updateArtistReleaseAdmin releaseId ArtistReleaseUpsert{..} = do
+      ensureModule ModuleAdmin user
+      let releaseKey = toSqlKey releaseId
+          artistKey  = toSqlKey aruArtistId
+      mRelease <- withPool $ get releaseKey
+      case mRelease of
+        Nothing -> throwError err404
+        Just release -> do
+          when (artistReleaseArtistPartyId release /= artistKey) $
+            throwError err400 { errBody = "El release no pertenece a este artista" }
+          withPool $ update releaseKey
+            [ ArtistReleaseTitle        =. aruTitle
+            , ArtistReleaseReleaseDate  =. aruReleaseDate
+            , ArtistReleaseDescription  =. aruDescription
+            , ArtistReleaseCoverImageUrl =. aruCoverImageUrl
+            , ArtistReleaseSpotifyUrl   =. aruSpotifyUrl
+            , ArtistReleaseYoutubeUrl   =. aruYoutubeUrl
+            ]
+          entity <- withPool $ getJustEntity releaseKey
+          pure (artistReleaseEntityToDTOAdmin entity)
 
     listOptions rawCategory mIncludeInactive = do
       ensureModule ModuleAdmin user
@@ -194,32 +451,69 @@ adminServer user = seedHandler :<|> dropdownRouter :<|> usersRouter :<|> rolesHa
 
     createUser UserAccountCreate{..} = do
       ensureModule ModuleAdmin user
-      let trimmedUsername = T.strip uacUsername
-          trimmedPassword = T.strip uacPassword
-          activeValue     = fromMaybe True uacActive
-          partyKey        = toSqlKey uacPartyId :: PartyId
-      when (T.null trimmedUsername) $
-        throwError err400 { errBody = "Username is required" }
-      when (T.null trimmedPassword) $
-        throwError err400 { errBody = "Password is required" }
-      mParty <- withPool $ getEntity partyKey
-      case mParty of
-        Nothing -> throwError err404 { errBody = "Party not found" }
-        Just _  -> pure ()
-      conflict <- withPool $ getBy (UniqueCredentialUsername trimmedUsername)
-      when (isJust conflict) $
-        throwError err409 { errBody = "Username already exists" }
-      hashed <- liftIO (hashPasswordText trimmedPassword)
+      config <- asks envConfig
+      let partyKey = toSqlKey uacPartyId :: PartyId
+          activeValue = fromMaybe True uacActive
+          emailSvc = EmailSvc.mkEmailService config
+      partyEnt <- do
+        mParty <- withPool $ getEntity partyKey
+        maybe (throwError err404 { errBody = "Party not found" }) pure mParty
+      emailAddress <- case fmap T.strip (partyPrimaryEmail (entityVal partyEnt)) of
+        Nothing -> throwError err400 { errBody = "Party must have a primary email before creating a user" }
+        Just addr | T.null addr -> throwError err400 { errBody = "Party must have a primary email before creating a user" }
+                  | otherwise -> pure addr
+      baseUsername <-
+        case normalizeUsername =<< uacUsername of
+          Just provided -> pure provided
+          Nothing       -> pure (deriveUsername partyEnt emailAddress)
+      uniqueUsername <- generateUniqueUsername baseUsername
+      let providedPassword =
+            uacPassword >>= (\txt -> let trimmed = T.strip txt in if T.null trimmed then Nothing else Just trimmed)
+      tempPassword <- maybe (liftIO Email.generateTempPassword) pure providedPassword
+      hashed <- liftIO (hashPasswordText tempPassword)
       credId <- withPool $ insert UserCredential
         { userCredentialPartyId      = partyKey
-        , userCredentialUsername     = trimmedUsername
+        , userCredentialUsername     = uniqueUsername
         , userCredentialPasswordHash = hashed
         , userCredentialActive       = activeValue
         }
       for_ uacRoles $ \rolesList -> withPool $ setPartyRoles partyKey rolesList
-      withPool $ do
+      account <- withPool $ do
         credEnt <- getJustEntity credId
         loadUserAccount credEnt
+      liftIO $
+        EmailSvc.sendWelcome
+          emailSvc
+          (partyDisplayName (entityVal partyEnt))
+          emailAddress
+          uniqueUsername
+          tempPassword
+      pure account
+      where
+        normalizeUsername :: Text -> Maybe Text
+        normalizeUsername txt =
+          let lowered = T.toLower (T.strip txt)
+              cleaned = T.filter (\c -> isAlphaNum c || c `elem` (".-_" :: String)) lowered
+          in if T.null cleaned then Nothing else Just cleaned
+
+        deriveUsername :: Entity Party -> Text -> Text
+        deriveUsername (Entity pid party) emailVal
+          | not (T.null emailVal) = T.toLower emailVal
+          | otherwise =
+              let slug = T.filter (\c -> isAlphaNum c || c == '.') . T.toLower $ partyDisplayName party
+              in if T.null slug
+                   then "tdf-user-" <> T.pack (show (fromSqlKey pid))
+                   else slug
+
+        generateUniqueUsername base = go (0 :: Int)
+          where
+            go attempt = do
+              let suffix = if attempt == 0 then "" else "-" <> T.pack (show attempt)
+                  candidate = T.take 60 (base <> suffix)
+              conflict <- withPool $ getBy (UniqueCredentialUsername candidate)
+              case conflict of
+                Nothing -> pure candidate
+                Just _  -> go (attempt + 1)
 
     getUser userId = do
       ensureModule ModuleAdmin user
@@ -332,6 +626,19 @@ setPartyRoles partyKey rolesList = do
     when (partyRoleActive partyRole && Set.notMember (partyRoleRole partyRole) desired) $
       update roleId [PartyRoleActive =. False]
 
+artistReleaseEntityToDTOAdmin :: Entity ArtistRelease -> ArtistReleaseDTO
+artistReleaseEntityToDTOAdmin (Entity releaseId release) =
+  ArtistReleaseDTO
+    { arArtistId      = fromSqlKey (artistReleaseArtistPartyId release)
+    , arReleaseId     = fromSqlKey releaseId
+    , arTitle         = artistReleaseTitle release
+    , arReleaseDate   = artistReleaseReleaseDate release
+    , arDescription   = artistReleaseDescription release
+    , arCoverImageUrl = artistReleaseCoverImageUrl release
+    , arSpotifyUrl    = artistReleaseSpotifyUrl release
+    , arYoutubeUrl    = artistReleaseYoutubeUrl release
+    }
+
 hashPasswordText :: Text -> IO Text
 hashPasswordText pwd = do
   let raw = TE.encodeUtf8 pwd
@@ -349,3 +656,27 @@ toDTO (Entity key option) = DropdownOptionDTO
   , active    = dropdownOptionActive option
   , sortOrder = dropdownOptionSortOrder option
   }
+
+-- Log handlers
+getLogs :: (MonadIO m) => Maybe Int -> m [LogEntryDTO]
+getLogs mLimit = do
+  let limit = fromMaybe 100 mLimit
+  entries <- liftIO $ getRecentLogs limit
+  pure $ map logEntryToDTO entries
+
+clearLogsHandler :: (MonadIO m) => m NoContent
+clearLogsHandler = do
+  liftIO clearLogs
+  pure NoContent
+
+logEntryToDTO :: LogEntry -> LogEntryDTO
+logEntryToDTO LogEntry{..} = LogEntryDTO
+  { logTimestamp = logTimestamp
+  , logLevel = levelToText logLevel
+  , logMessage = logMessage
+  }
+
+levelToText :: LogLevel -> Text
+levelToText LogInfo = "info"
+levelToText LogWarning = "warning"
+levelToText LogError = "error"

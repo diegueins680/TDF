@@ -1,0 +1,8 @@
+
+Warning: nix (Nix) 2.3.10 is on the PATH (at /Users/diegosaa/.nix-profile/bin/nix) but Stack's Nix
+         integration is disabled. To mute this message in future, set notify-if-nix-on-path: false
+         in Stack's configuration.
+         
+Specified source-dir "test" does not exist
+
+Warning: Directory listed in tdf-hq.cabal file does not exist: test

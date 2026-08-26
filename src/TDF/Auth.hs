@@ -10,8 +10,12 @@ module TDF.Auth
   , moduleName
   , modulesForRoles
   , loadAuthedUser
+  , lookupUsernameFromToken
+  , resolveUsernameFromLabel
   ) where
 
+import           Control.Applicative        ((<|>))
+import           Control.Monad              (forM_, guard)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy       as BL
 import           Data.List                  (foldl')
@@ -20,12 +24,11 @@ import qualified Data.Set                   as Set
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
-import           Database.Persist           (Entity(..), getBy, selectList, (==.))
+import           Database.Persist           (Entity(..), getBy, selectList, upsert, (==.), (=.))
 import           Database.Persist.Sql       (SqlPersistT, runSqlPool)
 import           Network.Wai                (Request, requestHeaders)
 import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler, AuthServerData)
-import           Servant.API.Experimental.Auth    (AuthProtect)
 
 import           TDF.DB                     (Env(..))
 import           TDF.Models
@@ -37,6 +40,7 @@ data ModuleAccess
   | ModulePackages
   | ModuleInvoicing
   | ModuleAdmin
+  | ModuleInternships
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 moduleName :: ModuleAccess -> Text
@@ -45,6 +49,7 @@ moduleName ModuleScheduling = "Scheduling"
 moduleName ModulePackages   = "Packages"
 moduleName ModuleInvoicing  = "Invoicing"
 moduleName ModuleAdmin      = "Admin"
+moduleName ModuleInternships = "Internships"
 
 -- | Authenticated user with associated module access.
 data AuthedUser = AuthedUser
@@ -83,38 +88,88 @@ loadAuthedUser token = do
       | not (apiTokenActive tok) -> pure Nothing
       | otherwise -> do
           roles <- selectList [PartyRolePartyId ==. apiTokenPartyId tok, PartyRoleActive ==. True] []
-          let roleList = map (partyRoleRole . entityVal) roles
-              modules  = modulesForRoles roleList
+          roleList <- ensureDefaultRoles (apiTokenPartyId tok) (map (partyRoleRole . entityVal) roles)
+          let modules  = modulesForRoles roleList
           pure $ Just AuthedUser
             { auPartyId = apiTokenPartyId tok
             , auRoles   = roleList
             , auModules = modules
             }
 
+lookupUsernameFromToken :: Text -> SqlPersistT IO (Maybe Text)
+lookupUsernameFromToken token = do
+  mToken <- getBy (UniqueApiToken token)
+  pure $ do
+    Entity _ tok <- mToken
+    guard (apiTokenActive tok)
+    label <- apiTokenLabel tok
+    resolveUsernameFromLabel label
+
+resolveUsernameFromLabel :: Text -> Maybe Text
+resolveUsernameFromLabel rawLabel =
+  let trimmed = T.strip rawLabel
+      attempt prefix = T.strip <$> T.stripPrefix prefix trimmed
+      resolved = attempt "password-login:" <|> attempt "password-reset:"
+      nonEmpty txt =
+        let stripped = T.strip txt
+        in if T.null stripped then Nothing else Just stripped
+  in resolved >>= nonEmpty
+
 modulesForRoles :: [RoleEnum] -> Set ModuleAccess
 modulesForRoles = foldl' (flip (Set.union . modulesForRole)) Set.empty
 
 modulesForRole :: RoleEnum -> Set ModuleAccess
-modulesForRole Admin      = Set.fromList [ModuleCRM, ModuleScheduling, ModulePackages, ModuleInvoicing, ModuleAdmin]
-modulesForRole Manager    = Set.fromList [ModuleCRM, ModuleScheduling, ModulePackages, ModuleInvoicing]
+modulesForRole Admin      = Set.fromList [ModuleCRM, ModuleScheduling, ModulePackages, ModuleInvoicing, ModuleAdmin, ModuleInternships]
+modulesForRole Manager    = Set.fromList [ModuleCRM, ModuleScheduling, ModulePackages, ModuleInvoicing, ModuleInternships]
+modulesForRole StudioManager = Set.fromList [ModuleCRM, ModuleScheduling, ModulePackages, ModuleInvoicing, ModuleAdmin, ModuleInternships]
 modulesForRole Reception  = Set.fromList [ModuleCRM, ModuleScheduling]
 modulesForRole Accounting = Set.singleton ModuleInvoicing
 modulesForRole Engineer   = Set.singleton ModuleScheduling
 modulesForRole Teacher    = Set.singleton ModuleScheduling
-modulesForRole Artist     = Set.singleton ModulePackages
+modulesForRole LiveSessionsProducer = Set.fromList [ModuleCRM, ModuleScheduling]
+modulesForRole Intern     = Set.singleton ModuleInternships
+modulesForRole Artist     = Set.fromList [ModuleScheduling, ModulePackages]
+modulesForRole Artista    = Set.fromList [ModuleScheduling, ModulePackages]
+modulesForRole Webmaster  = Set.fromList [ModuleAdmin, ModuleCRM]
+modulesForRole Promotor   = Set.empty
+modulesForRole Promoter   = Set.empty
+modulesForRole Producer   = Set.fromList [ModuleCRM, ModuleScheduling]
+modulesForRole Songwriter = Set.empty
+modulesForRole DJ         = Set.empty
+modulesForRole Publicist  = Set.empty
+modulesForRole TourManager = Set.empty
+modulesForRole LabelRep    = Set.empty
+modulesForRole StageManager = Set.empty
+modulesForRole RoadCrew    = Set.empty
+modulesForRole Photographer = Set.empty
+modulesForRole AandR      = Set.fromList [ModuleCRM, ModuleScheduling]
 modulesForRole Student    = Set.singleton ModuleScheduling
 modulesForRole Vendor     = Set.singleton ModulePackages
 modulesForRole Customer   = Set.singleton ModulePackages
 modulesForRole ReadOnly   = Set.singleton ModuleCRM
+modulesForRole Fan        = Set.empty
+modulesForRole Maintenance = Set.fromList [ModulePackages, ModuleScheduling]
+
+-- Ensure every authenticated user has baseline Fan and Customer roles active.
+defaultRoles :: [RoleEnum]
+defaultRoles = [Fan, Customer]
+
+ensureDefaultRoles :: PartyId -> [RoleEnum] -> SqlPersistT IO [RoleEnum]
+ensureDefaultRoles pid roles = do
+  let existing = Set.fromList roles
+      missing  = filter (`Set.notMember` existing) defaultRoles
+  forM_ missing $ \r ->
+    upsert (PartyRole pid r True) [PartyRoleActive =. True]
+  pure (roles ++ missing)
 
 extractToken :: Request -> Either Text Text
 extractToken req =
   case lookup "Authorization" (requestHeaders req) of
     Nothing   -> Left "Missing Authorization header"
-    Just hdr  -> parseHeader (TE.decodeUtf8' hdr)
+    Just hdr  -> parseAuthHeader (TE.decodeUtf8' hdr)
   where
-    parseHeader (Left _) = Left "Invalid Authorization header encoding"
-    parseHeader (Right txt) =
+    parseAuthHeader (Left _) = Left "Invalid Authorization header encoding"
+    parseAuthHeader (Right txt) =
       case T.words txt of
         [scheme, value]
           | T.toLower scheme == "bearer" -> Right value

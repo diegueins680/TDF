@@ -1,0 +1,1960 @@
+openapi: 3.0.0
+info:
+  title: TDF Records API
+  version: 1.0.0
+  description: Full API for TDF Records platform
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+
+paths:
+  /version:
+    get:
+      summary: Get API Version
+      description: Returns version and build information for the running API server.
+      operationId: getVersion
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Version'
+  /health:
+    get:
+      summary: Health Check
+      description: Checks the health of the API server and its database connection.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /login:
+    post:
+      summary: Login with username or email
+      description: Authenticates a user and returns a bearer token plus role metadata.
+      operationId: login
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+  /login/google:
+    post:
+      summary: Login with Google
+      description: Validates a Google ID token and issues a session. Creates a Customer/Fan account when the email is new.
+      operationId: loginWithGoogle
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleLoginRequest'
+      responses:
+        '200':
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid or expired Google token
+  /signup:
+    post:
+      summary: Create an account
+      description: Registers a new party + credential pair and returns a ready-to-use token.
+      operationId: signup
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '409':
+          description: Email already registered
+  /public/courses/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Courses]
+      summary: Get course metadata
+      description: Returns public metadata for a course landing page.
+      operationId: getCourseMetadata
+      security: [ ]
+      responses:
+        '200':
+          description: Course metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseMetadata'
+        '404':
+          description: Course not found
+  /public/courses/{slug}/registrations:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Courses]
+      summary: Create course registration
+      description: Stores a registration for the specified course. Landing submissions use source=landing and include UTM tags.
+      operationId: createCourseRegistration
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseRegistrationRequest'
+      responses:
+        '201':
+          description: Registration stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseRegistrationResponse'
+        '400':
+          description: Invalid payload
+        '404':
+          description: Course not found
+  /webhooks/whatsapp:
+    get:
+      tags: [Webhooks]
+      summary: Verify WhatsApp webhook
+      description: Echoes the hub.challenge parameter when the verify token matches.
+      operationId: verifyWhatsAppWebhook
+      security: [ ]
+      parameters:
+        - name: hub.mode
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: hub.verify_token
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: hub.challenge
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Challenge echoed
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: Verify token mismatch
+    post:
+      tags: [Webhooks]
+      summary: Receive WhatsApp webhook
+      description: Consumes WhatsApp Cloud API message payloads and triggers keyword-based enrollment.
+      operationId: handleWhatsAppWebhook
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppWebhook'
+      responses:
+        '204':
+          description: Processed
+  /instagram/messages:
+    get:
+      tags: [Instagram]
+      summary: List Instagram inbox messages
+      description: Returns stored Instagram messages for auto-reply tracking.
+      operationId: listInstagramMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /facebook/messages:
+    get:
+      tags: [Facebook]
+      summary: List Facebook inbox messages
+      description: Returns stored Facebook Messenger messages for inbox tracking.
+      operationId: listFacebookMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /whatsapp/messages:
+    get:
+      tags: [WhatsApp]
+      summary: List WhatsApp inbox messages
+      description: Returns stored WhatsApp messages for auto-reply tracking.
+      operationId: listWhatsAppMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing, all]
+            default: all
+        - name: repliedOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Messages list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SocialInboxMessage'
+  /whatsapp/consent:
+    post:
+      tags: [WhatsApp]
+      summary: Record WhatsApp consent (admin)
+      description: Stores explicit consent and optionally sends a confirmation message.
+      operationId: createWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppConsentRequest'
+      responses:
+        '200':
+          description: Consent stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+    get:
+      tags: [WhatsApp]
+      summary: Fetch WhatsApp consent status (admin)
+      operationId: getWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Consent status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentStatus'
+        '400':
+          description: Missing or invalid phone
+  /whatsapp/opt-out:
+    post:
+      tags: [WhatsApp]
+      summary: Revoke WhatsApp consent (admin)
+      operationId: optOutWhatsAppConsent
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppOptOutRequest'
+      responses:
+        '200':
+          description: Consent revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+  /public/whatsapp/consent:
+    post:
+      tags: [WhatsApp]
+      summary: Record WhatsApp consent (public)
+      description: Stores explicit consent and optionally sends a confirmation message.
+      operationId: createWhatsAppConsentPublic
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppConsentRequest'
+      responses:
+        '200':
+          description: Consent stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+    get:
+      tags: [WhatsApp]
+      summary: Fetch WhatsApp consent status (public)
+      operationId: getWhatsAppConsentPublic
+      security: [ ]
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Consent status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentStatus'
+        '400':
+          description: Missing or invalid phone
+  /public/whatsapp/opt-out:
+    post:
+      tags: [WhatsApp]
+      summary: Revoke WhatsApp consent (public)
+      operationId: optOutWhatsAppConsentPublic
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsAppOptOutRequest'
+      responses:
+        '200':
+          description: Consent revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhatsAppConsentResponse'
+        '400':
+          description: Invalid payload
+  /admin/courses/{slug}/registrations/{registrationId}/status:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: registrationId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags: [Admin]
+      summary: Update course registration status
+      description: Marks a course registration as paid or cancelled.
+      operationId: updateCourseRegistrationStatus
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseRegistrationStatusUpdate'
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseRegistrationResponse'
+        '404':
+          description: Registration not found
+  /fans/artists:
+    get:
+      tags: [FanHub]
+      summary: List public artist profiles
+      description: Returns fan-facing artist profiles with bio, location, and follower counts.
+      operationId: listFanArtists
+      security: [ ]
+      responses:
+        '200':
+          description: Artist profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ArtistProfile'
+  /fans/artists/{artistId}:
+    parameters:
+      - name: artistId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [FanHub]
+      summary: Get artist profile
+      description: Returns the public profile for the specified artist id.
+      operationId: getFanArtist
+      security: [ ]
+      responses:
+        '200':
+          description: Artist profile found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtistProfile'
+        '404':
+          description: Artist not found
+  /fans/artists/{artistId}/releases:
+    parameters:
+      - name: artistId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [FanHub]
+      summary: List artist releases
+      description: Returns the releases registered for the artist.
+      operationId: listFanArtistReleases
+      security: [ ]
+      responses:
+        '200':
+          description: Artist releases
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ArtistRelease'
+        '404':
+          description: Artist not found
+  /fans/me/profile:
+    get:
+      tags: [FanHub]
+      summary: Get fan profile
+      description: Returns the profile for the authenticated fan/customer.
+      operationId: getFanProfile
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Fan profile loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FanProfile'
+    put:
+      tags: [FanHub]
+      summary: Update fan profile
+      description: Creates or updates the fan profile for the authenticated party.
+      operationId: updateFanProfile
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FanProfileUpdate'
+      responses:
+        '200':
+          description: Fan profile saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FanProfile'
+  /fans/me/follows:
+    get:
+      tags: [FanHub]
+      summary: List follows
+      description: Returns the artists followed by the authenticated fan.
+      operationId: listFanFollows
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Follow list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FanFollow'
+  /fans/me/follows/{artistId}:
+    parameters:
+      - name: artistId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [FanHub]
+      summary: Follow artist
+      description: Adds the selected artist to the authenticated fan feed.
+      operationId: followArtist
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Artist followed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FanFollow'
+        '404':
+          description: Artist not found
+    delete:
+      tags: [FanHub]
+      summary: Unfollow artist
+      description: Removes the follow relationship for the authenticated fan.
+      operationId: unfollowArtist
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '204':
+          description: Follow removed
+  /fans/me/artist-profile:
+    get:
+      tags: [FanHub]
+      summary: Get my artist profile
+      description: Returns the artist profile for the authenticated artist/admin.
+      operationId: getMyArtistProfile
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Artist profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtistProfile'
+    put:
+      tags: [FanHub]
+      summary: Upsert my artist profile
+      description: Updates artist bio, links, genres, and media shown to fans.
+      operationId: updateMyArtistProfile
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtistProfileUpsert'
+      responses:
+        '200':
+          description: Artist profile saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtistProfile'
+  /parties:
+    get:
+      tags: [CRM]
+      summary: List parties
+      description: Returns every party/contact stored in the CRM module. Requires CRM access.
+      operationId: listParties
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Parties fetched
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Party'
+    post:
+      tags: [CRM]
+      summary: Create party
+      description: Creates a person or organization in the CRM.
+      operationId: createParty
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePartyRequest'
+      responses:
+        '200':
+          description: Party created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+  /parties/{partyId}:
+    parameters:
+      - name: partyId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [CRM]
+      summary: Get party
+      description: Returns the detailed record for a party, including whether it already has user access.
+      operationId: getParty
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Party found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '404':
+          description: Party not found
+    put:
+      tags: [CRM]
+      summary: Update party
+      description: Updates mutable fields such as contact info, notes, or flags.
+      operationId: updateParty
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePartyRequest'
+      responses:
+        '200':
+          description: Party updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '404':
+          description: Party not found
+  /parties/{partyId}/roles:
+    post:
+      tags: [CRM]
+      summary: Add party role
+      description: Activates a single role for the provided party id. Useful to grant extra capabilities (Artist, Student, etc.).
+      operationId: addPartyRole
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: partyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleAssignmentRequest'
+      responses:
+        '204':
+          description: Role assigned
+        '404':
+          description: Party not found
+  /api/users:
+    get:
+      summary: List user accounts
+      description: Returns the parties that have credentials plus their active roles.
+      operationId: listUsers
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Users fetched successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserRoleSummary'
+  /api/users/{userId}/roles:
+    put:
+      summary: Replace roles for a user
+      description: Assigns the provided set of roles to the credential identified by `userId`.
+      operationId: updateUserRoles
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRoleUpdate'
+      responses:
+        '204':
+          description: Roles replaced
+        '404':
+          description: User not found
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List user credentials
+      description: Returns the full admin view of user accounts, including modules and status.
+      operationId: adminListUsers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: includeInactive
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Accounts fetched
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserAccount'
+    post:
+      tags: [Admin]
+      summary: Create user for an existing party
+      description: |
+        Generates credentials for a party. If no password is provided the system creates a strong temporary password,
+        stores the hash, and emails the welcome message with username + password.
+      operationId: adminCreateUser
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserAccountRequest'
+      responses:
+        '201':
+          description: User created and welcome email dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAccount'
+        '400':
+          description: Missing party email or invalid payload
+        '404':
+          description: Party not found
+  /admin/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Admin]
+      summary: Get user account
+      description: Returns the credential, linked party, active flag, and derived modules.
+      operationId: adminGetUser
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Account found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAccount'
+        '404':
+          description: Not found
+    patch:
+      tags: [Admin]
+      summary: Update user account
+      description: Update username, active flag, roles, or force a password reset for a specific user.
+      operationId: adminUpdateUser
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserAccountRequest'
+      responses:
+        '200':
+          description: Account updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAccount'
+        '404':
+          description: Not found
+  /chat/threads:
+    get:
+      tags: [Chat]
+      summary: List chat threads
+      description: Returns 1:1 chat threads for the authenticated party.
+      operationId: listChatThreads
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Threads
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatThread'
+  /chat/threads/dm/{otherPartyId}:
+    parameters:
+      - name: otherPartyId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [Chat]
+      summary: Get or create a DM thread
+      description: Creates (or returns) a 1:1 chat thread with the specified party id.
+      operationId: getOrCreateChatDmThread
+      security:
+        - bearerAuth: [ ]
+      responses:
+        '200':
+          description: Thread
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatThread'
+        '403':
+          description: Not allowed
+        '404':
+          description: Party not found
+  /chat/threads/{threadId}/messages:
+    parameters:
+      - name: threadId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Chat]
+      summary: List chat messages
+      description: Returns messages for a thread. Use `beforeId` or `afterId` for pagination.
+      operationId: listChatMessages
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: beforeId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: afterId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatMessage'
+        '404':
+          description: Not found
+    post:
+      tags: [Chat]
+      summary: Send a chat message
+      description: Sends a message to the thread as the authenticated party.
+      operationId: sendChatMessage
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatSendMessageRequest'
+      responses:
+        '200':
+          description: Message created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessage'
+        '403':
+          description: Not allowed
+        '404':
+          description: Not found
+  /drive/token:
+    post:
+      tags: [Drive]
+      summary: Exchange Google Drive OAuth code
+      description: Exchanges a Google OAuth code (PKCE) for Drive tokens.
+      operationId: exchangeDriveToken
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveTokenExchangeRequest'
+      responses:
+        '200':
+          description: Drive token response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriveTokenResponse'
+        '502':
+          description: Google OAuth error
+  /drive/token/refresh:
+    post:
+      tags: [Drive]
+      summary: Refresh Google Drive access token
+      description: Refreshes a Google Drive access token using a refresh token.
+      operationId: refreshDriveToken
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveTokenRefreshRequest'
+      responses:
+        '200':
+          description: Drive token response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriveTokenResponse'
+        '502':
+          description: Google OAuth error
+  /radio/streams/now-playing:
+    post:
+      tags: [Radio]
+      summary: Get now playing metadata
+      description: Returns ICY StreamTitle metadata when the stream provides it.
+      operationId: getRadioNowPlaying
+      security:
+        - bearerAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RadioNowPlayingRequest'
+      responses:
+        '200':
+          description: Now playing metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RadioNowPlayingResult'
+        '400':
+          description: Invalid stream url
+security:
+  - bearerAuth: [ ]
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Version:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Application name.
+        version:
+          type: string
+          description: Application version.
+        commit:
+          type: string
+          nullable: true
+          description: Git commit SHA.
+        buildTime:
+          type: string
+          nullable: true
+          description: Timestamp of the build.
+
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: Service status.
+        version:
+          type: string
+          description: Application version.
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: Username or primary email.
+          example: admin@tdf.com
+        password:
+          type: string
+          format: password
+          example: changeme123
+    GoogleLoginRequest:
+      type: object
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+          description: Google ID token returned by Google Identity Services
+    SignupRequest:
+      type: object
+      required: [firstName, lastName, email, password]
+      properties:
+        firstName:
+          type: string
+          example: Diego
+        lastName:
+          type: string
+          example: Saá
+        email:
+          type: string
+          format: email
+          example: ops@tdfrecords.com
+        phone:
+          type: string
+          nullable: true
+          example: "+593 99 555 1122"
+        password:
+          type: string
+          format: password
+          example: changeme123
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+          description: Optional roles (non-admin) to assign during signup.
+        fanArtistIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Artist or band ids the fan wants to follow immediately after signup.
+        claimArtistId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Optional existing artist profile to claim when it is not already assigned to a user.
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Bearer token for authenticated requests.
+        partyId:
+          type: integer
+          format: int64
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        modules:
+          type: array
+          items:
+            type: string
+            description: Enabled modules for the user.
+    Role:
+      type: string
+      description: Assigned platform role.
+      enum:
+        - Admin
+        - Manager
+        - Intern
+        - Engineer
+        - Teacher
+        - Reception
+        - Accounting
+        - Webmaster
+        - Artist
+        - Artista
+        - Promotor
+        - Promoter
+        - Producer
+        - Songwriter
+        - DJ
+        - Publicist
+        - TourManager
+        - LabelRep
+        - StageManager
+        - RoadCrew
+        - Photographer
+        - A&R
+        - Student
+        - ReadOnly
+        - Vendor
+        - Customer
+        - Fan
+    UserRoleSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        status:
+          type: string
+          enum: [Active, Inactive]
+        createdAt:
+          type: string
+          format: date-time
+    UserRoleUpdate:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          description: Complete list of roles that should remain active.
+          items:
+            $ref: '#/components/schemas/Role'
+    Party:
+      type: object
+      properties:
+        partyId:
+          type: integer
+          format: int64
+        legalName:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+        isOrg:
+          type: boolean
+        taxId:
+          type: string
+          nullable: true
+        primaryEmail:
+          type: string
+          format: email
+          nullable: true
+        primaryPhone:
+          type: string
+          nullable: true
+        whatsapp:
+          type: string
+          nullable: true
+        instagram:
+          type: string
+          nullable: true
+        emergencyContact:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        hasUserAccount:
+          type: boolean
+          description: True if a credential exists for this party.
+        band:
+          type: object
+          nullable: true
+          description: Present when the party is linked to a band/project.
+    ChatThread:
+      type: object
+      properties:
+        ctThreadId:
+          type: integer
+          format: int64
+        ctOtherPartyId:
+          type: integer
+          format: int64
+        ctOtherDisplayName:
+          type: string
+        ctLastMessage:
+          type: string
+          nullable: true
+        ctLastMessageAt:
+          type: string
+          format: date-time
+          nullable: true
+        ctUpdatedAt:
+          type: string
+          format: date-time
+    ChatMessage:
+      type: object
+      properties:
+        cmId:
+          type: integer
+          format: int64
+        cmThreadId:
+          type: integer
+          format: int64
+        cmSenderPartyId:
+          type: integer
+          format: int64
+        cmBody:
+          type: string
+        cmCreatedAt:
+          type: string
+          format: date-time
+    SocialInboxMessage:
+      type: object
+      properties:
+        externalId:
+          type: string
+        senderId:
+          type: string
+        senderName:
+          type: string
+          nullable: true
+        text:
+          type: string
+          nullable: true
+        direction:
+          type: string
+        repliedAt:
+          type: string
+          format: date-time
+          nullable: true
+        replyText:
+          type: string
+          nullable: true
+        replyError:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    WhatsAppConsentRequest:
+      type: object
+      required: [phone, consent]
+      properties:
+        phone:
+          type: string
+          description: Phone number in E.164 format.
+          example: "+593995413168"
+        name:
+          type: string
+          nullable: true
+        consent:
+          type: boolean
+        source:
+          type: string
+          nullable: true
+        sendMessage:
+          type: boolean
+          nullable: true
+    WhatsAppOptOutRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          description: Phone number in E.164 format.
+        reason:
+          type: string
+          nullable: true
+        sendMessage:
+          type: boolean
+          nullable: true
+    WhatsAppConsentStatus:
+      type: object
+      properties:
+        phone:
+          type: string
+        consent:
+          type: boolean
+        consentedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        displayName:
+          type: string
+          nullable: true
+    WhatsAppConsentResponse:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/WhatsAppConsentStatus'
+        messageSent:
+          type: boolean
+        message:
+          type: string
+          nullable: true
+    ChatSendMessageRequest:
+      type: object
+      required: [csmBody]
+      properties:
+        csmBody:
+          type: string
+    CreatePartyRequest:
+      type: object
+      required: [cDisplayName, cIsOrg]
+      properties:
+        cDisplayName:
+          type: string
+          description: Display name shown in listings.
+        cIsOrg:
+          type: boolean
+          description: True for organizations/bands, false for individual contacts.
+        cLegalName:
+          type: string
+          nullable: true
+        cPrimaryEmail:
+          type: string
+          format: email
+          nullable: true
+        cPrimaryPhone:
+          type: string
+          nullable: true
+        cWhatsapp:
+          type: string
+          nullable: true
+        cInstagram:
+          type: string
+          nullable: true
+        cTaxId:
+          type: string
+          nullable: true
+        cEmergencyContact:
+          type: string
+          nullable: true
+        cNotes:
+          type: string
+          nullable: true
+        cRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+          nullable: true
+    UpdatePartyRequest:
+      type: object
+      properties:
+        uDisplayName:
+          type: string
+        uIsOrg:
+          type: boolean
+        uLegalName:
+          type: string
+          nullable: true
+        uPrimaryEmail:
+          type: string
+          format: email
+          nullable: true
+        uPrimaryPhone:
+          type: string
+          nullable: true
+        uWhatsapp:
+          type: string
+          nullable: true
+        uInstagram:
+          type: string
+          nullable: true
+        uTaxId:
+          type: string
+          nullable: true
+        uEmergencyContact:
+          type: string
+          nullable: true
+        uNotes:
+          type: string
+          nullable: true
+    RoleAssignmentRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+    UserAccount:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        partyId:
+          type: integer
+          format: int64
+        partyName:
+          type: string
+        username:
+          type: string
+        active:
+          type: boolean
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        modules:
+          type: array
+          items:
+            type: string
+    CreateUserAccountRequest:
+      type: object
+      required: [uacPartyId]
+      properties:
+        uacPartyId:
+          type: integer
+          format: int64
+          description: Party id that will receive login access.
+        uacUsername:
+          type: string
+          nullable: true
+          description: Optional custom username; defaults to the primary email.
+        uacPassword:
+          type: string
+          format: password
+          nullable: true
+          description: Optional password override. Leave empty to auto-generate and email one.
+        uacActive:
+          type: boolean
+          nullable: true
+        uacRoles:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/Role'
+    UpdateUserAccountRequest:
+      type: object
+      properties:
+        uauUsername:
+          type: string
+          nullable: true
+        uauPassword:
+          type: string
+          format: password
+          nullable: true
+        uauActive:
+          type: boolean
+          nullable: true
+        uauRoles:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/Role'
+    ArtistProfile:
+      type: object
+      properties:
+        apArtistId:
+          type: integer
+          format: int64
+        apDisplayName:
+          type: string
+        apSlug:
+          type: string
+          nullable: true
+        apBio:
+          type: string
+          nullable: true
+        apCity:
+          type: string
+          nullable: true
+        apHeroImageUrl:
+          type: string
+          format: uri
+          nullable: true
+        apSpotifyArtistId:
+          type: string
+          nullable: true
+        apSpotifyUrl:
+          type: string
+          format: uri
+          nullable: true
+        apYoutubeChannelId:
+          type: string
+          nullable: true
+        apYoutubeUrl:
+          type: string
+          format: uri
+          nullable: true
+        apWebsiteUrl:
+          type: string
+          format: uri
+          nullable: true
+        apFeaturedVideoUrl:
+          type: string
+          format: uri
+          nullable: true
+        apGenres:
+          type: string
+          nullable: true
+        apHighlights:
+          type: string
+          nullable: true
+        apFollowerCount:
+          type: integer
+          format: int64
+          description: Total followers captured in the Fan Hub.
+        apHasUserAccount:
+          type: boolean
+          description: Whether this artist is already assigned to a user account.
+    ArtistProfileUpsert:
+      type: object
+      required: [apuArtistId]
+      properties:
+        apuArtistId:
+          type: integer
+          format: int64
+        apuSlug:
+          type: string
+          nullable: true
+        apuBio:
+          type: string
+          nullable: true
+        apuCity:
+          type: string
+          nullable: true
+        apuHeroImageUrl:
+          type: string
+          format: uri
+          nullable: true
+        apuSpotifyArtistId:
+          type: string
+          nullable: true
+        apuSpotifyUrl:
+          type: string
+          format: uri
+          nullable: true
+        apuYoutubeChannelId:
+          type: string
+          nullable: true
+        apuYoutubeUrl:
+          type: string
+          format: uri
+          nullable: true
+        apuWebsiteUrl:
+          type: string
+          format: uri
+          nullable: true
+        apuFeaturedVideoUrl:
+          type: string
+          format: uri
+          nullable: true
+        apuGenres:
+          type: string
+          nullable: true
+        apuHighlights:
+          type: string
+          nullable: true
+    ArtistRelease:
+      type: object
+      properties:
+        arArtistId:
+          type: integer
+          format: int64
+        arReleaseId:
+          type: integer
+          format: int64
+        arTitle:
+          type: string
+        arReleaseDate:
+          type: string
+          format: date
+          nullable: true
+        arDescription:
+          type: string
+          nullable: true
+        arCoverImageUrl:
+          type: string
+          format: uri
+          nullable: true
+        arSpotifyUrl:
+          type: string
+          format: uri
+          nullable: true
+        arYoutubeUrl:
+          type: string
+          format: uri
+          nullable: true
+    FanProfile:
+      type: object
+      properties:
+        fpArtistId:
+          type: integer
+          format: int64
+        fpDisplayName:
+          type: string
+          nullable: true
+        fpAvatarUrl:
+          type: string
+          format: uri
+          nullable: true
+        fpFavoriteGenres:
+          type: string
+          nullable: true
+        fpBio:
+          type: string
+          nullable: true
+        fpCity:
+          type: string
+          nullable: true
+    FanProfileUpdate:
+      type: object
+      properties:
+        fpuDisplayName:
+          type: string
+          nullable: true
+        fpuAvatarUrl:
+          type: string
+          format: uri
+          nullable: true
+        fpuFavoriteGenres:
+          type: string
+          nullable: true
+        fpuBio:
+          type: string
+          nullable: true
+        fpuCity:
+          type: string
+          nullable: true
+    FanFollow:
+      type: object
+      properties:
+        ffArtistId:
+          type: integer
+          format: int64
+        ffArtistName:
+          type: string
+        ffHeroImageUrl:
+          type: string
+          format: uri
+          nullable: true
+        ffSpotifyUrl:
+          type: string
+          format: uri
+          nullable: true
+        ffYoutubeUrl:
+          type: string
+          format: uri
+          nullable: true
+        ffStartedAt:
+          type: string
+          format: date
+    CourseSession:
+      type: object
+      properties:
+        label:
+          type: string
+        date:
+          type: string
+          format: date
+    SyllabusItem:
+      type: object
+      properties:
+        title:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+    CourseMetadata:
+      type: object
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        subtitle:
+          type: string
+        format:
+          type: string
+        duration:
+          type: string
+        price:
+          type: number
+          format: float
+        currency:
+          type: string
+        capacity:
+          type: integer
+        locationLabel:
+          type: string
+        locationMapUrl:
+          type: string
+          format: uri
+        daws:
+          type: array
+          items:
+            type: string
+        includes:
+          type: array
+          items:
+            type: string
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourseSession'
+        syllabus:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyllabusItem'
+        whatsappCtaUrl:
+          type: string
+          format: uri
+        landingUrl:
+          type: string
+          format: uri
+    UTMTags:
+      type: object
+      properties:
+        source:
+          type: string
+          nullable: true
+        medium:
+          type: string
+          nullable: true
+        campaign:
+          type: string
+          nullable: true
+        content:
+          type: string
+          nullable: true
+    CourseRegistrationRequest:
+      type: object
+      required: [source]
+      properties:
+        fullName:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        phoneE164:
+          type: string
+          nullable: true
+          example: "+593999001122"
+        source:
+          type: string
+          description: landing | whatsapp | other keyword
+        howHeard:
+          type: string
+          nullable: true
+        utm:
+          $ref: '#/components/schemas/UTMTags'
+    CourseRegistrationResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [pending_payment, paid, cancelled]
+    CourseRegistrationStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending_payment, paid, cancelled]
+    WhatsAppWebhook:
+      type: object
+      description: Meta WhatsApp Cloud API webhook payload (pass-through, not strictly validated).
+      additionalProperties: true
+    DriveTokenExchangeRequest:
+      type: object
+      required: [code, codeVerifier]
+      properties:
+        code:
+          type: string
+        codeVerifier:
+          type: string
+        redirectUri:
+          type: string
+          nullable: true
+    DriveTokenRefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    DriveTokenResponse:
+      type: object
+      required: [accessToken, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+          nullable: true
+        expiresIn:
+          type: integer
+        tokenType:
+          type: string
+          nullable: true
+    RadioNowPlayingRequest:
+      type: object
+      required: [rnpStreamUrl]
+      properties:
+        rnpStreamUrl:
+          type: string
+          description: Stream URL to inspect (http/https).
+          example: https://icecast.radiofrance.fr/fip-midfi.mp3
+    RadioNowPlayingResult:
+      type: object
+      properties:
+        rnpTitle:
+          type: string
+          nullable: true
+          description: Current StreamTitle metadata when available.
+        rnpArtist:
+          type: string
+          nullable: true
+          description: Parsed artist name when StreamTitle includes a separator.
+        rnpTrack:
+          type: string
+          nullable: true
+          description: Parsed track title when StreamTitle includes a separator.

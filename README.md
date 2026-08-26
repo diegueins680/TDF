@@ -1,116 +1,138 @@
-# TDF HQ (Haskell, Servant + Persistent + PostgreSQL)
+# TDF HQ
 
-A minimal, type-safe skeleton for TDF's internal app: CRM, Scheduling, Packages, Invoicing & Inventory.
+A Haskell (Servant + Persistent) backend that powers TDF's internal HQ app for CRM, scheduling, lesson packages, invoicing, inventory, and trial management. The service exposes a JSON API secured with bearer tokens, generates PDFs for operational checklists, and boots with opinionated seeds so the UI can be exercised immediately.
 
-## Prereqs
+## Architecture at a Glance
 
-- PostgreSQL 16 (local) OR Docker (optional).
-- Haskell **Stack** (recommended).
+- **Entry point**: [`app/Main.hs`](app/Main.hs) wires configuration, database pooling, migrations, seeding, and the Servant application with CORS middleware.
+- **Environment**: [`TDF.Config`](src/TDF/Config.hs) loads `APP_PORT`, database credentials, and flags for resetting/seeding the database, plus the optional seed trigger token.
+- **Database**: [`TDF.DB`](src/TDF/DB.hs) creates the PostgreSQL pool and exposes the runtime `Env` consumed across handlers. Persistent models live in [`TDF.Models`](src/TDF/Models.hs), [`TDF.ModelsExtra`](src/TDF/ModelsExtra.hs), and [`TDF.Trials.Models`](src/TDF/Trials/Models.hs) with migrations executed on startup.
+- **API surface**: [`TDF.API`](src/TDF/API.hs) defines the main Servant routes. Individual feature areas (CRM parties, bookings, packages, invoices, receipts, bands, inventory, rooms, pipelines, trial lessons, etc.) live in `TDF.API.*` and `TDF.Server*` modules.
+- **Server implementation**: [`TDF.Server`](src/TDF/Server.hs) composes all handlers, enforces seed tokens, renders PDF input lists, and hoists the authenticated sub-API. Trials endpoints (`/trials/*`) are mounted alongside the primary API.
+- **Authentication**: [`TDF.Auth`](src/TDF/Auth.hs) resolves bearer tokens to roles and module permissions, backing Servant's `AuthProtect` machinery. Admin utilities in [`TDF.ServerAdmin`](src/TDF/ServerAdmin.hs) provide seeded dropdowns and user management.
+- **DTOs & contracts**: [`TDF.DTO`](src/TDF/DTO.hs), `TDF.Contracts.*`, and the OpenAPI documents in [`docs/`](docs) define payload shapes shared with the frontend.
 
-## Configure
+### Repository layout
 
-Copy `config/default.env` to `.env` (or just export them in your shell):
+| Path | Purpose |
+| --- | --- |
+| `app/` | Executable entrypoint and CORS setup. |
+| `src/TDF/` | Core library modules (API types, server logic, models, auth, DTOs, seeds, feature servers). |
+| `src/TDF/Trials/` | Trial lesson-specific API, models, seeds, and server composition. |
+| `scripts/` | Helper scripts for dev (`dev_run.sh`), smoke checks, LaTeX packaging, and DB migrations. |
+| `sql/` | Raw SQL migrations for lessons, packages, payments, and receipts. |
+| `docs/` | API references, product notes, and OpenAPI specs. |
+| `templates/` | LaTeX templates used for generated PDFs (e.g., input list sessions). |
 
-```
+## Getting Started
+
+### Prerequisites
+
+- GHC toolchain via [Stack](https://docs.haskellstack.org/).
+- PostgreSQL 16 accessible at the host/port configured in `config/default.env` (or run via Docker Compose).
+- `make`, `curl`, and `jq` for convenience targets.
+- (Optional) A LaTeX toolchain if you plan to regenerate the PDF template assets locally (`scripts/latex`).
+
+### Configure environment
+
+Copy `config/default.env` to `.env` (or export the variables in your shell):
+
+```env
 DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_USER=postgres
 DB_PASS=postgres
 DB_NAME=tdf_hq
 APP_PORT=8080
+RESET_DB=false
+SEED_DB=true
+SEED_TRIGGER_TOKEN=tdf-bootstrap-seed
+DRIVE_ACCESS_TOKEN=         # Google access token with drive.file scope (for /drive/upload)
+DRIVE_UPLOAD_FOLDER_ID=     # Optional Google Drive folder for uploads
 ```
 
-## Build & Run (Stack)
+`RESET_DB=true` will drop and recreate the `public` schema on boot; `SEED_DB=false` skips automatic seed data. Setting `SEED_TRIGGER_TOKEN` to a non-empty value enables the unauthenticated `/seed` endpoint; leaving it blank disables it entirely.
+
+### Drive upload proxy
+
+- New endpoint: `POST /drive/upload` (multipart `file`) uses a Google Drive access token to store files and returns a public URL (if permissions allow). Authenticated via the same bearer auth as the rest of the API.
+- Configure `DRIVE_ACCESS_TOKEN` with a service account or user token that has `drive.file` scope. Optionally set `DRIVE_UPLOAD_FOLDER_ID` to constrain uploads to a specific folder.
+
+## Running the application
+
+### Stack workflow
 
 ```bash
 # from project root
 set -a; source config/default.env; set +a
-stack setup
+stack setup         # first run only
 stack build
-stack run
-# database seeds now run automatically (set SEED_DB=false to skip)
+stack run           # runs migrations and optional seeds
 ```
 
-Server starts on `http://localhost:8080`.
+The API will listen on `http://localhost:8080`. Migrations include the base schema, extra entities, and the trial lesson tables.
 
-## Docker Compose (Postgres + App)
+### Docker Compose
 
-Build and run both services:
+A `docker-compose.yml` is provided to run PostgreSQL and the app together:
 
 ```bash
-make up       # builds the image and starts Postgres + app
+make up       # build images and start db + app
 make logs     # follow combined logs
-make health   # check /health endpoint
-make seed     # seed demo data (uses admin-token)
-make down     # stop services (keep volumes)
-make clean    # stop and remove volumes
+make health   # hit /health for a quick status
+make seed     # POST /admin/seed with the admin token
+make down     # stop services (preserve volumes)
+make clean    # stop services and remove volumes
 ```
 
-Compose sets DB env for the app; the server listens on `localhost:8080`.
+Override `APP_BASE_URL` when using the `version` Make target, or export environment overrides before `make up` to reconfigure the containerised app.
 
-To trigger the seed job without an admin session (e.g., for a remote staging
-deployment), send:
+## Database, migrations, and seeds
 
-```bash
-curl -X POST "$APP_BASE_URL/seed" -H "X-Seed-Token: ${SEED_TRIGGER_TOKEN:-tdf-bootstrap-seed}"
-```
+- Startup runs `resetSchema` when `RESET_DB=true`, executes migrations from `TDF.Models`, `TDF.ModelsExtra`, and `TDF.Trials.Models`, then optionally `seedAll` for fixtures used by the UI.
+- Trial availability helpers live in `scripts/migrate_trial_availability.sh`; lesson/package/receipt migrations live in `scripts/migrate_lessons.sh` and corresponding SQL files.
+- Admin-only seed endpoints are exposed under `/admin/seed` and respect the bearer token auth plus `ModuleAdmin` gate.
+- The unauthenticated `/seed` endpoint is protected by `X-Seed-Token` and can be disabled via config.
 
-Set `SEED_TRIGGER_TOKEN` to a custom value to keep the endpoint protected. An
-empty value disables the unauthenticated seed route entirely.
+## Feature overview
 
+- **CRM & parties**: Manage parties, roles, and tokens with module-based access control.
+- **Scheduling**: Bookings, sessions, trial lesson flows, and PDF input lists (`/input-list/sessions` + PDF rendering).
+- **Packages & invoicing**: Package catalog, purchases, invoices, and receipts tied to payments (see `docs/openapi/lessons-and-receipts.yaml`).
+- **Inventory & rooms**: Track assets, room setups, and inventory seeding utilities.
+- **Pipelines & bands**: Sales/production pipelines and performance band management.
+- **Admin tooling**: Dropdown management, user provisioning, role detail enumeration, and global seeding.
+- **Metadata endpoints**: `/version`, `/meta/*`, and `/health` for operational visibility.
+
+## Authentication & authorization
+
+- Endpoints under `AuthProtect "bearer-token"` require an `Authorization: Bearer <token>` header.
+- Tokens resolve to parties and active roles; modules are derived from roles via `modulesForRoles`.
+- Handlers enforce module gates using helpers like `hasModuleAccess` and `ensureModule` (see `TDF.ServerAdmin`).
+
+## Documentation & contracts
+
+- `docs/api.md`, `docs/CalendarAPI.md`, and `docs/CONTRACTS_API.md` describe key integration points.
+- REST payloads are defined in `src/TDF/DTO.hs` and `src/TDF/API/Types.hs`, mirroring database entities in `TDF.Models*`.
+- The lessons & receipts OpenAPI spec (`docs/openapi/lessons-and-receipts.yaml`) drives the UI integration.
+- PDF output uses `templates/invoice.dark.tex`, rendered through helpers in `TDF.Handlers.InputList`.
+
+## Development utilities
+
+- `scripts/dev_run.sh`: export environment variables, build, and run the server in one step.
+- `scripts/smoke.sh`: lightweight curl-based smoke tests against local or remote deployments.
+- `scripts/latex/*`: build artifacts required for LaTeX/PDF generation if the template changes.
+
+## Testing
+
+A formal test suite is not yet wired up. Add Hspec specs under `test/`, update `tdf-hq.cabal` with a `test-suite`, and run via `stack test` when you start adding automated coverage.
+
+## Troubleshooting
+
+- If you see database connection errors, verify credentials match a running PostgreSQL instance or use Docker Compose.
+- To regenerate seeds from scratch, set `RESET_DB=true` and `SEED_DB=true` for a single `stack run` invocation, then revert to defaults.
+- CORS defaults allow localhost and Pages/Vercel domains; extend via `ALLOW_ORIGINS`/`ALLOW_ORIGIN`, set `ALLOW_ALL_ORIGINS=true` to open during debugging, or `CORS_DISABLE_DEFAULTS=true` to rely only on your list.
 
 ---
 
-## Trial Teacher Availability
-
-The UI expects subject↔room mappings and teacher availability windows. Apply the
-schema helpers and seed data:
-
-```bash
-./scripts/migrate_trial_availability.sh
-stack run   # seeds create default subjects, room preferences, and time slots
-```
-
-## Lessons, Packages, Payments & Receipts
-
-This repo's backend is now prepared for lessons and receipts via:
-
-1. **DB schema & seeds** – see `sql/2025-10-21_packages_lessons_receipts.sql`.
-   Apply it with:
-
-   ```bash
-   ./scripts/migrate_lessons.sh
-   ```
-
-2. **OpenAPI** – see `docs/openapi/lessons-and-receipts.yaml` which defines the
-   endpoints used by the UI (teachers, students, packages, enrollments, lessons,
-   materials, payments, receipts). Wire these to your Servant server or codegen.
-
-3. **Receipts** – receipts are created against a `payment_id` and store line
-   items as JSONB. The frontend generates downloadable PDFs (client-side) using
-   the logo that already lives in the UI repo.
-
-### Next steps (server handlers)
-
-Implement handlers that conform to the OpenAPI doc and back them with the schema
-above (Persistent or SQL). If your app already exposes a `Pool SqlBackend`,
-each handler typically looks like:
-
-```haskell
-listStudentsHandler :: AppM [StudentDTO]
-listStudentsHandler = runDB $ do
-  xs <- selectList [] [Asc StudentName]
-  pure (map toDTO xs)
-```
-
-Where `runDB` uses `runSqlPool` under the hood. Use views or joins for
-cross-entity summaries (e.g. lessons by teacher, students by teacher).
-
-> Tip: Keep receipt number generation monotonic (e.g., `R-YYYY-NNNN`) using a
-> sequence, and enforce uniqueness at DB level (`unique` index already present).
-
-### Logo
-
-The frontend expects a logo at `public/tdf-logo.svg`. If your UI repo already
-has a specific file (e.g. `TDF UI LOGO 1 colorline.svg`), either copy it to
-`public/tdf-logo.svg` or update the import in `ReceiptPDF.tsx` accordingly.
+Happy hacking! If you add new modules or endpoints, remember to update `TDF.API`, wire handlers in `TDF.Server`, extend DTOs as needed, and document contract changes under `docs/` so the frontend stays in sync.
