@@ -1,6 +1,7 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module TDF.AuthSpec (spec) where
 
-import           Data.Text     (Text)
 import qualified Data.Text     as T
 import           Test.Hspec    (Spec, describe, it, shouldBe)
 
