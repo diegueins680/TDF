@@ -128,7 +128,7 @@ normalizeWhatsAppRegistrationUrl (Just rawUrl)
   | T.any (`elem` ("?#" :: String)) trimmed =
       Left "COURSE_REG_URL must be an absolute https URL without query or fragment"
   | otherwise =
-      Config.normalizeConfiguredHttpsUrl "COURSE_REG_URL" rawUrl
+      Config.normalizeConfiguredHttpsUrl "COURSE_REG_URL" (Just rawUrl)
   where
     trimmed = T.strip (T.pack rawUrl)
 

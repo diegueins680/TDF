@@ -37,6 +37,16 @@ data PartyDTO = PartyDTO
 
 instance ToJSON PartyDTO
 instance FromJSON PartyDTO
+
+data SocialPartyProfileDTO = SocialPartyProfileDTO
+  { sppPartyId     :: Int64
+  , sppDisplayName :: Text
+  , sppAvatarUrl   :: Maybe Text
+  , sppBio         :: Maybe Text
+  , sppCity        :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON SocialPartyProfileDTO
+instance FromJSON SocialPartyProfileDTO
  
 data ArtistProfileDTO = ArtistProfileDTO
   { apArtistId        :: Int64
@@ -285,15 +295,145 @@ data VCardExchangeRequest = VCardExchangeRequest
   } deriving (Show, Generic)
 instance FromJSON VCardExchangeRequest
 
+data ReactionSummaryDTO = ReactionSummaryDTO
+  { rsLike  :: Int
+  , rsLove  :: Int
+  , rsFire  :: Int
+  , rsTotal :: Int
+  } deriving (Show, Generic)
+instance ToJSON ReactionSummaryDTO
+
+data FanClubDTO = FanClubDTO
+  { fcId             :: Int64
+  , fcArtistId       :: Int64
+  , fcName           :: Text
+  , fcDescription    :: Maybe Text
+  , fcOfficers       :: [FanClubOfficerDTO]
+  , fcFollowerCount  :: Int
+  , fcArtistImageUrl :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON FanClubDTO
+
+data FanClubOfficerDTO = FanClubOfficerDTO
+  { fcoPartyId    :: Int64
+  , fcoFanName    :: Text
+  , fcoAvatarUrl  :: Maybe Text
+  , fcoRole       :: Text
+  , fcoElectedAt  :: Maybe UTCTime
+  , fcoTermEndsAt :: Maybe UTCTime
+  } deriving (Show, Generic)
+instance ToJSON FanClubOfficerDTO
+
+data FanClubPostDTO = FanClubPostDTO
+  { fcpId         :: Int64
+  , fcpParentId   :: Maybe Int64
+  , fcpTitle      :: Maybe Text
+  , fcpContent    :: Text
+  , fcpMediaUrls  :: [Text]
+  , fcpAuthorId   :: Int64
+  , fcpAuthorName :: Text
+  , fcpAvatarUrl  :: Maybe Text
+  , fcpIsPinned   :: Bool
+  , fcpIsHidden   :: Bool
+  , fcpReplies    :: Int
+  , fcpReactions  :: ReactionSummaryDTO
+  , fcpCreatedAt  :: UTCTime
+  , fcpUpdatedAt  :: Maybe UTCTime
+  } deriving (Show, Generic)
+instance ToJSON FanClubPostDTO
+
+data FanClubEventDTO = FanClubEventDTO
+  { fceId              :: Int64
+  , fceTitle           :: Text
+  , fceDescription     :: Maybe Text
+  , fceStartsAt        :: Maybe UTCTime
+  , fceEndsAt          :: Maybe UTCTime
+  , fceLocation        :: Maybe Text
+  , fceIsArtistConcert :: Bool
+  , fceCreatedBy       :: Maybe Int64
+  } deriving (Show, Generic)
+instance ToJSON FanClubEventDTO
+
+data FanClubElectionDTO = FanClubElectionDTO
+  { fceElectionId         :: Int64
+  , fceYear               :: Int
+  , fceStatus             :: Text
+  , fceCandidacyStartsAt  :: Maybe UTCTime
+  , fceCandidacyEndsAt    :: Maybe UTCTime
+  , fceVotingStartsAt     :: Maybe UTCTime
+  , fceVotingEndsAt       :: Maybe UTCTime
+  , fceMyCandidacies      :: [FanClubCandidacyDTO]
+  , fceMyVotes            :: [FanClubVoteDTO]
+  } deriving (Show, Generic)
+instance ToJSON FanClubElectionDTO
+
+data FanClubCandidacyDTO = FanClubCandidacyDTO
+  { fccCandidacyId :: Int64
+  , fccFanId       :: Int64
+  , fccFanName     :: Text
+  , fccAvatarUrl   :: Maybe Text
+  , fccRole        :: Text
+  , fccManifesto   :: Maybe Text
+  , fccVoteCount   :: Int
+  } deriving (Show, Generic)
+instance ToJSON FanClubCandidacyDTO
+
+data FanClubVoteDTO = FanClubVoteDTO
+  { fcvCandidacyId :: Int64
+  , fcvRole        :: Text
+  } deriving (Show, Generic)
+instance ToJSON FanClubVoteDTO
+
+data FanClubCreatePostReq = FanClubCreatePostReq
+  { fcpReqTitle     :: Maybe Text
+  , fcpReqContent   :: Text
+  , fcpReqParentId  :: Maybe Int64
+  , fcpReqMediaUrls :: [Text]
+  } deriving (Show, Generic)
+instance FromJSON FanClubCreatePostReq
+
+data FanClubCreateEventReq = FanClubCreateEventReq
+  { fcevTitle       :: Text
+  , fcevDescription :: Maybe Text
+  , fcevStartsAt    :: Maybe UTCTime
+  , fcevEndsAt      :: Maybe UTCTime
+  , fcevLocation    :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON FanClubCreateEventReq
+
+data FanClubCreateElectionReq = FanClubCreateElectionReq
+  { fcelYear               :: Int
+  , fcelCandidacyStartsAt  :: Maybe UTCTime
+  , fcelCandidacyEndsAt    :: Maybe UTCTime
+  , fcelVotingStartsAt     :: Maybe UTCTime
+  , fcelVotingEndsAt       :: Maybe UTCTime
+  } deriving (Show, Generic)
+instance FromJSON FanClubCreateElectionReq
+
+data FanClubCreateCandidacyReq = FanClubCreateCandidacyReq
+  { fccrRole      :: Text
+  , fccrManifesto :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON FanClubCreateCandidacyReq
+
+data FanClubVoteReq = FanClubVoteReq
+  { fcvCandidacyIds :: [Int64]
+  } deriving (Show, Generic)
+instance FromJSON FanClubVoteReq
+
 -- Course registrations (admin)
 data CourseRegistrationDTO = CourseRegistrationDTO
   { crId          :: Int64
   , crCourseSlug  :: Text
+  , crPartyId     :: Maybe Int64
   , crFullName    :: Maybe Text
   , crEmail       :: Maybe Text
   , crPhoneE164   :: Maybe Text
   , crSource      :: Text
   , crStatus      :: Text
+  , crReceiptCount :: Int
+  , crFollowUpCount :: Int
+  , crAdminNotes  :: Maybe Text
   , crHowHeard    :: Maybe Text
   , crUtmSource   :: Maybe Text
   , crUtmMedium   :: Maybe Text
@@ -303,6 +443,63 @@ data CourseRegistrationDTO = CourseRegistrationDTO
   , crUpdatedAt   :: UTCTime
   } deriving (Show, Generic)
 instance ToJSON CourseRegistrationDTO
+
+data CourseRegistrationReceiptDTO = CourseRegistrationReceiptDTO
+  { crrId             :: Int64
+  , crrRegistrationId :: Int64
+  , crrPartyId        :: Maybe Int64
+  , crrFileUrl        :: Text
+  , crrFileName       :: Maybe Text
+  , crrMimeType       :: Maybe Text
+  , crrNotes          :: Maybe Text
+  , crrUploadedBy     :: Maybe Int64
+  , crrCreatedAt      :: UTCTime
+  , crrUpdatedAt      :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CourseRegistrationReceiptDTO
+
+data CourseRegistrationFollowUpDTO = CourseRegistrationFollowUpDTO
+  { crfId             :: Int64
+  , crfRegistrationId :: Int64
+  , crfPartyId        :: Maybe Int64
+  , crfEntryType      :: Text
+  , crfSubject        :: Maybe Text
+  , crfNotes          :: Text
+  , crfAttachmentUrl  :: Maybe Text
+  , crfAttachmentName :: Maybe Text
+  , crfNextFollowUpAt :: Maybe UTCTime
+  , crfCreatedBy      :: Maybe Int64
+  , crfCreatedAt      :: UTCTime
+  , crfUpdatedAt      :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CourseRegistrationFollowUpDTO
+
+data CourseRegistrationDossierDTO = CourseRegistrationDossierDTO
+  { crdRegistration :: CourseRegistrationDTO
+  , crdReceipts     :: [CourseRegistrationReceiptDTO]
+  , crdFollowUps    :: [CourseRegistrationFollowUpDTO]
+  , crdCanMarkPaid  :: Bool
+  } deriving (Show, Generic)
+instance ToJSON CourseRegistrationDossierDTO
+
+data CourseEmailEventDTO = CourseEmailEventDTO
+  { ceId             :: Int64
+  , ceCourseSlug     :: Text
+  , ceRegistrationId :: Maybe Int64
+  , ceRecipientEmail :: Text
+  , ceRecipientName  :: Maybe Text
+  , ceEventType      :: Text
+  , ceStatus         :: Text
+  , ceMessage        :: Maybe Text
+  , ceCreatedAt      :: UTCTime
+  } deriving (Show, Generic)
+instance ToJSON CourseEmailEventDTO
+
+data CourseCohortOptionDTO = CourseCohortOptionDTO
+  { ccSlug  :: Text
+  , ccTitle :: Maybe Text
+  } deriving (Show, Generic)
+instance ToJSON CourseCohortOptionDTO
 
 -- Logs
 data LogEntryDTO = LogEntryDTO
@@ -436,6 +633,7 @@ data InvoiceDTO = InvoiceDTO
   , totalC       :: Int
   , currency     :: Text
   , customerId   :: Maybe Int64
+  , sriDocumentId :: Maybe Text
   , notes        :: Maybe Text
   , receiptId    :: Maybe Int64
   , lineItems    :: [InvoiceLineDTO]
@@ -461,6 +659,32 @@ data CreateInvoiceReq = CreateInvoiceReq
   , ciGenerateReceipt :: Maybe Bool
   } deriving (Show, Generic)
 instance FromJSON CreateInvoiceReq
+
+data GenerateSessionInvoiceLineReq = GenerateSessionInvoiceLineReq
+  { gsilDescription       :: Text
+  , gsilQuantity          :: Int
+  , gsilUnitCents         :: Int
+  , gsilTaxBps            :: Maybe Int
+  , gsilServiceOrderId    :: Maybe Int64
+  , gsilPackagePurchaseId :: Maybe Int64
+  , gsilSriCode           :: Maybe Text
+  , gsilSriAuxiliaryCode  :: Maybe Text
+  , gsilSriAdditionalInfo :: Maybe Text
+  , gsilSriIvaCode        :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON GenerateSessionInvoiceLineReq
+
+data GenerateSessionInvoiceReq = GenerateSessionInvoiceReq
+  { gsiCustomerId          :: Maybe Int64
+  , gsiCurrency            :: Maybe Text
+  , gsiNumber              :: Maybe Text
+  , gsiNotes               :: Maybe Text
+  , gsiLineItems           :: [GenerateSessionInvoiceLineReq]
+  , gsiGenerateReceipt     :: Maybe Bool
+  , gsiIssueSri            :: Maybe Bool
+  , gsiCertificatePassword :: Maybe Text
+  } deriving (Show, Generic)
+instance FromJSON GenerateSessionInvoiceReq
 
 -- Receipts
 data ReceiptLineDTO = ReceiptLineDTO
@@ -555,3 +779,12 @@ data LoginResponse = LoginResponse
   , modules :: [Text]
   } deriving (Show, Generic)
 instance ToJSON LoginResponse
+
+data SessionResponse = SessionResponse
+  { sessionUsername    :: Text
+  , sessionDisplayName :: Text
+  , sessionPartyId     :: Int64
+  , sessionRoles       :: [RoleEnum]
+  , sessionModules     :: [Text]
+  } deriving (Show, Generic)
+instance ToJSON SessionResponse

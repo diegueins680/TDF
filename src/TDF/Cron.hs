@@ -61,8 +61,6 @@ import           TDF.Server              ( buildLandingUrl
                                          , loadAdExamples
                                          , runRagChatWithStatus
                                          , courseMetadataFor
-                                         , loadWhatsAppEnv
-                                         , WhatsAppEnv(..)
                                          , toCourseMetadata
                                          , normalizeSlug
                                          , productionCourseSlug
@@ -73,6 +71,7 @@ import           TDF.RagStore            (ensureRagIndex, retrieveRagContext)
 import qualified TDF.Trials.Models       as Trials
 import           TDF.Config              (AppConfig, instagramAppToken)
 import           TDF.WhatsApp.Client     (sendText)
+import           TDF.WhatsApp.Transport  (WhatsAppEnv(..), loadWhatsAppEnv)
 
 -- | Launch a background thread that sends payment reminders every day at 09:00 (server local time).
 startCoursePaymentReminderJob :: Env -> IO ()
@@ -358,20 +357,28 @@ replyInstagramOne cfg pool acc (Entity key msg) = do
                         , InstagramMessageAdName =. acAdName adContext
                         , InstagramMessageCampaignName =. acCampaignName adContext
                         ]
-                      insert_ (InstagramMessage (instagramMessageExternalId msg <> "-out-" <> T.pack (show now))
-                                (instagramMessageSenderId msg)
-                                (instagramMessageSenderName msg)
-                                (Just reply)
-                                "outgoing"
-                                (instagramMessageAdExternalId msg)
-                                (acAdName adContext)
-                                (instagramMessageCampaignExternalId msg)
-                                (acCampaignName adContext)
-                                Nothing
-                                Nothing
-                                Nothing
-                                Nothing
-                                now)
+                      insert_ InstagramMessage
+                        { instagramMessageExternalId = instagramMessageExternalId msg <> "-out-" <> T.pack (show now)
+                        , instagramMessageSenderId = instagramMessageSenderId msg
+                        , instagramMessageSenderName = instagramMessageSenderName msg
+                        , instagramMessageText = Just reply
+                        , instagramMessageDirection = "outgoing"
+                        , instagramMessageAdExternalId = instagramMessageAdExternalId msg
+                        , instagramMessageAdName = acAdName adContext
+                        , instagramMessageCampaignExternalId = instagramMessageCampaignExternalId msg
+                        , instagramMessageCampaignName = acCampaignName adContext
+                        , instagramMessageMetadata = Nothing
+                        , instagramMessageReplyStatus = "sent"
+                        , instagramMessageHoldReason = Nothing
+                        , instagramMessageHoldRequiredFields = Nothing
+                        , instagramMessageLastAttemptAt = Just now
+                        , instagramMessageAttemptCount = 1
+                        , instagramMessageRepliedAt = Nothing
+                        , instagramMessageReplyText = Nothing
+                        , instagramMessageReplyError = Nothing
+                        , instagramMessageDeletedAt = Nothing
+                        , instagramMessageCreatedAt = now
+                        }
                     )
                     pool
                   pure (acc + 1)
@@ -448,20 +455,38 @@ replyWhatsAppOne cfg pool waEnv acc (Entity key msg) = do
                         , ME.WhatsAppMessageAdName =. acAdName adContext
                         , ME.WhatsAppMessageCampaignName =. acCampaignName adContext
                         ]
-                      insert_ (ME.WhatsAppMessage (ME.whatsAppMessageExternalId msg <> "-out-" <> T.pack (show now))
-                                (ME.whatsAppMessageSenderId msg)
-                                (ME.whatsAppMessageSenderName msg)
-                                (Just reply)
-                                "outgoing"
-                                (ME.whatsAppMessageAdExternalId msg)
-                                (acAdName adContext)
-                                (ME.whatsAppMessageCampaignExternalId msg)
-                                (acCampaignName adContext)
-                                Nothing
-                                Nothing
-                                Nothing
-                                Nothing
-                                now)
+                      insert_ ME.WhatsAppMessage
+                        { ME.whatsAppMessageExternalId = ME.whatsAppMessageExternalId msg <> "-out-" <> T.pack (show now)
+                        , ME.whatsAppMessageSenderId = ME.whatsAppMessageSenderId msg
+                        , ME.whatsAppMessageSenderName = ME.whatsAppMessageSenderName msg
+                        , ME.whatsAppMessagePartyId = ME.whatsAppMessagePartyId msg
+                        , ME.whatsAppMessageActorPartyId = Nothing
+                        , ME.whatsAppMessagePhoneE164 = ME.whatsAppMessagePhoneE164 msg
+                        , ME.whatsAppMessageContactEmail = ME.whatsAppMessageContactEmail msg
+                        , ME.whatsAppMessageText = Just reply
+                        , ME.whatsAppMessageDirection = "outgoing"
+                        , ME.whatsAppMessageAdExternalId = ME.whatsAppMessageAdExternalId msg
+                        , ME.whatsAppMessageAdName = acAdName adContext
+                        , ME.whatsAppMessageCampaignExternalId = ME.whatsAppMessageCampaignExternalId msg
+                        , ME.whatsAppMessageCampaignName = acCampaignName adContext
+                        , ME.whatsAppMessageMetadata = Nothing
+                        , ME.whatsAppMessageReplyStatus = "sent"
+                        , ME.whatsAppMessageHoldReason = Nothing
+                        , ME.whatsAppMessageHoldRequiredFields = Nothing
+                        , ME.whatsAppMessageLastAttemptAt = Just now
+                        , ME.whatsAppMessageAttemptCount = 1
+                        , ME.whatsAppMessageRepliedAt = Nothing
+                        , ME.whatsAppMessageReplyText = Nothing
+                        , ME.whatsAppMessageReplyError = Nothing
+                        , ME.whatsAppMessageDeliveryStatus = "sent"
+                        , ME.whatsAppMessageDeliveryUpdatedAt = Just now
+                        , ME.whatsAppMessageDeliveryError = Nothing
+                        , ME.whatsAppMessageTransportPayload = Nothing
+                        , ME.whatsAppMessageStatusPayload = Nothing
+                        , ME.whatsAppMessageSource = Just "auto-reply"
+                        , ME.whatsAppMessageResendOfMessageId = Just key
+                        , ME.whatsAppMessageCreatedAt = now
+                        }
                     )
                     pool
                   pure (acc + 1)

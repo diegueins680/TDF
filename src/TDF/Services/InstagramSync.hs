@@ -91,7 +91,7 @@ isHiddenInstagramFormattingChar ch =
 
 isPublicHttpsUrl :: Text -> Text -> Bool
 isPublicHttpsUrl fieldName url =
-  case normalizeConfiguredHttpsUrl (T.unpack fieldName) (T.unpack url) of
+  case normalizeConfiguredHttpsUrl (T.unpack fieldName) (Just (T.unpack url)) of
     Right (Just normalized) -> normalized == url
     _ -> False
 

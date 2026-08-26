@@ -7,3 +7,4 @@
 .stack-root/
 .env
 .DS_Store
+stack.yaml.lock

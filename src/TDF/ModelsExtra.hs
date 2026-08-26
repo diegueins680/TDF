@@ -25,7 +25,7 @@ import           Database.Persist.TH
 import           GHC.Generics       (Generic)
 import           Web.PathPieces     (toPathPiece)
 
-import           TDF.Models         (PartyId, ServiceKind)
+import           TDF.Models         (InvoiceId, PartyId, ServiceKind)
 import           TDF.UUIDInstances  ()
 
 data AssetStatus = Active | Booked | OutForMaintenance | Retired
@@ -43,6 +43,10 @@ derivePersistField "MaintenancePolicy"
 data CheckoutTarget = TargetSession | TargetParty | TargetRoom
   deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
 derivePersistField "CheckoutTarget"
+
+data CheckoutDisposition = Loan | Rental | Sale | Repair | Transfer | OtherDisposition
+  deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
+derivePersistField "CheckoutDisposition"
 
 data StockUnit = Pcs | Set | Roll | Pack | Bottle | OtherUnit
   deriving (Show, Read, Eq, Ord, Enum, Bounded, Generic)
@@ -108,38 +112,62 @@ StudioBrainEntry
     deriving Show Generic
 
 WhatsAppMessage
-    externalId       Text
-    senderId         Text
-    senderName       Text Maybe
-    text             Text Maybe
-    direction        Text
-    adExternalId     Text Maybe
-    adName           Text Maybe
+    externalId         Text
+    senderId           Text
+    senderName         Text Maybe
+    partyId            PartyId Maybe
+    actorPartyId       PartyId Maybe
+    phoneE164          Text Maybe
+    contactEmail       Text Maybe
+    text               Text Maybe
+    direction          Text
+    adExternalId       Text Maybe
+    adName             Text Maybe
     campaignExternalId Text Maybe
-    campaignName     Text Maybe
-    metadata         Text Maybe
-    repliedAt        UTCTime Maybe
-    replyText        Text Maybe
-    replyError       Text Maybe
-    createdAt        UTCTime
+    campaignName       Text Maybe
+    metadata           Text Maybe
+    replyStatus        Text default='pending'
+    holdReason         Text Maybe
+    holdRequiredFields Text Maybe
+    lastAttemptAt      UTCTime Maybe
+    attemptCount       Int default=0
+    repliedAt          UTCTime Maybe
+    replyText          Text Maybe
+    replyError         Text Maybe
+    deliveryStatus     Text default='pending'
+    deliveryUpdatedAt  UTCTime Maybe
+    deliveryError      Text Maybe
+    transportPayload   Text Maybe
+    statusPayload      Text Maybe
+    source             Text Maybe
+    resendOfMessageId  WhatsAppMessageId Maybe
+    createdAt          UTCTime
     UniqueWhatsAppMessage externalId
+    IndexWhatsAppMessageParty partyId createdAt !force
+    IndexWhatsAppMessagePhone phoneE164 createdAt !force
     deriving Show Generic
 
 FacebookMessage
-    externalId       Text
-    senderId         Text
-    senderName       Text Maybe
-    text             Text Maybe
-    direction        Text
-    adExternalId     Text Maybe
-    adName           Text Maybe
+    externalId         Text
+    senderId           Text
+    senderName         Text Maybe
+    text               Text Maybe
+    direction          Text
+    adExternalId       Text Maybe
+    adName             Text Maybe
     campaignExternalId Text Maybe
-    campaignName     Text Maybe
-    metadata         Text Maybe
-    repliedAt        UTCTime Maybe
-    replyText        Text Maybe
-    replyError       Text Maybe
-    createdAt        UTCTime
+    campaignName       Text Maybe
+    metadata           Text Maybe
+    replyStatus        Text default='pending'
+    holdReason         Text Maybe
+    holdRequiredFields Text Maybe
+    lastAttemptAt      UTCTime Maybe
+    attemptCount       Int default=0
+    repliedAt          UTCTime Maybe
+    replyText          Text Maybe
+    replyError         Text Maybe
+    deletedAt          UTCTime Maybe
+    createdAt          UTCTime
     UniqueFacebookMessage externalId
     deriving Show Generic
 
@@ -158,18 +186,70 @@ WhatsAppConsent
 
 CourseRegistration
     courseSlug   Text
+    partyId      PartyId Maybe
     fullName     Text Maybe
     email        Text Maybe
     phoneE164    Text Maybe
     source       Text
     status       Text
+    adminNotes   Text Maybe
     howHeard     Text Maybe
     utmSource    Text Maybe
     utmMedium    Text Maybe
     utmCampaign  Text Maybe
     utmContent   Text Maybe
+    stripePaymentIntentId Text Maybe
+    stripeSubscriptionId  Text Maybe
+    subscriptionStatus    Text Maybe
     createdAt    UTCTime default=now()
     updatedAt    UTCTime default=now()
+    IndexCourseRegistrationParty partyId createdAt !force
+    UniqueCourseRegistrationStripePaymentIntent stripePaymentIntentId !force
+    UniqueCourseRegistrationStripeSubscription stripeSubscriptionId !force
+    deriving Show Generic
+
+CourseRegistrationReceipt
+    registrationId CourseRegistrationId
+    partyId        PartyId Maybe
+    fileUrl        Text
+    fileName       Text Maybe
+    mimeType       Text Maybe
+    notes          Text Maybe
+    uploadedBy     PartyId Maybe
+    createdAt      UTCTime default=now()
+    updatedAt      UTCTime default=now()
+    IndexCourseRegistrationReceiptRegistration registrationId createdAt !force
+    IndexCourseRegistrationReceiptParty partyId createdAt !force
+    deriving Show Generic
+
+CourseRegistrationFollowUp
+    registrationId CourseRegistrationId
+    partyId        PartyId Maybe
+    entryType      Text
+    subject        Text Maybe
+    notes          Text
+    attachmentUrl  Text Maybe
+    attachmentName Text Maybe
+    nextFollowUpAt UTCTime Maybe
+    createdBy      PartyId Maybe
+    createdAt      UTCTime default=now()
+    updatedAt      UTCTime default=now()
+    IndexCourseRegistrationFollowUpRegistration registrationId createdAt !force
+    IndexCourseRegistrationFollowUpParty partyId createdAt !force
+    IndexCourseRegistrationFollowUpNext nextFollowUpAt !force
+    deriving Show Generic
+
+CourseEmailEvent
+    courseSlug      Text
+    registrationId  CourseRegistrationId Maybe
+    recipientEmail  Text
+    recipientName   Text Maybe
+    eventType       Text
+    status          Text
+    message         Text Maybe
+    createdAt       UTCTime default=now()
+    IndexCourseEmailRegistration registrationId createdAt !force
+    IndexCourseEmailRecipient recipientEmail createdAt !force
     deriving Show Generic
 
 DropdownOption
@@ -405,6 +485,13 @@ SessionDeliverable
     notes       Text Maybe
     deriving Show Generic
 
+SessionInvoice
+    sessionId   SessionId
+    invoiceId   InvoiceId
+    createdAt   UTCTime default=now()
+    UniqueSessionInvoice sessionId invoiceId
+    deriving Show Generic
+
 InputListTemplate
     Id           UUID default=gen_random_uuid()
     name         Text
@@ -477,13 +564,25 @@ AssetCheckout
     targetSessionId  SessionId   Maybe
     targetPartyRef   Text        Maybe
     targetRoomId     RoomId      Maybe
+    disposition      CheckoutDisposition default='Loan'
+    termsAndConditions Text Maybe
+    holderEmail      Text Maybe
+    holderPhone      Text Maybe
+    paymentType      Text Maybe
+    paymentInstallments Int Maybe
+    paymentReference Text Maybe
+    paymentAmountCents Int Maybe
+    paymentCurrency  Text Maybe
+    paymentOutstandingCents Int Maybe
     checkedOutByRef  Text
     checkedOutAt     UTCTime default=now()
     dueAt            UTCTime Maybe
     conditionOut     Text Maybe
+    photoOutUrl      Text Maybe
     photoDriveFileId Text Maybe
     returnedAt       UTCTime Maybe
     conditionIn      Text Maybe
+    photoInUrl       Text Maybe
     notes            Text Maybe
     deriving Show Generic
 

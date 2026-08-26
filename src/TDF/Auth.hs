@@ -6,12 +6,21 @@ module TDF.Auth
   ( AuthedUser(..)
   , ModuleAccess(..)
   , authContext
+  , clearSessionCookieHeader
+  , extractToken
+  , extractTokenFromHeaders
+  , hasAiToolingAccess
   , hasModuleAccess
+  , hasOperationsAccess
+  , hasSocialInboxAccess
+  , parseBearerAuthorizationHeader
   , moduleName
   , modulesForRoles
   , loadAuthedUser
   , lookupUsernameFromToken
   , resolveUsernameFromLabel
+  , sessionCookieHeader
+  , validateModuleAccess
   ) where
 
 import           Control.Applicative        ((<|>))
@@ -31,6 +40,7 @@ import           Servant
 import           Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler, AuthServerData)
 
 import           TDF.DB                     (Env(..))
+import           TDF.Config                 (AppConfig)
 import           TDF.Models
 
 -- | Enumeration of major application modules.
@@ -65,6 +75,36 @@ authContext env = mkAuthHandler (authWithToken env) :. EmptyContext
 -- | Check whether the user can access the given module.
 hasModuleAccess :: ModuleAccess -> AuthedUser -> Bool
 hasModuleAccess moduleTag AuthedUser{..} = moduleTag `Set.member` auModules
+
+validateModuleAccess :: ModuleAccess -> AuthedUser -> Either ServerError ()
+validateModuleAccess moduleTag user
+  | hasModuleAccess moduleTag user = Right ()
+  | otherwise =
+      Left err403
+        { errBody =
+            BL.fromStrict (TE.encodeUtf8 ("Missing access to module: " <> moduleName moduleTag))
+        }
+
+hasOperationsAccess :: AuthedUser -> Bool
+hasOperationsAccess user@AuthedUser{..} =
+  hasModuleAccess ModuleAdmin user || any (`elem` auRoles) [Admin, Manager, Maintenance]
+
+hasAiToolingAccess :: AuthedUser -> Bool
+hasAiToolingAccess = hasOperationsAccess
+
+hasSocialInboxAccess :: AuthedUser -> Bool
+hasSocialInboxAccess user@AuthedUser{..} =
+  hasModuleAccess ModuleCRM user
+    && any (`elem` auRoles)
+      [ Admin
+      , Manager
+      , StudioManager
+      , Reception
+      , LiveSessionsProducer
+      , Producer
+      , AandR
+      , Webmaster
+      ]
 
 -- Internal -----------------------------------------------------------------
 
@@ -175,4 +215,52 @@ extractToken req =
           | T.toLower scheme == "bearer" -> Right value
           | otherwise                    -> Left "Unsupported authorization scheme"
         _ -> Left "Malformed Authorization header"
+
+extractTokenFromHeaders :: AppConfig -> Maybe Text -> Maybe Text -> Either Text Text
+extractTokenFromHeaders _ (Just rawAuthorization) _ =
+  parseBearerAuthorizationHeader rawAuthorization
+extractTokenFromHeaders _ Nothing (Just rawCookieHeader) =
+  lookupCookie defaultSessionCookieName rawCookieHeader
+extractTokenFromHeaders _ Nothing Nothing =
+  Left "Missing or invalid auth token"
+
+parseBearerAuthorizationHeader :: Text -> Either Text Text
+parseBearerAuthorizationHeader rawHeader =
+  case T.words rawHeader of
+    [scheme, value]
+      | T.toLower scheme == "bearer" && not (T.null value) -> Right value
+      | otherwise -> Left "Unsupported authorization scheme"
+    _ -> Left "Malformed Authorization header"
+
+sessionCookieHeader :: AppConfig -> Text -> Text
+sessionCookieHeader _ token =
+  T.concat
+    [ defaultSessionCookieName
+    , "="
+    , token
+    , "; Path=/; HttpOnly; SameSite=Lax"
+    ]
+
+clearSessionCookieHeader :: AppConfig -> Text
+clearSessionCookieHeader _ =
+  defaultSessionCookieName <> "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+defaultSessionCookieName :: Text
+defaultSessionCookieName = "tdf_session"
+
+lookupCookie :: Text -> Text -> Either Text Text
+lookupCookie cookieName rawHeader =
+  case matchingCookieValues cookieName rawHeader of
+    [value] | not (T.null value) -> Right value
+    [] -> Left "Missing or invalid auth token"
+    _ -> Left "Multiple session cookies found"
+
+matchingCookieValues :: Text -> Text -> [Text]
+matchingCookieValues cookieName rawHeader = do
+  chunk <- T.splitOn ";" rawHeader
+  let (namePart, valuePart) = T.breakOn "=" chunk
+      name = T.strip namePart
+      value = T.strip (T.drop 1 valuePart)
+  guard (name == cookieName)
+  pure value
 type instance AuthServerData (AuthProtect "bearer-token") = AuthedUser

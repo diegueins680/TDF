@@ -9,13 +9,26 @@ module TDF.API.SocialEventsAPI
   , ArtistsRoutes
   , RsvpRoutes
   , InvitationsRoutes
+  , LiveBroadcastsRoutes
   , IdParam
   ) where
 
 import Servant
 import Data.Text (Text)
 
-import TDF.DTO.SocialEventsDTO (EventDTO, VenueDTO, ArtistDTO, ArtistFollowerDTO, ArtistFollowRequest, RsvpDTO, InvitationDTO)
+import TDF.DTO.SocialEventsDTO
+  ( ArtistDTO
+  , ArtistFollowRequest
+  , ArtistFollowerDTO
+  , EventDTO
+  , EventLiveBroadcastCreateDTO
+  , EventLiveBroadcastDTO
+  , EventLiveBroadcastEndDTO
+  , EventLiveBroadcastHeartbeatDTO
+  , InvitationDTO
+  , RsvpDTO
+  , VenueDTO
+  )
 
 type IdParam = Capture "id" Text
 
@@ -57,8 +70,15 @@ type InvitationsRoutes =
       :<|> Capture "invitationId" Text :> ReqBody '[JSON] InvitationDTO :> Put '[JSON] InvitationDTO
          )
 
+type LiveBroadcastsRoutes =
+       "events" :> Capture "eventId" Text :> "live-broadcasts" :> Get '[JSON] [EventLiveBroadcastDTO]
+  :<|> "events" :> Capture "eventId" Text :> "live-broadcasts" :> ReqBody '[JSON] EventLiveBroadcastCreateDTO :> Post '[JSON] EventLiveBroadcastDTO
+  :<|> "events" :> Capture "eventId" Text :> "live-broadcasts" :> Capture "broadcastId" Text :> "heartbeat" :> ReqBody '[JSON] EventLiveBroadcastHeartbeatDTO :> Post '[JSON] EventLiveBroadcastDTO
+  :<|> "events" :> Capture "eventId" Text :> "live-broadcasts" :> Capture "broadcastId" Text :> "end" :> ReqBody '[JSON] EventLiveBroadcastEndDTO :> Post '[JSON] EventLiveBroadcastDTO
+
 type SocialEventsAPI = EventsRoutes
                :<|> VenuesRoutes
                :<|> ArtistsRoutes
                :<|> RsvpRoutes
                :<|> InvitationsRoutes
+               :<|> LiveBroadcastsRoutes

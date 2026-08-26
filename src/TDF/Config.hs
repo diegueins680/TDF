@@ -3,7 +3,14 @@ module TDF.Config where
 
 import           Control.Applicative ((<|>))
 import           Control.Monad      (filterM)
-import           Data.Char          (toLower)
+import           Data.Char
+  ( GeneralCategory(Format)
+  , generalCategory
+  , isAlphaNum
+  , isControl
+  , isSpace
+  , toLower
+  )
 import           Data.Maybe         (catMaybes, fromMaybe, listToMaybe)
 import           Data.Text          (Text)
 import qualified Data.Text          as T
@@ -55,6 +62,9 @@ data AppConfig = AppConfig
   , facebookAppId   :: Maybe Text
   , facebookAppSecret :: Maybe Text
   , facebookGraphBase :: Text
+  , facebookMessagingToken :: Maybe Text
+  , facebookMessagingPageId :: Maybe Text
+  , facebookMessagingApiBase :: Text
   , instagramAppToken :: Maybe Text
   , instagramGraphBase :: Text
   , instagramMessagingToken :: Maybe Text
@@ -101,6 +111,9 @@ loadConfig = do
   fbAppIdEnv <- lookupEnv "FACEBOOK_APP_ID" <|> lookupEnv "META_APP_ID"
   fbAppSecretEnv <- lookupEnv "FACEBOOK_APP_SECRET" <|> lookupEnv "META_APP_SECRET"
   fbGraphBaseEnv <- lookupEnv "FACEBOOK_GRAPH_BASE"
+  fbMsgTokenEnv <- lookupEnv "FACEBOOK_MESSAGING_TOKEN" <|> lookupEnv "FACEBOOK_PAGE_ACCESS_TOKEN"
+  fbMsgPageIdEnv <- lookupEnv "FACEBOOK_MESSAGING_PAGE_ID" <|> lookupEnv "FACEBOOK_PAGE_ID"
+  fbMsgBaseEnv <- lookupEnv "FACEBOOK_MESSAGING_API_BASE"
   courseSlugEnv <- lookupEnv "COURSE_DEFAULT_SLUG"
   courseMapEnv <- lookupEnv "COURSE_DEFAULT_MAP_URL"
   courseInstructorAvatarEnv <- lookupEnv "COURSE_DEFAULT_INSTRUCTOR_AVATAR"
@@ -164,6 +177,9 @@ loadConfig = do
     , facebookAppId = fbAppIdEnv >>= nonEmpty . T.pack
     , facebookAppSecret = fbAppSecretEnv >>= nonEmpty . T.pack
     , facebookGraphBase = fromMaybe "https://graph.facebook.com/v20.0" (fbGraphBaseEnv >>= nonEmpty . T.pack)
+    , facebookMessagingToken = fbMsgTokenEnv >>= nonEmpty . T.pack
+    , facebookMessagingPageId = fbMsgPageIdEnv >>= nonEmpty . T.pack
+    , facebookMessagingApiBase = fromMaybe "https://graph.facebook.com/v20.0" (fbMsgBaseEnv >>= nonEmpty . T.pack)
     , instagramAppToken = fmap (T.strip . T.pack) igTokenEnv
     , instagramGraphBase = maybe "https://graph.instagram.com" (T.strip . T.pack) igBaseEnv
     , instagramMessagingToken =
@@ -246,6 +262,77 @@ courseInstructorAvatarFallback :: AppConfig -> Text
 courseInstructorAvatarFallback cfg =
   let base = resolveConfiguredAppBase cfg
   in fromMaybe (base <> "/assets/esteban-munoz.jpg") (courseDefaultInstructorAvatar cfg >>= nonEmpty)
+
+normalizeConfiguredBaseUrl :: String -> String -> Either String (Maybe Text)
+normalizeConfiguredBaseUrl envName rawUrl =
+  let url = T.dropWhileEnd (== '/') (T.strip (T.pack rawUrl))
+      lowerUrl = T.toLower url
+  in if T.null url
+       then Right Nothing
+       else if T.any isUnsafeConfiguredTextChar url
+         then Left (envName <> " must not contain whitespace, control, or hidden formatting characters")
+       else if not ("https://" `T.isPrefixOf` lowerUrl || "http://" `T.isPrefixOf` lowerUrl)
+         then Left (envName <> " must be an absolute http(s) URL")
+       else if T.null (configuredUrlAuthority url)
+         then Left (envName <> " must include a host")
+       else Right (Just url)
+
+normalizeConfiguredHttpsUrl :: String -> Maybe String -> Either String (Maybe Text)
+normalizeConfiguredHttpsUrl _ Nothing = Right Nothing
+normalizeConfiguredHttpsUrl envName (Just rawUrl) = do
+  mUrl <- normalizeConfiguredBaseUrl envName rawUrl
+  case mUrl of
+    Nothing -> Right Nothing
+    Just url
+      | "https://" `T.isPrefixOf` T.toLower url -> Right (Just url)
+      | otherwise -> Left (envName <> " must be an absolute https URL")
+
+normalizeConfiguredGraphNodeId :: String -> String -> Either String (Maybe Text)
+normalizeConfiguredGraphNodeId envName rawNodeId =
+  let nodeId = T.strip (T.pack rawNodeId)
+      validChar ch = isAlphaNum ch || ch `elem` (".-_" :: String)
+  in if T.null nodeId
+       then Right Nothing
+       else if T.length nodeId > 256
+         then Left (envName <> " must be 256 characters or fewer")
+       else if T.any isUnsafeConfiguredTextChar nodeId || T.any (not . validChar) nodeId
+         then Left (envName <> " must contain only letters, numbers, '.', '-' or '_'")
+       else Right (Just nodeId)
+
+normalizeConfiguredGoogleClientId :: String -> String -> Either String (Maybe Text)
+normalizeConfiguredGoogleClientId envName rawClientId =
+  let clientId = T.strip (T.pack rawClientId)
+  in if T.null clientId
+       then Right Nothing
+       else if T.length clientId > 512
+         then Left (envName <> " must be 512 characters or fewer")
+       else if T.any isUnsafeConfiguredTextChar clientId
+         then Left (envName <> " must not contain whitespace, control, or hidden formatting characters")
+       else Right (Just clientId)
+
+normalizeConfiguredCourseSlug :: Maybe String -> Either String Text
+normalizeConfiguredCourseSlug Nothing = Right "produccion-musical-feb-2026"
+normalizeConfiguredCourseSlug (Just rawSlug) =
+  let slug = T.toLower (T.strip (T.pack rawSlug))
+      validChar ch = isAlphaNum ch || ch `elem` ("-_" :: String)
+  in if T.null slug
+       then Right "produccion-musical-feb-2026"
+       else if T.length slug > 120
+         then Left "COURSE_DEFAULT_SLUG must be 120 characters or fewer"
+       else if T.any isUnsafeConfiguredTextChar slug || T.any (not . validChar) slug
+         then Left "COURSE_DEFAULT_SLUG must contain only letters, numbers, '-' or '_'"
+       else Right slug
+
+configuredUrlAuthority :: Text -> Text
+configuredUrlAuthority url =
+  let noScheme =
+        fromMaybe url $
+          T.stripPrefix "https://" url <|> T.stripPrefix "http://" url
+  in T.takeWhile (`notElem` ("/?#" :: String)) noScheme
+
+isUnsafeConfiguredTextChar :: Char -> Bool
+isUnsafeConfiguredTextChar ch =
+  isSpace ch || isControl ch || generalCategory ch == Format
 
 nonEmpty :: Text -> Maybe Text
 nonEmpty txt =

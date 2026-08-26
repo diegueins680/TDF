@@ -2,12 +2,14 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module TDF.API.Calendar where
 
 import           Servant
 import           Data.Aeson (ToJSON, FromJSON, Value)
 import           Data.Text (Text)
+import qualified Data.Text as T
 import           Data.Time (UTCTime)
 import           GHC.Generics (Generic)
 
@@ -68,3 +70,13 @@ type CalendarAPI =
   :<|> "v1" :> "config"   :> QueryParam "calendarId" Text :> Get '[JSON] (Maybe CalendarConfigDTO)
   :<|> "v1" :> "sync"     :> ReqBody '[JSON] SyncRequest :> Post '[JSON] SyncResult
   :<|> "v1" :> "events"   :> QueryParam "calendarId" Text :> QueryParam "from" UTCTime :> QueryParam "to" UTCTime :> QueryParam "status" Text :> Get '[JSON] [CalendarEventDTO]
+
+normalizeCalendarId :: Text -> Either Text Text
+normalizeCalendarId raw =
+  let calendarIdVal = T.strip raw
+  in if T.null calendarIdVal || T.length calendarIdVal > 512 || T.any invalidCalendarIdChar calendarIdVal
+     then Left "Invalid calendarId"
+     else Right calendarIdVal
+
+invalidCalendarIdChar :: Char -> Bool
+invalidCalendarIdChar ch = ch < ' ' || ch == '\DEL'

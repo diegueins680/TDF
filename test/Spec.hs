@@ -11,6 +11,8 @@ import Test.Hspec
 
 import TDF.Models.SocialEventsModels (EventInvitationId, SocialEventId)
 import TDF.RagStore (availabilityOverlaps, validateEmbeddingModelDimensions)
+import qualified TDF.APITypesSpec as APITypesSpec
+import qualified TDF.AuthSpec as AuthSpec
 import TDF.Server.SocialEventsHandlers (
     normalizeBudgetLineType,
     normalizeEventStatus,
@@ -26,6 +28,9 @@ import TDF.Server.SocialEventsHandlers (
 
 main :: IO ()
 main = hspec $ do
+    APITypesSpec.spec
+    AuthSpec.spec
+
     describe "normalizeInvitationStatus" $ do
         it "falls back to pending when missing" $ do
             normalizeInvitationStatus Nothing `shouldBe` "pending"
